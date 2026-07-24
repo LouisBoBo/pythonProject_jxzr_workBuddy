@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 import sys
@@ -19,6 +19,7 @@ _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
 from routes_config import UPLOAD_DIR, CONVERT_DIR
+from routes.auth import require_auth
 
 router = APIRouter(prefix="/api", tags=["convert"])
 
@@ -174,7 +175,7 @@ def write_format(df: pd.DataFrame, out_path: Path, fmt: str, title: str) -> None
 
 
 @router.post("/convert")
-async def convert_document(file: UploadFile = File(...)):
+async def convert_document(file: UploadFile = File(...), _auth: tuple = Depends(require_auth)):
     """上传文档并转换为多种常用格式，返回可下载列表。"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="未选择文件")

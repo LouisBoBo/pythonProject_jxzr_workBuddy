@@ -1,20 +1,89 @@
 import axios from 'axios'
+import { authHeaders, clearSession } from './auth.js'
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 120000,
 })
 
+api.interceptors.request.use((config) => {
+  const headers = authHeaders()
+  config.headers = { ...config.headers, ...headers }
+  return config
+})
+
+api.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    if (err?.response?.status === 401 && !String(err?.config?.url || '').includes('/auth/login')) {
+      clearSession()
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+        window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
+export function login({ username, password, enterprise_code = '' }) {
+  return api.post('/auth/login', { username, password, enterprise_code })
+}
+
+export function fetchMe() {
+  return api.get('/auth/me')
+}
+
 export function sendMessage(message, threadId = 'default') {
   return api.post('/chat', { message, thread_id: threadId })
 }
 
-export function streamMessage(message, threadId, onToken, onDone, onError, filePaths = []) {
-  return fetch('/api/chat/stream', {
+/**
+ * 流式对话。
+ * onEvent(data) 可 async；status / step 每条后让出一帧，保证处理过程逐步上屏。
+ *
+ * 开发环境直连 API，绕过 Vite 代理对 SSE 的缓冲。
+ */
+function streamEndpoint() {
+  if (typeof window !== 'undefined' && import.meta.env.DEV) {
+    const host = window.location.hostname || '127.0.0.1'
+    const base = import.meta.env.VITE_API_BASE || `http://${host}:8765`
+    return `${base.replace(/\/$/, '')}/api/chat/stream`
+  }
+  return '/api/chat/stream'
+}
+
+function paintFrame() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve())
+    } else {
+      setTimeout(resolve, 16)
+    }
+  })
+}
+
+export function streamMessage(message, threadId, onEvent, onDone, onError, filePaths = []) {
+  const handleEvent = typeof onEvent === 'function' ? onEvent : async () => {}
+
+  return fetch(streamEndpoint(), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ message, thread_id: threadId, file_paths: filePaths }),
   }).then(async (response) => {
+    if (response.status === 401) {
+      clearSession()
+      if (typeof window !== 'undefined') {
+        window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
+      }
+      throw new Error('登录已过期，请重新登录')
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(text || `HTTP ${response.status}`)
+    }
+    if (!response.body) {
+      throw new Error('响应不支持流式读取')
+    }
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -24,26 +93,51 @@ export function streamMessage(message, threadId, onToken, onDone, onError, fileP
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() || ''
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          const data = JSON.parse(line.slice(6))
-          if (data.done) {
-            onDone(data.thread_id)
-          } else if (data.token) {
-            onToken(data.token)
-          } else if (data.error) {
-            onError(data.error)
+      for (const part of parts) {
+        const lines = part.split('\n')
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const data = JSON.parse(line.slice(6))
+            const type = data.type || (
+              data.done ? 'done'
+                : data.error ? 'error'
+                  : data.token != null ? 'token'
+                    : null
+            )
+
+            if (type === 'done' || data.done) {
+              await handleEvent({ ...data, type: 'done' })
+              if (typeof onDone === 'function') await onDone(data.thread_id)
+            } else if (type === 'error' || data.error) {
+              const msg = data.message || data.error || '未知错误'
+              await handleEvent({ ...data, type: 'error', message: msg })
+              if (typeof onError === 'function') await onError(msg)
+            } else if (type === 'token' || data.token != null) {
+              const text = data.text != null ? data.text : data.token
+              await handleEvent({ type: 'token', text, token: text })
+            } else if (type === 'status' || type === 'step') {
+              await handleEvent(data)
+              await paintFrame()
+              if (type === 'step') {
+                await new Promise((r) => setTimeout(r, 40))
+              }
+            } else {
+              await handleEvent(data)
+            }
+          } catch (e) {
+            // ignore parse errors
           }
-        } catch (e) {
-          // ignore parse errors
         }
       }
     }
-  }).catch(onError)
+  }).catch((err) => {
+    if (typeof onError === 'function') return onError(err)
+    throw err
+  })
 }
 
 export function uploadFile(file) {

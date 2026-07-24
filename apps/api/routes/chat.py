@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
@@ -15,6 +15,8 @@ if _parent not in sys.path:
     sys.path.insert(0, _parent)
 from routes_config import UPLOAD_DIR, AgentConfig
 from agent_wrapper import AgentRunner
+from routes.auth import require_auth
+from tools.platform_api import set_request_erp_token, reset_request_erp_token
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -31,41 +33,65 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
     """同步对话：发送消息，等待完整回复后返回。"""
-    runner = AgentRunner()
-    reply = runner.chat(req.message, req.thread_id, req.file_paths)
-    return ChatResponse(reply=reply, thread_id=req.thread_id)
+    token, _user = auth
+    tok = set_request_erp_token(token)
+    try:
+        runner = AgentRunner()
+        reply = runner.chat(req.message, req.thread_id, req.file_paths)
+        return ChatResponse(reply=reply, thread_id=req.thread_id)
+    finally:
+        reset_request_erp_token(tok)
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
-    """流式对话：SSE 方式逐步返回 token，适合前端打字机效果。"""
+async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
+    """流式对话：SSE 推送 status / step / token / done / error。"""
+    import asyncio
+
+    erp_token, _user = auth
 
     async def generate():
         runner = AgentRunner()
+        tok = set_request_erp_token(erp_token)
         try:
-            async for token in runner.stream_chat(req.message, req.thread_id, req.file_paths):
-                data = json.dumps({"token": token}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
-            yield f"data: {json.dumps({'done': True, 'thread_id': req.thread_id})}\n\n"
+            # 先发一条带填充的 SSE 注释，冲掉代理/内核初始缓冲
+            yield ": " + (" " * 2048) + "\n\n"
+            async for event in runner.stream_chat(req.message, req.thread_id, req.file_paths):
+                if not isinstance(event, dict):
+                    event = {"type": "token", "text": str(event), "token": str(event)}
+                payload = json.dumps(event, ensure_ascii=False)
+                yield f"data: {payload}\n\n"
+                et = event.get("type") if isinstance(event, dict) else None
+                # status/step：填充 + 短间隔，确保过程事件不会和后续 token 被攒成一包
+                if et in ("status", "step"):
+                    yield ": " + (" " * 2048) + "\n\n"
+                    await asyncio.sleep(0.04)
+                else:
+                    await asyncio.sleep(0)
+            yield f"data: {json.dumps({'type': 'done', 'done': True, 'thread_id': req.thread_id}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0)
         except Exception as e:
-            err = json.dumps({"error": str(e)}, ensure_ascii=False)
+            err = json.dumps({"type": "error", "error": str(e), "message": str(e)}, ensure_ascii=False)
             yield f"data: {err}\n\n"
+        finally:
+            reset_request_erp_token(tok)
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Content-Type": "text/event-stream; charset=utf-8",
         },
     )
 
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), _auth: tuple = Depends(require_auth)):
     """上传文件（CSV/Excel/JSON），保存到 uploads 目录并返回预览。"""
     import time
     os.makedirs(UPLOAD_DIR, exist_ok=True)

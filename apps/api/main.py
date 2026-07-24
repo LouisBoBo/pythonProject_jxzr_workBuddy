@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from routes.chat import router as chat_router
 from routes.history import router as history_router
 from routes.convert import router as convert_router
+from routes.auth import router as auth_router
 from routes_config import DATA_DIR, SERVER_PORT
 
 # 确保数据目录存在
@@ -37,6 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(history_router)
 app.include_router(convert_router)

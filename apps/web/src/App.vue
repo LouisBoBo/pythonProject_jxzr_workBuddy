@@ -1,5 +1,8 @@
 <template>
-  <div class="app-shell">
+  <div v-if="isLoginRoute" class="login-shell">
+    <router-view />
+  </div>
+  <div v-else class="app-shell">
     <aside class="sidebar">
       <div class="sidebar-brand">
         <div class="brand-icon">
@@ -69,9 +72,12 @@
           <el-icon :size="16"><FolderOpened /></el-icon>
           <span>文件管理</span>
         </router-link>
-        <div class="status-row">
-          <div class="status-dot online"></div>
-          <span>DeepSeek v4-pro</span>
+        <div class="user-row">
+          <div class="user-meta">
+            <span class="user-name">{{ displayName }}</span>
+            <span class="user-sub">ERP 已登录</span>
+          </div>
+          <button type="button" class="logout-btn" title="退出登录" @click="onLogout">退出</button>
         </div>
       </div>
     </aside>
@@ -83,18 +89,21 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { FolderOpened } from '@element-plus/icons-vue'
 import { getHistoryList, deleteHistory } from './api.js'
+import { clearSession, getUsername } from './auth.js'
 
 const route = useRoute()
 const router = useRouter()
 
 const sessions = ref([])
 const historyLoading = ref(false)
+const displayName = ref(getUsername() || '用户')
 
+const isLoginRoute = computed(() => route.name === 'login' || route.path === '/login')
 const groupedHistory = computed(() => groupSessions(sessions.value))
 
 function startOfDay(d) {
@@ -134,6 +143,7 @@ function isActiveSession(id) {
 }
 
 async function loadHistory() {
+  if (isLoginRoute.value) return
   historyLoading.value = true
   try {
     const resp = await getHistoryList()
@@ -177,11 +187,24 @@ async function onSessionCommand(cmd, item) {
   }
 }
 
+function onLogout() {
+  clearSession()
+  router.replace('/login')
+}
+
 function onHistoryUpdated() {
   loadHistory()
 }
 
+watch(isLoginRoute, (v) => {
+  if (!v) {
+    displayName.value = getUsername() || '用户'
+    loadHistory()
+  }
+})
+
 onMounted(() => {
+  displayName.value = getUsername() || '用户'
   loadHistory()
   window.addEventListener('mes-history-updated', onHistoryUpdated)
 })
@@ -192,6 +215,11 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.login-shell {
+  height: 100%;
+  overflow: auto;
+}
+
 .app-shell {
   display: flex;
   height: 100%;
@@ -376,24 +404,51 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
-.status-row {
+.user-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eef1f5;
+}
+
+.user-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-sub {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.logout-btn {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #64748b;
   font-size: 12px;
-  color: var(--text-tertiary);
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
 }
 
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.status-dot.online {
-  background: var(--success);
-  box-shadow: 0 0 0 2px var(--success-bg);
+.logout-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
 }
 
 .main-content {

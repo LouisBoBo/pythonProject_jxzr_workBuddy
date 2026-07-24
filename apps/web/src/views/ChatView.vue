@@ -25,8 +25,15 @@
           </svg>
         </div>
         <div class="msg-content">
-          <div class="msg-body" v-html="renderMarkdown(msg.content)"></div>
-          <div class="msg-actions">
+          <ProcessPanel
+            v-if="msg.role === 'assistant' && msg.process?.length"
+            :items="msg.process"
+            :collapsed="msg.processCollapsed !== false"
+            :duration-text="msg.meta?.durationText || ''"
+            @update:collapsed="(v) => { msg.processCollapsed = v }"
+          />
+          <div class="msg-body" v-if="msg.content" v-html="renderMarkdown(msg.content)"></div>
+          <div class="msg-actions" v-if="msg.content">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -72,13 +79,25 @@
           </svg>
         </div>
         <div class="msg-content">
-          <div class="msg-body" :class="{ thinking: !streamContent }">
+          <ProcessPanel
+            v-if="streamProcess.length"
+            :items="streamProcess"
+            :collapsed="streamProcessCollapsed"
+            :duration-text="streamDurationText"
+            @update:collapsed="(v) => { streamProcessCollapsed = v }"
+          />
+          <!-- 生成态立刻出气泡（打点），过程区本身无气泡 -->
+          <div
+            v-if="streamContent || streamAnswerPending || (!streamProcess.length && streaming)"
+            class="msg-body"
+            :class="{ thinking: !streamContent }"
+          >
             <span v-if="!streamContent" class="thinking-indicator">
               <span class="dot"></span>
               <span class="dot"></span>
               <span class="dot"></span>
             </span>
-            <span v-html="renderMarkdown(streamContent)"></span>
+            <span v-else v-html="renderMarkdown(streamContent)"></span>
           </div>
         </div>
       </div>
@@ -154,6 +173,7 @@
 import { ref, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { streamMessage, uploadFile, saveHistory, getHistoryDetail } from '../api.js'
+import ProcessPanel from '../components/ProcessPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -162,6 +182,11 @@ const messages = ref([])
 const input = ref('')
 const streaming = ref(false)
 const streamContent = ref('')
+const streamProcess = ref([])
+const streamProcessCollapsed = ref(false)
+const streamDurationText = ref('')
+const streamStartedAt = ref(0)
+const streamAnswerPending = ref(false)
 const msgContainer = ref(null)
 const inputEl = ref(null)
 const fileInput = ref(null)
@@ -247,6 +272,7 @@ function persistableMessages() {
     role: m.role,
     content: m.content,
     ...(m.meta ? { meta: m.meta } : {}),
+    ...(m.process?.length ? { process: m.process } : {}),
   }))
 }
 
@@ -270,6 +296,9 @@ async function loadSession(id) {
   loadingSession.value = true
   threadId.value = id
   streamContent.value = ''
+  streamProcess.value = []
+  streamProcessCollapsed.value = false
+  streamDurationText.value = ''
   attachedFiles.value = []
   streaming.value = false
   editingFromIndex.value = -1
@@ -280,6 +309,8 @@ async function loadSession(id) {
       role: m.role,
       content: m.content,
       meta: m.meta,
+      process: m.process || [],
+      processCollapsed: true,
     }))
     scrollToBottom()
   } catch {
@@ -298,6 +329,9 @@ function startNewChat() {
   threadId.value = id
   messages.value = []
   streamContent.value = ''
+  streamProcess.value = []
+  streamProcessCollapsed.value = false
+  streamDurationText.value = ''
   attachedFiles.value = []
   streaming.value = false
   editingFromIndex.value = -1
@@ -323,6 +357,7 @@ watch(
     // 切换会话时中断当前流式状态，加载目标会话
     streaming.value = false
     streamContent.value = ''
+    streamProcess.value = []
     await loadSession(id)
   }
 )
@@ -358,38 +393,192 @@ async function send(text) {
 
   streaming.value = true
   streamContent.value = ''
+  streamAnswerPending.value = false
+  // 本地先挂一条「分析中」，后续真实步骤会替换掉
+  streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: '分析问题…' }]
+  streamProcessCollapsed.value = false
+  streamDurationText.value = ''
+  streamStartedAt.value = Date.now()
+  scrollToBottom()
+
+  let stepRevealChain = Promise.resolve()
+  let flushStepsNow = false
+  const STEP_GAP_MS = 150
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  const applyStep = (event) => {
+    const id = event.id || `tool-${event.tool || event.title}`
+    const steps = streamProcess.value.filter((i) => i.type === 'step' && i.id !== 'boot')
+    const idx = steps.findIndex(
+      (i) => i.id === id || (event.tool && i.tool === event.tool && i.state === 'running')
+    )
+    const prev = idx >= 0 ? steps[idx] : null
+    const item = {
+      id,
+      type: 'step',
+      tool: event.tool,
+      phase: event.phase,
+      state: event.state || (event.phase === 'end' ? (event.ok === false ? 'error' : 'done') : 'running'),
+      title: event.title,
+      args: event.args || prev?.args || '',
+      detail: event.detail || prev?.detail || '',
+      preview: Array.isArray(event.preview) ? event.preview : (prev?.preview || []),
+      ok: event.ok,
+    }
+    if (idx >= 0) steps[idx] = { ...steps[idx], ...item }
+    else steps.push(item)
+    streamProcess.value = steps
+  }
+
+  const enqueueStep = (event) => {
+    // start：错峰露出；end：立刻更新同一条，不再额外等待
+    const gap = event.phase === 'start' || event.state === 'running' ? STEP_GAP_MS : 0
+    stepRevealChain = stepRevealChain.then(async () => {
+      if (requestId !== activeRequestId || threadId.value !== currentThread) return
+      applyStep(event)
+      if (!streamAnswerPending.value) streamProcessCollapsed.value = false
+      await nextTick()
+      scrollToBottom()
+      if (!flushStepsNow && gap > 0) await sleep(gap)
+    })
+    return stepRevealChain
+  }
 
   try {
     const filePaths = files.map(f => f.path).filter(Boolean)
     await streamMessage(
       content,
       currentThread,
-      (token) => {
+      async (event) => {
         if (requestId !== activeRequestId || threadId.value !== currentThread) return
-        streamContent.value += token
-        scrollToBottom()
+        const type = event?.type
+        if (type === 'status') {
+          const text = event.text || ''
+          if (event.phase === 'generating' || /正在组织|正在生成/.test(text)) {
+            const rest = streamProcess.value.filter(
+              (i) => i.type === 'step' && i.id !== 'boot'
+            )
+            streamProcess.value = [
+              ...rest,
+              {
+                id: 'status-generating',
+                type: 'status',
+                phase: 'generating',
+                text: text || '正在组织最终回答…',
+              },
+            ]
+            streamAnswerPending.value = true
+            streamProcessCollapsed.value = false
+            if (!streamDurationText.value) {
+              const sec = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
+              streamDurationText.value = `${sec}s`
+            }
+            scrollToBottom()
+            return
+          }
+          if (event.phase === 'waiting' || /继续/.test(text)) {
+            const rest = streamProcess.value.filter(
+              (i) =>
+                i.id !== 'boot' &&
+                !(i.type === 'status' && (i.phase === 'waiting' || i.phase === 'generating'))
+            )
+            streamProcess.value = [
+              ...rest,
+              {
+                id: 'status-waiting',
+                type: 'status',
+                phase: 'waiting',
+                text: text || '继续分析与整理…',
+              },
+            ]
+            streamAnswerPending.value = true
+            streamProcessCollapsed.value = false
+            scrollToBottom()
+            return
+          }
+          if (/分析|处理/.test(text) && streamProcess.value.some((i) => i.id === 'boot')) {
+            streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: text }]
+          }
+        } else if (type === 'step') {
+          if (event.phase === 'start' || event.state === 'running') {
+            streamAnswerPending.value = false
+            streamProcessCollapsed.value = false
+            streamProcess.value = streamProcess.value.filter(
+              (i) => !(i.type === 'status' && (i.phase === 'waiting' || i.phase === 'generating'))
+            )
+          }
+          await enqueueStep(event)
+          const stillRunning = streamProcess.value.some((i) => i.state === 'running')
+          if (!stillRunning && (event.phase === 'end' || event.state === 'done' || event.state === 'error')) {
+            streamAnswerPending.value = true
+            streamProcessCollapsed.value = false
+            scrollToBottom()
+          }
+        } else if (type === 'token') {
+          const text = event.text != null ? event.text : event.token
+          if (!text) return
+          flushStepsNow = true
+          await stepRevealChain
+          streamAnswerPending.value = true
+          streamProcessCollapsed.value = false
+          if (!streamDurationText.value) {
+            const sec = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
+            streamDurationText.value = `${sec}s`
+          }
+          streamProcess.value = streamProcess.value.filter(
+            (i) => !(i.type === 'status' && i.phase === 'generating')
+          )
+          streamContent.value += text
+          scrollToBottom()
+        }
       },
       async () => {
         if (requestId !== activeRequestId || threadId.value !== currentThread) return
-        if (streamContent.value) {
+        flushStepsNow = true
+        await stepRevealChain
+        const sec = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
+        const durationText = streamDurationText.value || `${sec}s`
+        const processItems = (streamProcess.value || []).filter(
+          (i) => i.type === 'step' && i.id !== 'boot'
+        )
+        if (streamContent.value || processItems.length) {
           messages.value.push({
             role: 'assistant',
             content: streamContent.value,
-            meta: { time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) },
+            process: processItems,
+            processCollapsed: true,
+            meta: {
+              time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+              durationText,
+            },
           })
         }
         streamContent.value = ''
+        streamProcess.value = []
+        streamProcessCollapsed.value = false
+        streamDurationText.value = ''
+        streamAnswerPending.value = false
         streaming.value = false
         scrollToBottom()
         await persistSession()
       },
       async (err) => {
         if (requestId !== activeRequestId || threadId.value !== currentThread) return
+        flushStepsNow = true
+        await stepRevealChain
+        const errText = typeof err === 'string' ? err : (err?.message || err)
         messages.value.push({
           role: 'assistant',
-          content: '[错误] 请求失败：' + (err.message || err),
+          content: '[错误] 请求失败：' + errText,
+          process: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
+          processCollapsed: true,
         })
         streamContent.value = ''
+        streamProcess.value = []
+        streamProcessCollapsed.value = false
+        streamDurationText.value = ''
+        streamAnswerPending.value = false
         streaming.value = false
         scrollToBottom()
         await persistSession()
@@ -401,8 +590,14 @@ async function send(text) {
     messages.value.push({
       role: 'assistant',
       content: '[错误] 连接服务器失败，请确认服务端已启动',
+      process: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
+      processCollapsed: true,
     })
     streamContent.value = ''
+    streamProcess.value = []
+    streamProcessCollapsed.value = false
+    streamDurationText.value = ''
+    streamAnswerPending.value = false
     streaming.value = false
     scrollToBottom()
     await persistSession()

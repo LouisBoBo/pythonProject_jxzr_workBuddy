@@ -7,12 +7,33 @@
 
 可操作实体由 entities.json（entity_catalog）统一配置。
 """
+from __future__ import annotations
+
+import contextvars
 import json
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from config import Config
 from tools.query_tool.entity_catalog import get_entity_map, list_entity_ids, resolve_entity_id
+
+# 请求级用户 ERP token（登录后传入，优先于服务账号 Config.ERP_*）
+_erp_token_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "erp_token_override", default=None
+)
+
+
+def set_request_erp_token(token: str | None):
+    """在单次请求上下文中使用用户的 ERP Bearer token。"""
+    return _erp_token_override.set(token or None)
+
+
+def reset_request_erp_token(token) -> None:
+    _erp_token_override.reset(token)
+
+
+def get_request_erp_token() -> str | None:
+    return _erp_token_override.get()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -123,7 +144,9 @@ class ERPClient:
     # ── 内部方法 ──────────────────────────────────────────────────────
 
     def _ensure_auth(self):
-        """确保已登录，拿到 Bearer token。"""
+        """确保已登录，拿到 Bearer token。用户请求 token 优先。"""
+        if get_request_erp_token():
+            return
         if self._token is not None:
             return
         if not Config.ERP_USERNAME or not Config.ERP_PASSWORD:
@@ -152,8 +175,9 @@ class ERPClient:
         url = f"{self.base}{path}"
         data = json.dumps(body).encode() if body else None
         headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        token = get_request_erp_token() or self._token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         req = Request(url, data=data, headers=headers, method=method)
         try:

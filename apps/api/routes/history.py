@@ -7,7 +7,7 @@ import sqlite3
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import sys, os
@@ -15,6 +15,7 @@ _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
 from routes_config import HISTORY_DIR
+from routes.auth import require_auth
 
 router = APIRouter(prefix="/api", tags=["history"])
 
@@ -45,7 +46,7 @@ class SaveRequest(BaseModel):
 
 
 @router.get("/history")
-async def list_history(limit: int = 50):
+async def list_history(limit: int = 50, _auth: tuple = Depends(require_auth)):
     """获取历史会话列表，按更新时间倒序。"""
     db = get_db()
     rows = db.execute(
@@ -65,7 +66,7 @@ async def list_history(limit: int = 50):
 
 
 @router.get("/history/{thread_id}")
-async def get_history(thread_id: str):
+async def get_history(thread_id: str, _auth: tuple = Depends(require_auth)):
     """获取某次会话的完整对话记录。"""
     db = get_db()
     row = db.execute(
@@ -84,7 +85,7 @@ async def get_history(thread_id: str):
 
 
 @router.post("/history/save")
-async def save_history(req: SaveRequest):
+async def save_history(req: SaveRequest, _auth: tuple = Depends(require_auth)):
     """保存或更新会话记录。"""
     now = time.time()
     db = get_db()
@@ -110,7 +111,7 @@ async def save_history(req: SaveRequest):
 
 
 @router.delete("/history/{thread_id}")
-async def delete_history(thread_id: str):
+async def delete_history(thread_id: str, _auth: tuple = Depends(require_auth)):
     """删除某次会话。"""
     db = get_db()
     db.execute("DELETE FROM conversations WHERE id = ?", (thread_id,))
