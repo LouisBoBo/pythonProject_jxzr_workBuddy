@@ -1,6 +1,8 @@
 """
 平台查询工具：封装平台数据查询操作，供 Agent 调用。
 """
+from typing import Annotated
+
 from tools.query_tool.entity_catalog import catalog_summary, get_entity
 from tools.platform_api import get_client
 
@@ -41,24 +43,22 @@ def list_platform_entities() -> dict:
     }
 
 
-def query_platform_data(entity: str, filters: dict | None = None, limit: int = 20) -> dict:
-    """查询平台中指定实体的数据。
-
-    Args:
-        entity: 实体英文 id（如 work-orders、production-plans），也可用中文别名
-        filters: 可选过滤条件，如 {"status": "pending"} 或 {"priority": "high"}
-        limit: 返回记录上限，默认 20
-    """
+def query_platform_data(
+    entity: Annotated[str, "实体英文 id（如 work-orders、production-plans），也可用中文别名"],
+    filters: Annotated[
+        dict | None, '可选过滤条件，如 {"status": "pending"} 或 {"priority": "high"}'
+    ] = None,
+    limit: Annotated[int, "返回记录上限，默认 20"] = 20,
+) -> dict:
+    """查询平台中指定实体的数据。"""
     client = get_client()
     return client.query(entity, filters, limit)
 
 
-def describe_entity(entity: str) -> dict:
-    """查看平台中某个实体的字段结构和样例数据。
-
-    Args:
-        entity: 实体英文 id 或中文别名
-    """
+def describe_entity(
+    entity: Annotated[str, "实体英文 id 或中文别名"],
+) -> dict:
+    """查看平台中某个实体的字段结构和样例数据。"""
     client = get_client()
     result = client.describe_entity(entity)
     # 补充目录中的别名与标注字段，方便 Agent 对照

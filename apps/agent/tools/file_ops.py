@@ -5,7 +5,7 @@ import csv
 import json
 import os
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Literal
 
 import pandas as pd
 
@@ -14,21 +14,18 @@ from tools.platform_api import get_client
 
 
 def import_file_to_platform(
-    file_path: str,
-    target_entity: str,
-    file_type: Literal["csv", "excel", "json"] | None = None,
-    sheet_name: str = "Sheet1",
+    file_path: Annotated[str, "本地文件的绝对路径（如 /Users/xxx/data/orders.csv）"],
+    target_entity: Annotated[str, "平台目标实体英文 id（如 work-orders、production-plans）"],
+    file_type: Annotated[
+        Literal["csv", "excel", "json"] | None,
+        "文件类型；不传则按扩展名自动判断",
+    ] = None,
+    sheet_name: Annotated[str, "Excel 工作表名，默认 Sheet1"] = "Sheet1",
 ) -> dict:
     """从本地文件读取数据，导入到平台指定实体中。
 
     支持 CSV、Excel(.xlsx/.xls) 和 JSON 格式。
     Agent 应该先调用 list_platform_entities 确认目标实体存在。
-
-    Args:
-        file_path: 本地文件的绝对路径（如 /Users/xxx/data/orders.csv）
-        target_entity: 平台中的目标实体名称（如 orders、devices、products）
-        file_type: 文件类型。不传则自动根据扩展名判断
-        sheet_name: Excel 文件的工作表名，默认 Sheet1
     """
     if not os.path.exists(file_path):
         return {"error": f"文件不存在: {file_path}"}
@@ -97,19 +94,14 @@ def import_file_to_platform(
 
 
 def export_platform_data(
-    entity: str,
-    output_format: Literal["csv", "excel", "json"] = "csv",
-    filters: dict | None = None,
-    output_dir: str | None = None,
+    entity: Annotated[str, "平台实体英文 id 或中文别名"],
+    output_format: Annotated[
+        Literal["csv", "excel", "json"], "导出格式：csv / excel / json"
+    ] = "csv",
+    filters: Annotated[dict | None, '可选过滤条件，如 {"status": "生产中"}'] = None,
+    output_dir: Annotated[str | None, "输出目录；默认使用配置的 EXPORT_DIR"] = None,
 ) -> dict:
-    """从平台导出指定实体的数据到本地文件。
-
-    Args:
-        entity: 平台中的实体名称（如 orders、devices、products）
-        output_format: 导出格式，可选 csv / excel / json
-        filters: 可选的过滤条件，如 {"status": "生产中"}
-        output_dir: 输出目录，默认为配置的 EXPORT_DIR
-    """
+    """从平台导出指定实体的数据到本地文件。"""
     client = get_client()
 
     # 获取数据
@@ -149,21 +141,18 @@ def export_platform_data(
 
 
 def transform_file(
-    file_path: str,
-    output_format: Literal["csv", "excel", "json"],
-    column_map: dict[str, str] | None = None,
-    filter_condition: str | None = None,
-    sort_by: str | None = None,
+    file_path: Annotated[str, "输入文件路径"],
+    output_format: Annotated[Literal["csv", "excel", "json"], "输出格式：csv / excel / json"],
+    column_map: Annotated[
+        dict[str, str] | None,
+        '字段名映射，如 {"客户名": "customer", "产量": "quantity"}',
+    ] = None,
+    filter_condition: Annotated[
+        str | None, 'pandas 查询表达式，如 "quantity > 100"'
+    ] = None,
+    sort_by: Annotated[str | None, "排序字段名"] = None,
 ) -> dict:
-    """读取一个文件，进行格式转换、字段映射、筛选和排序，输出为新文件。
-
-    Args:
-        file_path: 输入文件路径
-        output_format: 输出格式
-        column_map: 字段名映射，如 {"客户名": "customer", "产量": "quantity"}
-        filter_condition: pandas 查询表达式，如 "quantity > 100"
-        sort_by: 排序字段名
-    """
+    """读取一个文件，进行格式转换、字段映射、筛选和排序，输出为新文件。"""
     if not os.path.exists(file_path):
         return {"error": f"文件不存在: {file_path}"}
 
@@ -220,13 +209,11 @@ def transform_file(
         return {"error": f"转换失败: {str(e)}"}
 
 
-def preview_file(file_path: str, rows: int = 5) -> dict:
-    """预览文件的前 N 行内容，帮助确认数据格式是否正确。
-
-    Args:
-        file_path: 文件路径
-        rows: 预览行数，默认 5 行
-    """
+def preview_file(
+    file_path: Annotated[str, "文件路径"],
+    rows: Annotated[int, "预览行数，默认 5"] = 5,
+) -> dict:
+    """预览文件的前 N 行内容，帮助确认数据格式是否正确。"""
     if not os.path.exists(file_path):
         return {"error": f"文件不存在: {file_path}"}
 

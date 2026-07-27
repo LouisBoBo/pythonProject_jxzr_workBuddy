@@ -119,10 +119,10 @@ export function streamMessage(message, threadId, onEvent, onDone, onError, fileP
             } else if (type === 'token' || data.token != null) {
               const text = data.text != null ? data.text : data.token
               await handleEvent({ type: 'token', text, token: text })
-            } else if (type === 'status' || type === 'step') {
+            } else if (type === 'status' || type === 'step' || type === 'confirm') {
               await handleEvent(data)
               await paintFrame()
-              if (type === 'step') {
+              if (type === 'step' || type === 'confirm') {
                 await new Promise((r) => setTimeout(r, 40))
               }
             } else {
@@ -135,7 +135,19 @@ export function streamMessage(message, threadId, onEvent, onDone, onError, fileP
       }
     }
   }).catch((err) => {
-    if (typeof onError === 'function') return onError(err)
+    if (typeof onError === 'function') {
+      const msg =
+        typeof err === 'string'
+          ? err
+          : (err?.message || String(err) || '网络请求失败')
+      // 浏览器直连 API 失败时常见 Failed to fetch
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        return onError(
+          `${msg}（连不上 API :8765，请确认已启动 ./scripts/dev.sh，或检查 Vite 是否指向正确地址）`
+        )
+      }
+      return onError(msg)
+    }
     throw err
   })
 }
@@ -170,5 +182,29 @@ export function convertDocument(file) {
   return api.post('/convert', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 180000,
+  })
+}
+
+export function confirmWrite(actionId) {
+  return api.post(`/writes/actions/${encodeURIComponent(actionId)}/confirm`)
+}
+
+export function cancelWrite(actionId) {
+  return api.post(`/writes/actions/${encodeURIComponent(actionId)}/cancel`)
+}
+
+export function fetchPendingWrites(threadId) {
+  return api.get('/writes/pending', {
+    params: threadId ? { thread_id: threadId } : undefined,
+  })
+}
+
+export function fetchWriteAudit({ threadId, tool, limit = 50 } = {}) {
+  return api.get('/writes/audit', {
+    params: {
+      thread_id: threadId || undefined,
+      tool: tool || undefined,
+      limit,
+    },
   })
 }

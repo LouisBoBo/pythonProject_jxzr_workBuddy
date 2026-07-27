@@ -21,12 +21,14 @@ if str(AGENT_PATH) not in sys.path:
     sys.path.insert(0, str(AGENT_PATH))
 
 from agents.agent import create_agent, build_model  # noqa: E402
+from middleware.request_context import get_thread_id, get_user_id, get_username  # noqa: E402
 
 # 工具 → 中文短标题（过程区只显示这些，不 dump 原始内容）
 _TOOL_LABELS = {
     "query_platform_data": "查询平台数据",
     "list_platform_entities": "列出可查实体",
     "get_platform_summary": "汇总平台数据",
+    "describe_entity": "查看实体结构",
     "read_file": "查阅技能说明",
     "write_file": "写入文件",
     "edit_file": "编辑文件",
@@ -34,8 +36,22 @@ _TOOL_LABELS = {
     "glob": "搜索文件",
     "grep": "检索内容",
     "execute": "执行命令",
-    "import_platform_data": "导入平台数据",
+    "import_file_to_platform": "导入平台数据",
     "export_platform_data": "导出平台数据",
+    "preview_file": "预览文件",
+    "transform_file": "转换文件",
+    "query_write_audit": "查询导入审计",
+    "list_schema_domains": "列出表结构业务域",
+    "list_schema_tables": "检索表结构",
+    "describe_schema_table": "查看表结构详情",
+    "analyze_schema_capabilities": "分析业务能力",
+    "rebuild_schema_index": "重建表结构索引",
+    "list_business_scenarios": "列出业务场景表包",
+    "get_scenario_table_pack": "获取场景相关表",
+    "export_schema_survey_report": "导出摸底报告",
+    "list_platform_capabilities": "人话能力地图",
+    "describe_platform_capability": "能力模块详情",
+    "list_platform_glossary": "术语小抄",
 }
 
 _LINE_PREFIX = re.compile(r"(?m)^\s*\d+\|")
@@ -92,9 +108,50 @@ def _parse_jsonish(obj: Any) -> Any:
             try:
                 return json.loads(s)
             except Exception:
-                return s
+                pass
+        # Tool 输出偶发夹带前后缀，尝试截取首个 JSON 对象
+        extracted = _extract_json_object(s)
+        if extracted is not None:
+            return extracted
         return s
     return obj
+
+
+def _extract_json_object(text: str) -> Any | None:
+    if not text or "__write_confirm__" not in text and "pending_confirmation" not in text:
+        # 仍尝试通用截取
+        start = text.find("{") if text else -1
+    else:
+        start = text.find("{")
+    if start < 0:
+        return None
+    # 从第一个 { 起做括号匹配
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                chunk = text[start : i + 1]
+                try:
+                    return json.loads(chunk)
+                except Exception:
+                    return None
+    return None
 
 
 def _entity_hint(inp: Any) -> str:
@@ -136,7 +193,7 @@ def _input_detail(name: str, inp: Any) -> str:
             lines.append(f"路径：{path}")
         if data.get("limit") is not None:
             lines.append(f"读取行数：{data['limit']}")
-    elif name in ("import_platform_data", "export_platform_data"):
+    elif name in ("import_file_to_platform", "export_platform_data"):
         for k in ("entity", "target_entity", "file_path", "output_format"):
             if data.get(k):
                 lines.append(f"{k}：{data[k]}")
@@ -163,6 +220,17 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
     if isinstance(data, dict):
         if data.get("error"):
             return f"失败：{data.get('error')}", []
+
+        if data.get("status") == "pending_confirmation" or data.get("__write_confirm__"):
+            summary = data.get("summary") or "等待确认写入"
+            preview_rows = []
+            pv = data.get("preview") if isinstance(data.get("preview"), dict) else {}
+            for row in (pv.get("sample_rows") or [])[:3]:
+                if isinstance(row, dict):
+                    preview_rows.append(" · ".join(f"{k}={v}" for k, v in list(row.items())[:4]))
+                else:
+                    preview_rows.append(str(row)[:100])
+            return f"待确认：{summary}", preview_rows
 
         if "total" in data or "records" in data:
             entity = data.get("entity") or ""
@@ -231,8 +299,11 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
 
 def _is_tool_failure(detail_src: Any) -> bool:
     data = _parse_jsonish(detail_src)
-    if isinstance(data, dict) and data.get("error"):
-        return True
+    if isinstance(data, dict):
+        if data.get("status") == "pending_confirmation" or data.get("__write_confirm__"):
+            return False
+        if data.get("error"):
+            return True
     if isinstance(data, str):
         s = data.strip()
         if s.startswith("实体守卫") or s.startswith("[错误]"):
@@ -240,6 +311,49 @@ def _is_tool_failure(detail_src: Any) -> bool:
         if len(s) <= 240 and (s.lower().startswith("error") or "失败" in s[:40]):
             return True
     return False
+
+
+def _extract_write_confirm(detail_src: Any) -> dict[str, Any] | None:
+    data = _parse_jsonish(detail_src)
+    if isinstance(data, str):
+        data = _extract_json_object(data) or data
+    if not isinstance(data, dict):
+        # 再扫一遍原始文本
+        text = _as_text(detail_src)
+        data = _extract_json_object(text) if text else None
+    if not isinstance(data, dict):
+        return None
+    if not (data.get("__write_confirm__") or data.get("status") == "pending_confirmation"):
+        return None
+    if not data.get("action_id"):
+        return None
+    return data
+
+
+def _confirm_from_pending_store(thread_id: str, tool_name: str | None = None) -> dict[str, Any] | None:
+    """当 SSE 解析失败时，从落盘 pending 回补确认事件。"""
+    try:
+        from middleware.write_store import list_pending
+        from middleware.write_tools import WRITE_TOOLS
+    except Exception:
+        return None
+    if tool_name and tool_name not in WRITE_TOOLS and tool_name != "import_file_to_platform":
+        return None
+    items = list_pending(thread_id=thread_id or "default")
+    if not items:
+        return None
+    action = items[0]
+    preview = action.get("preview") if isinstance(action.get("preview"), dict) else {}
+    return {
+        "__write_confirm__": True,
+        "status": "pending_confirmation",
+        "action_id": action.get("action_id"),
+        "tool": action.get("tool") or tool_name,
+        "thread_id": action.get("thread_id") or thread_id,
+        "summary": preview.get("summary") or "待确认写入平台",
+        "preview": preview,
+        "message": "写操作已挂起，请在界面确认或取消。",
+    }
 
 
 def _tool_name(event: dict) -> str:
@@ -253,7 +367,7 @@ def _tool_name(event: dict) -> str:
 def _tool_label(name: str, inp: Any = None) -> str:
     base = _TOOL_LABELS.get(name, name)
     hint = _entity_hint(inp)
-    if hint and name in ("query_platform_data", "import_platform_data", "export_platform_data"):
+    if hint and name in ("query_platform_data", "import_file_to_platform", "export_platform_data"):
         return f"{base} · {hint}"
     if hint and name == "read_file":
         if "SKILL" in hint or "skill" in hint.lower():
@@ -304,6 +418,20 @@ class AgentRunner:
             self._agent = create_agent(model=self._model)
         return self._agent
 
+    def reset_agent(self) -> None:
+        """网络/DNS 异常后丢弃单例，下次请求重建客户端。"""
+        self._agent = None
+        self._model = None
+
+    def _run_config(self, thread_id: str) -> dict[str, Any]:
+        return {
+            "configurable": {
+                "thread_id": thread_id or get_thread_id() or "default",
+                "user_id": get_user_id(),
+                "username": get_username(),
+            }
+        }
+
     def _build_message(self, message: str, file_paths: list[str] | None = None) -> str:
         if not file_paths:
             return message
@@ -314,7 +442,7 @@ class AgentRunner:
         final_message = self._build_message(message, file_paths)
         result = self.agent.invoke(
             {"messages": [{"role": "user", "content": final_message}]},
-            config={"configurable": {"thread_id": thread_id}},
+            config=self._run_config(thread_id),
         )
         return result["messages"][-1].content
 
@@ -324,7 +452,7 @@ class AgentRunner:
         thread_id: str = "default",
         file_paths: list[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """异步流式事件：status / step / token。"""
+        """异步流式事件：status / step / token / confirm。"""
         import asyncio
 
         final_message = self._build_message(message, file_paths)
@@ -335,10 +463,12 @@ class AgentRunner:
         tool_ended = False
         generating_sent = False
         active_runs: set[str] = set()
+        emitted_confirm_ids: set[str] = set()
+        saw_write_tool = False
 
         async for event in self.agent.astream_events(
             {"messages": [{"role": "user", "content": final_message}]},
-            config={"configurable": {"thread_id": thread_id}},
+            config=self._run_config(thread_id),
             version="v2",
         ):
             kind = event.get("event", "")
@@ -347,6 +477,8 @@ class AgentRunner:
                 saw_tool = True
                 generating_sent = False  # 新工具轮次，取消生成态
                 name = _tool_name(event)
+                if name in ("import_file_to_platform", "import_platform_data"):
+                    saw_write_tool = True
                 data = event.get("data") or {}
                 inp = data.get("input")
                 run_id = str(event.get("run_id") or uuid.uuid4())
@@ -369,6 +501,8 @@ class AgentRunner:
                 saw_tool = True
                 tool_ended = True
                 name = _tool_name(event)
+                if name in ("import_file_to_platform", "import_platform_data"):
+                    saw_write_tool = True
                 data = event.get("data") or {}
                 out = data.get("output")
                 detail_src = _unwrap_content(out)
@@ -385,20 +519,42 @@ class AgentRunner:
                 if isinstance(parsed, dict) and parsed.get("entity"):
                     title = _tool_label(name, {"entity": parsed.get("entity")})
                 summary, preview = _result_detail(name, detail_src)
+                confirm = _extract_write_confirm(detail_src)
+                if not confirm and name in (
+                    "import_file_to_platform",
+                    "import_platform_data",
+                ):
+                    confirm = _confirm_from_pending_store(thread_id, name)
+                step_state = "waiting" if confirm else ("done" if ok else "error")
                 yield {
                     "type": "step",
                     "id": run_id,
                     "tool": name,
                     "phase": "end",
-                    "state": "done" if ok else "error",
+                    "state": step_state,
                     "title": title,
                     "args": _input_detail(name, data.get("input")) if data.get("input") else "",
                     "detail": summary,
                     "preview": preview,
-                    "ok": ok,
+                    "ok": ok if not confirm else None,
                 }
+                if confirm and confirm.get("action_id"):
+                    aid = str(confirm.get("action_id"))
+                    if aid not in emitted_confirm_ids:
+                        emitted_confirm_ids.add(aid)
+                        pv = confirm.get("preview") if isinstance(confirm.get("preview"), dict) else {}
+                        yield {
+                            "type": "confirm",
+                            "action_id": aid,
+                            "tool": confirm.get("tool") or name,
+                            "thread_id": confirm.get("thread_id") or thread_id,
+                            "summary": confirm.get("summary") or summary,
+                            "preview": pv,
+                            "message": confirm.get("message") or "请确认是否写入平台",
+                        }
+                        yield {"type": "status", "text": "等待你确认写入…", "phase": "waiting"}
                 # 工具间隙：提示仍在推进（可能还有下一轮工具），不要过早宣称「生成回答」
-                if not active_runs:
+                elif not active_runs:
                     yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
                 await asyncio.sleep(0.02)
                 continue
@@ -451,3 +607,21 @@ class AgentRunner:
 
                 yield {"type": "token", "text": text, "token": text}
                 continue
+
+        # 流结束兜底：本轮调用了写工具但未成功推送 confirm 时，从 pending 回补
+        if saw_write_tool and not emitted_confirm_ids:
+            try:
+                pending = _confirm_from_pending_store(thread_id)
+                if pending and pending.get("action_id"):
+                    pv = pending.get("preview") if isinstance(pending.get("preview"), dict) else {}
+                    yield {
+                        "type": "confirm",
+                        "action_id": pending.get("action_id"),
+                        "tool": pending.get("tool") or "import_file_to_platform",
+                        "thread_id": pending.get("thread_id") or thread_id,
+                        "summary": pending.get("summary") or "待确认写入平台",
+                        "preview": pv,
+                        "message": pending.get("message") or "请确认是否写入平台",
+                    }
+            except Exception:
+                pass

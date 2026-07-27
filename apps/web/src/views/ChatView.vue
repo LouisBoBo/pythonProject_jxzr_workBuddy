@@ -33,7 +33,13 @@
             @update:collapsed="(v) => { msg.processCollapsed = v }"
           />
           <div class="msg-body" v-if="msg.content" v-html="renderMarkdown(msg.content)"></div>
-          <div class="msg-actions" v-if="msg.content">
+          <WriteConfirmCard
+            v-for="card in (msg.confirms || [])"
+            :key="card.action_id"
+            :card="card"
+            @resolved="(payload) => onConfirmResolved(msg, payload)"
+          />
+          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -99,6 +105,12 @@
             </span>
             <span v-else v-html="renderMarkdown(streamContent)"></span>
           </div>
+          <WriteConfirmCard
+            v-for="card in streamConfirms"
+            :key="card.action_id"
+            :card="card"
+            @resolved="(payload) => onStreamConfirmResolved(payload)"
+          />
         </div>
       </div>
     </div>
@@ -172,8 +184,9 @@
 <script setup>
 import { ref, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { streamMessage, uploadFile, saveHistory, getHistoryDetail } from '../api.js'
+import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
+import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -187,6 +200,7 @@ const streamProcessCollapsed = ref(false)
 const streamDurationText = ref('')
 const streamStartedAt = ref(0)
 const streamAnswerPending = ref(false)
+const streamConfirms = ref([])
 const msgContainer = ref(null)
 const inputEl = ref(null)
 const fileInput = ref(null)
@@ -267,12 +281,79 @@ function scrollToBottom() {
   })
 }
 
+function pendingItemToCard(item) {
+  const preview = item?.preview || {}
+  return {
+    action_id: item.action_id,
+    status: 'pending',
+    tool: item.tool,
+    thread_id: item.thread_id,
+    summary: preview.summary || `待确认写入：${item.tool || '写操作'}`,
+    preview,
+    message: '',
+  }
+}
+
+function mergeConfirmCards(existing, incoming) {
+  const map = new Map()
+  for (const c of existing || []) {
+    if (c?.action_id) map.set(c.action_id, c)
+  }
+  for (const c of incoming || []) {
+    if (!c?.action_id) continue
+    const prev = map.get(c.action_id)
+    map.set(c.action_id, prev ? { ...prev, ...c } : c)
+  }
+  return Array.from(map.values())
+}
+
+async function attachPendingConfirms(targetThread) {
+  if (!targetThread) return
+  try {
+    const res = await fetchPendingWrites(targetThread)
+    const items = res.data?.items || []
+    if (!items.length) return
+    const cards = items.map(pendingItemToCard)
+    // 优先挂到最近一条助手消息；若无则进 streamConfirms（流中）或新建一条助手消息
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const msg = messages.value[i]
+      if (msg.role !== 'assistant') continue
+      msg.confirms = mergeConfirmCards(msg.confirms || [], cards)
+      const stable = buildImportSummaryMarkdown(cards[0]?.preview)
+      if (stable) msg.content = stable
+      await persistSession()
+      scrollToBottom()
+      return
+    }
+    if (streaming.value) {
+      streamConfirms.value = mergeConfirmCards(streamConfirms.value, cards)
+      const stable = buildImportSummaryMarkdown(cards[0]?.preview)
+      if (stable) streamContent.value = stable
+      scrollToBottom()
+      return
+    }
+    const stable = buildImportSummaryMarkdown(cards[0]?.preview)
+    messages.value.push({
+      role: 'assistant',
+      content: stable || '有待确认的写操作，请确认或取消：',
+      confirms: cards,
+      process: [],
+      processCollapsed: true,
+    })
+    await persistSession()
+    scrollToBottom()
+  } catch (e) {
+    console.warn('拉取待确认写操作失败', e)
+  }
+}
+
 function persistableMessages() {
   return messages.value.map(m => ({
     role: m.role,
     content: m.content,
     ...(m.meta ? { meta: m.meta } : {}),
     ...(m.process?.length ? { process: m.process } : {}),
+    ...(m.confirms?.length ? { confirms: m.confirms } : {}),
   }))
 }
 
@@ -297,6 +378,7 @@ async function loadSession(id) {
   threadId.value = id
   streamContent.value = ''
   streamProcess.value = []
+  streamConfirms.value = []
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
   attachedFiles.value = []
@@ -305,13 +387,27 @@ async function loadSession(id) {
   copiedIndex.value = -1
   try {
     const resp = await getHistoryDetail(id)
-    messages.value = (resp.data.messages || []).map(m => ({
-      role: m.role,
-      content: m.content,
-      meta: m.meta,
-      process: m.process || [],
-      processCollapsed: true,
-    }))
+    messages.value = (resp.data.messages || []).map(m => {
+      let content = m.content || ''
+      const confirms = (m.confirms || [])
+        .filter((c) => !c.status || c.status === 'pending' || c.status === 'pending_confirmation')
+        .map((c) => ({ ...c }))
+      // 正文已有最终结果时，清掉过期的「请去点确认卡」提示
+      if (
+        /已确认写入|已取消写入|\[已确认写入\]|\[已取消\]/.test(content) &&
+        !confirms.length
+      ) {
+        content = scrubPendingConfirmHints(content)
+      }
+      return {
+        role: m.role,
+        content,
+        meta: m.meta,
+        process: m.process || [],
+        confirms,
+        processCollapsed: true,
+      }
+    })
     scrollToBottom()
   } catch {
     // 新会话或尚未入库：空消息即可继续聊
@@ -319,6 +415,7 @@ async function loadSession(id) {
   } finally {
     loadingSession.value = false
     nextTick(() => inputEl.value?.focus())
+    await attachPendingConfirms(id)
   }
 }
 
@@ -330,6 +427,7 @@ function startNewChat() {
   messages.value = []
   streamContent.value = ''
   streamProcess.value = []
+  streamConfirms.value = []
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
   attachedFiles.value = []
@@ -358,6 +456,7 @@ watch(
     streaming.value = false
     streamContent.value = ''
     streamProcess.value = []
+    streamConfirms.value = []
     await loadSession(id)
   }
 )
@@ -394,6 +493,7 @@ async function send(text) {
   streaming.value = true
   streamContent.value = ''
   streamAnswerPending.value = false
+  streamConfirms.value = []
   // 本地先挂一条「分析中」，后续真实步骤会替换掉
   streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: '分析问题…' }]
   streamProcessCollapsed.value = false
@@ -445,6 +545,28 @@ async function send(text) {
     return stepRevealChain
   }
 
+  const upsertConfirm = (event) => {
+    if (!event?.action_id) return
+    const card = {
+      action_id: event.action_id,
+      status: 'pending',
+      tool: event.tool,
+      thread_id: event.thread_id || currentThread,
+      summary: event.summary || '待确认写入平台',
+      preview: event.preview || {},
+      message: event.message || '',
+    }
+    const idx = streamConfirms.value.findIndex((c) => c.action_id === card.action_id)
+    if (idx >= 0) streamConfirms.value[idx] = { ...streamConfirms.value[idx], ...card }
+    else streamConfirms.value = [...streamConfirms.value, card]
+    // 用确认卡预览生成稳定表格正文，避免模型散文/表格来回变
+    const stable = buildImportSummaryMarkdown(card.preview)
+    if (stable) {
+      streamContent.value = stable
+      streamAnswerPending.value = true
+    }
+  }
+
   try {
     const filePaths = files.map(f => f.path).filter(Boolean)
     await streamMessage(
@@ -477,7 +599,7 @@ async function send(text) {
             scrollToBottom()
             return
           }
-          if (event.phase === 'waiting' || /继续/.test(text)) {
+          if (event.phase === 'waiting' || /继续|确认/.test(text)) {
             const rest = streamProcess.value.filter(
               (i) =>
                 i.id !== 'boot' &&
@@ -510,14 +632,21 @@ async function send(text) {
           }
           await enqueueStep(event)
           const stillRunning = streamProcess.value.some((i) => i.state === 'running')
-          if (!stillRunning && (event.phase === 'end' || event.state === 'done' || event.state === 'error')) {
+          if (!stillRunning && (event.phase === 'end' || event.state === 'done' || event.state === 'error' || event.state === 'waiting')) {
             streamAnswerPending.value = true
             streamProcessCollapsed.value = false
             scrollToBottom()
           }
+        } else if (type === 'confirm') {
+          upsertConfirm(event)
+          streamAnswerPending.value = true
+          streamProcessCollapsed.value = false
+          scrollToBottom()
         } else if (type === 'token') {
           const text = event.text != null ? event.text : event.token
           if (!text) return
+          // 已有写确认预览表时，忽略模型后续散文 token，保持表格稳定
+          if (streamConfirms.value.length) return
           flushStepsNow = true
           await stepRevealChain
           streamAnswerPending.value = true
@@ -542,11 +671,18 @@ async function send(text) {
         const processItems = (streamProcess.value || []).filter(
           (i) => i.type === 'step' && i.id !== 'boot'
         )
-        if (streamContent.value || processItems.length) {
+        const confirms = (streamConfirms.value || []).map((c) => ({ ...c }))
+        let finalContent = streamContent.value
+        if (confirms.length) {
+          const stable = buildImportSummaryMarkdown(confirms[0].preview)
+          if (stable) finalContent = stable
+        }
+        if (finalContent || processItems.length || confirms.length) {
           messages.value.push({
             role: 'assistant',
-            content: streamContent.value,
+            content: finalContent,
             process: processItems,
+            confirms,
             processCollapsed: true,
             meta: {
               time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
@@ -556,12 +692,14 @@ async function send(text) {
         }
         streamContent.value = ''
         streamProcess.value = []
+        streamConfirms.value = []
         streamProcessCollapsed.value = false
         streamDurationText.value = ''
         streamAnswerPending.value = false
         streaming.value = false
         scrollToBottom()
         await persistSession()
+        await attachPendingConfirms(currentThread)
       },
       async (err) => {
         if (requestId !== activeRequestId || threadId.value !== currentThread) return
@@ -572,16 +710,19 @@ async function send(text) {
           role: 'assistant',
           content: '[错误] 请求失败：' + errText,
           process: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
+          confirms: (streamConfirms.value || []).map((c) => ({ ...c })),
           processCollapsed: true,
         })
         streamContent.value = ''
         streamProcess.value = []
+        streamConfirms.value = []
         streamProcessCollapsed.value = false
         streamDurationText.value = ''
         streamAnswerPending.value = false
         streaming.value = false
         scrollToBottom()
         await persistSession()
+        await attachPendingConfirms(currentThread)
       },
       filePaths
     )
@@ -591,16 +732,239 @@ async function send(text) {
       role: 'assistant',
       content: '[错误] 连接服务器失败，请确认服务端已启动',
       process: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
+      confirms: (streamConfirms.value || []).map((c) => ({ ...c })),
       processCollapsed: true,
     })
     streamContent.value = ''
     streamProcess.value = []
+    streamConfirms.value = []
     streamProcessCollapsed.value = false
     streamDurationText.value = ''
     streamAnswerPending.value = false
     streaming.value = false
     scrollToBottom()
     await persistSession()
+    await attachPendingConfirms(currentThread)
+  }
+}
+
+function applyConfirmResolved(list, payload) {
+  if (!Array.isArray(list) || !payload?.action_id) return list || []
+  const status = payload.status
+  // 确认成功或取消：移除卡片；失败保留以便重试
+  if (status === 'confirmed' || status === 'cancelled') {
+    return list.filter((c) => c.action_id !== payload.action_id)
+  }
+  return list.map((c) => {
+    if (c.action_id !== payload.action_id) return c
+    return {
+      ...c,
+      status: status || c.status,
+      result: payload.result,
+      error: payload.error,
+    }
+  })
+}
+
+const IMPORT_COL_LABELS = {
+  order_no: '工单号',
+  product_name: '产品名称',
+  product_code: '产品编码',
+  plan_quantity: '计划数量',
+  status: '状态',
+  remark: '备注',
+  production_line: '产线',
+  priority: '优先级',
+  assignee: '负责人',
+}
+
+const ENTITY_LABELS = {
+  'work-orders': '工单',
+  'production-plans': '生产计划',
+  products: '产品',
+  devices: '设备',
+}
+
+/**
+ * 固定导入预览正文为「图二」格式：
+ * 文件预览：N 条XX记录，字段与 `entity` 实体匹配。
+ * 文件摘要：`file.csv`，共 **N 条XX**，目标实体 `entity`（中文名）。
+ * + markdown 表格
+ */
+function buildImportSummaryMarkdown(preview) {
+  if (!preview || typeof preview !== 'object') return ''
+  const file = preview.file || ''
+  const entity = preview.target_entity || ''
+  const entityLabel = ENTITY_LABELS[entity] || '记录'
+  const rowCount = preview.row_count
+  const n = rowCount != null ? Number(rowCount) : null
+  const sample = Array.isArray(preview.sample_rows)
+    ? preview.sample_rows.filter((r) => r && typeof r === 'object')
+    : []
+  const cols = (
+    Array.isArray(preview.columns) && preview.columns.length
+      ? preview.columns
+      : sample[0]
+        ? Object.keys(sample[0])
+        : []
+  ).slice(0, 8)
+
+  const recordWord = entityLabel === '记录' ? '记录' : `${entityLabel}记录`
+  const countWord = entityLabel === '记录' ? '记录' : entityLabel
+
+  let md = ''
+  if (n != null && entity) {
+    md += `文件预览：**${n}** 条${recordWord}，字段与 \`${entity}\` 实体匹配。`
+  } else if (n != null) {
+    md += `文件预览：**${n}** 条${recordWord}。`
+  } else {
+    md += '文件预览完成。'
+  }
+
+  const summaryBits = []
+  if (file) summaryBits.push(`\`${file}\``)
+  if (n != null) summaryBits.push(`共 **${n} 条${countWord}**`)
+  if (entity) {
+    summaryBits.push(
+      entityLabel !== '记录'
+        ? `目标实体 \`${entity}\`（${entityLabel}）`
+        : `目标实体 \`${entity}\``
+    )
+  }
+  if (summaryBits.length) {
+    md += `\n\n文件摘要：${summaryBits.join('，')}。`
+  }
+
+  if (sample.length && cols.length) {
+    const labels = cols.map((c) => IMPORT_COL_LABELS[c] || c)
+    const esc = (v) => String(v ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
+    md += '\n\n| ' + labels.join(' | ') + ' |\n'
+    md += '| ' + cols.map(() => '---').join(' | ') + ' |\n'
+    for (const row of sample.slice(0, 8)) {
+      md += '| ' + cols.map((c) => esc(row[c])).join(' | ') + ' |\n'
+    }
+  }
+  return md.trim()
+}
+
+/** 去掉「请去确认卡片操作」等误导文案 */
+function scrubPendingConfirmHints(text) {
+  if (!text) return ''
+  let out = String(text)
+
+  const dropSentence = (s) => {
+    const t = s.trim()
+    if (!t) return false
+    if (/^已确认写入|^已取消写入|^写入失败|已取消写入，平台数据未变更|^文件预览/.test(t)) return false
+    // 保留已有 markdown 表格行
+    if (/^\|/.test(t)) return false
+    return (
+      /确认卡片/.test(t) ||
+      /请点击.*确认写入/.test(t) ||
+      /点击[「"']?确认写入/.test(t) ||
+      /放弃本次操作/.test(t) ||
+      /写操作已挂起/.test(t) ||
+      /尚未写入平台/.test(t) ||
+      /等待你(?:在界面)?确认/.test(t) ||
+      /等待用户(?:在界面)?确认/.test(t) ||
+      /导入请求已提交/.test(t) ||
+      /现在执行导入/.test(t) ||
+      /不要再次调用导入/.test(t) ||
+      /确认前(?:我)?不会重复发起导入/.test(t) ||
+      /不会重复发起导入/.test(t) ||
+      /确认前[^\n。]{0,20}不会[^\n。]{0,20}导入/.test(t) ||
+      /列名\s*`?[a-z_]+`?/.test(t) // 散文列名罗列，改由表格展示
+    )
+  }
+
+  const parts = out.split(/([。！？\n]+)/)
+  let result = ''
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    if (/^[。！？\n]+$/.test(part)) continue
+    if (dropSentence(part)) {
+      i += 1
+      continue
+    }
+    result += part
+    if (i + 1 < parts.length && /^[。！？\n]+$/.test(parts[i + 1])) {
+      result += parts[i + 1]
+      i += 1
+    }
+  }
+  out = result
+
+  const phrasePatterns = [
+    /系统已生成确认卡片[，,]?[^\n。]*/g,
+    /请在弹出的确认卡片中[^\n。]*/g,
+    /请在确认卡片中[^\n。]*/g,
+    /请点击界面中的[「"']?确认写入[」"']?按钮[^\n。]*/g,
+    /请点击[「"']?确认写入[」"']?[^\n。]*/g,
+    /或点击[「"']?取消[」"']?放弃本次操作[。.]?/g,
+  ]
+  for (const re of phrasePatterns) {
+    out = out.replace(re, '')
+  }
+
+  return out
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[，,]\s*[。.]/g, '。')
+    .trim()
+}
+
+function finalizeWriteMessage(content, tip, preview) {
+  // 有预览数据时固定成「摘要 + 表格 + 结果」，不再依赖模型临时文案
+  const stable = buildImportSummaryMarkdown(preview)
+  if (stable) {
+    if (!tip) return stable
+    if (stable.includes(tip)) return stable
+    return `${stable}\n\n${tip}`
+  }
+  const base = scrubPendingConfirmHints(content || '')
+  if (!tip) return base
+  if (base.includes(tip)) return base
+  return base ? `${base}\n\n${tip}` : tip
+}
+
+function onConfirmResolved(msg, payload) {
+  if (!msg) return
+  const card = (msg.confirms || []).find((c) => c.action_id === payload.action_id)
+  const preview = card?.preview || payload?.preview || null
+  msg.confirms = applyConfirmResolved(msg.confirms || [], payload)
+  if (payload?.status === 'confirmed' && payload?.result) {
+    const r = payload.result
+    const tip = r.error
+      ? `写入失败：${r.error}`
+      : `已确认写入：${r.target_entity || ''} ${r.rows_imported != null ? r.rows_imported + ' 行' : ''}`.trim()
+    msg.content = finalizeWriteMessage(msg.content, tip, preview)
+  } else if (payload?.status === 'cancelled') {
+    msg.content = finalizeWriteMessage(msg.content, '已取消写入，平台数据未变更。', preview)
+  } else if (payload?.status === 'failed' && payload?.error) {
+    const tip = `写入失败：${payload.error}`
+    if (msg.content && !msg.content.includes(tip)) {
+      msg.content = `${msg.content}\n\n${tip}`
+    } else if (!msg.content) {
+      msg.content = tip
+    }
+  }
+  persistSession()
+}
+
+function onStreamConfirmResolved(payload) {
+  const card = (streamConfirms.value || []).find((c) => c.action_id === payload.action_id)
+  const preview = card?.preview || payload?.preview || null
+  streamConfirms.value = applyConfirmResolved(streamConfirms.value, payload)
+  if (!streaming.value) return
+  if (payload?.status === 'confirmed' && payload?.result && !payload.result.error) {
+    const r = payload.result
+    const tip = `已确认写入：${r.target_entity || ''} ${r.rows_imported != null ? r.rows_imported + ' 行' : ''}`.trim()
+    streamContent.value = finalizeWriteMessage(streamContent.value, tip, preview)
+  } else if (payload?.status === 'cancelled') {
+    streamContent.value = finalizeWriteMessage(streamContent.value, '已取消写入，平台数据未变更。', preview)
+  } else if (payload?.status === 'failed') {
+    const tip = `写入失败：${payload.error || ''}`
+    streamContent.value = (streamContent.value || '') + (streamContent.value ? `\n\n${tip}` : tip)
   }
 }
 
@@ -842,6 +1206,7 @@ onMounted(async () => {
   width: fit-content;
   max-width: 100%;
   min-width: 44px;
+  box-sizing: border-box;
 }
 
 .message.user .msg-body {
@@ -855,6 +1220,14 @@ onMounted(async () => {
   background: var(--ui-surface);
   border: 1px solid var(--ui-border);
   border-radius: 16px 16px 16px 4px;
+}
+
+/* 确认卡与同条消息体同宽（跟随较宽的表格气泡拉伸） */
+.message.assistant .msg-content :deep(.write-confirm) {
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .msg-actions {

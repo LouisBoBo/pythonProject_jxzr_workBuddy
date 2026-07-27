@@ -13,6 +13,7 @@ from typing import Any
 
 from middleware.audit_tools import AuditToolMiddleware
 from middleware.entity_guard import EntityGuardMiddleware
+from middleware.write_confirm import WriteConfirmMiddleware
 
 
 def build_custom_middleware() -> list[Any]:
@@ -20,6 +21,7 @@ def build_custom_middleware() -> list[Any]:
 
     - ENABLE_AUDIT_MIDDLEWARE=true（默认 true）：记录工具调用
     - ENABLE_ENTITY_GUARD=true（默认 false）：拦截明显选错实体的查询
+    - REQUIRE_WRITE_CONFIRM=true（默认 true）：写工具须人工确认
     """
     stack: list[Any] = []
 
@@ -28,5 +30,9 @@ def build_custom_middleware() -> list[Any]:
 
     if os.getenv("ENABLE_ENTITY_GUARD", "false").lower() in ("1", "true", "yes"):
         stack.append(EntityGuardMiddleware())
+
+    # 写确认放在守卫之后：先拦错实体，再挂起写操作
+    if os.getenv("REQUIRE_WRITE_CONFIRM", "true").lower() in ("1", "true", "yes"):
+        stack.append(WriteConfirmMiddleware())
 
     return stack

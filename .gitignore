@@ -18,10 +18,14 @@ data/uploads/*
 data/converted/*
 data/exports/*
 data/history/*
+data/writes/*
+data/schema/*
 !data/uploads/.gitkeep
 !data/converted/.gitkeep
 !data/exports/.gitkeep
 !data/history/.gitkeep
+!data/writes/.gitkeep
+!data/schema/.gitkeep
 *.xlsx
 *.csv
 !apps/agent/test_data/**

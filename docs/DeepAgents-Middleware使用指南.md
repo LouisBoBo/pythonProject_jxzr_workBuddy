@@ -128,6 +128,9 @@ ENABLE_AUDIT_MIDDLEWARE=true
 
 # 实体硬守卫（默认 false，确认策略后再开）
 ENABLE_ENTITY_GUARD=false
+
+# 写操作人工确认（默认 true；紧急回滚可 false）
+REQUIRE_WRITE_CONFIRM=true
 ```
 
 改 middleware 代码后重启 API：
@@ -135,6 +138,8 @@ ENABLE_ENTITY_GUARD=false
 ```bash
 ./scripts/stop.sh && ./scripts/dev.sh
 ```
+
+写确认详细说明见 [`M2写操作确认交付说明.md`](./M2写操作确认交付说明.md)。
 
 看审计日志（logger 名 `mes.agent.audit`）：
 

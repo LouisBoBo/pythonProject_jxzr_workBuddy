@@ -16,11 +16,29 @@ from config import Config
 from middleware import build_custom_middleware
 from tools.query_tool.entity_catalog import build_system_prompt
 from tools.file_ops import import_file_to_platform, export_platform_data, transform_file, preview_file
+from tools.write_audit_query import query_write_audit
 from tools.query_tool.platform_query import (
     list_platform_entities,
     query_platform_data,
     describe_entity,
     get_platform_summary,
+)
+from tools.schema_tool.schema_query import (
+    list_schema_domains,
+    list_schema_tables,
+    describe_schema_table,
+    analyze_schema_capabilities,
+    rebuild_schema_index,
+)
+from tools.schema_tool.business_scenarios import (
+    list_business_scenarios,
+    get_scenario_table_pack,
+)
+from tools.schema_tool.schema_report import export_schema_survey_report
+from tools.schema_tool.capability_map import (
+    list_platform_capabilities,
+    describe_platform_capability,
+    list_platform_glossary,
 )
 
 # apps/agent
@@ -39,6 +57,19 @@ TOOLS = [
     export_platform_data,
     transform_file,
     preview_file,
+    query_write_audit,
+    # 表结构文档分析（只读本地 docs，不影响 ERP 查/导）
+    list_schema_domains,
+    list_schema_tables,
+    describe_schema_table,
+    analyze_schema_capabilities,
+    rebuild_schema_index,
+    list_business_scenarios,
+    get_scenario_table_pack,
+    export_schema_survey_report,
+    list_platform_capabilities,
+    describe_platform_capability,
+    list_platform_glossary,
 ]
 
 
@@ -53,6 +84,8 @@ def build_model():
             model=Config.MODEL_NAME,
             api_key=Config.SILICONFLOW_API_KEY,
             base_url=Config.SILICONFLOW_BASE_URL,
+            timeout=120,
+            max_retries=3,
         )
 
     if provider == "deepseek":
@@ -62,6 +95,8 @@ def build_model():
             model=Config.MODEL_NAME,
             api_key=Config.DEEPSEEK_API_KEY,
             base_url=Config.DEEPSEEK_BASE_URL,
+            timeout=120,
+            max_retries=3,
         )
 
     if provider == "openai":
@@ -94,8 +129,8 @@ def create_agent(model=None):
         backend=_build_backend(),
         skills=SKILL_SOURCES,
         middleware=build_custom_middleware(),
-        # 危险写操作可开人工确认，例如：
-        # interrupt_on={"import_file_to_platform": True},
+        # 危险写操作已由 MesWriteConfirmMiddleware + REQUIRE_WRITE_CONFIRM 管控（默认开启）
+        # 勿在此重复开 interrupt_on，除非另行接入 LangGraph resume 审批流。
     )
 
 

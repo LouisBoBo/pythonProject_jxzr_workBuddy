@@ -1,0 +1,414 @@
+<template>
+  <div class="write-confirm" :class="statusClass">
+    <div class="wc-head">
+      <div class="wc-title-row">
+        <span class="wc-badge">写操作确认</span>
+        <span class="wc-hint" v-if="isPending">确认后才会写入平台</span>
+      </div>
+      <p class="wc-summary">{{ card.summary || '待确认写入平台' }}</p>
+    </div>
+
+    <div class="wc-meta" v-if="hasMeta">
+      <div class="wc-meta-item" v-if="preview.target_entity">
+        <span class="wc-k">实体</span>
+        <span class="wc-v">{{ preview.target_entity }}</span>
+      </div>
+      <div class="wc-meta-item" v-if="preview.file">
+        <span class="wc-k">文件</span>
+        <span class="wc-v mono">{{ preview.file }}</span>
+      </div>
+      <div class="wc-meta-item" v-if="preview.row_count != null">
+        <span class="wc-k">行数</span>
+        <span class="wc-v strong">{{ preview.row_count }}</span>
+      </div>
+    </div>
+
+    <div class="wc-section" v-if="preview?.columns?.length">
+      <div class="wc-label">字段</div>
+      <div class="wc-chips">
+        <span class="wc-chip" v-for="c in preview.columns.slice(0, 16)" :key="c">{{ c }}</span>
+        <span v-if="preview.columns.length > 16" class="wc-more">+{{ preview.columns.length - 16 }}</span>
+      </div>
+    </div>
+
+    <div class="wc-section" v-if="sampleRows.length">
+      <div class="wc-label">样例数据</div>
+      <div class="wc-table-wrap">
+        <table class="wc-table">
+          <thead>
+            <tr>
+              <th v-for="col in sampleColumns" :key="col">{{ col }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in sampleRows" :key="i">
+              <td v-for="col in sampleColumns" :key="col">{{ formatCell(row[col]) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="wc-actions" v-if="isPending">
+      <button type="button" class="wc-btn cancel" :disabled="busy" @click="onCancel">取消</button>
+      <button type="button" class="wc-btn confirm" :disabled="busy" @click="onConfirm">
+        {{ busy ? '处理中…' : '确认写入' }}
+      </button>
+    </div>
+    <div class="wc-result" v-else>
+      <template v-if="card.status === 'confirmed'">已写入平台</template>
+      <template v-else-if="card.status === 'cancelled'">已取消，未写入</template>
+      <template v-else-if="card.status === 'failed'">写入失败：{{ card.error || '未知错误' }}</template>
+      <template v-else>{{ card.status || '待确认' }}</template>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { computed, ref } from 'vue'
+import { confirmWrite, cancelWrite } from '../api.js'
+
+const props = defineProps({
+  card: {
+    type: Object,
+    required: true,
+  },
+})
+
+const emit = defineEmits(['resolved'])
+
+const busy = ref(false)
+
+const preview = computed(() => props.card?.preview || {})
+
+const hasMeta = computed(
+  () =>
+    preview.value?.target_entity ||
+    preview.value?.file ||
+    preview.value?.row_count != null
+)
+
+const isPending = computed(() => {
+  const s = props.card?.status
+  return !s || s === 'pending' || s === 'pending_confirmation'
+})
+
+const sampleRows = computed(() => {
+  const rows = preview.value?.sample_rows
+  if (!Array.isArray(rows)) return []
+  return rows.filter((r) => r && typeof r === 'object').slice(0, 5)
+})
+
+const sampleColumns = computed(() => {
+  const cols = preview.value?.columns
+  if (Array.isArray(cols) && cols.length) return cols.slice(0, 8)
+  const rows = sampleRows.value
+  if (!rows.length) return []
+  return Object.keys(rows[0]).slice(0, 8)
+})
+
+const statusClass = computed(() => {
+  if (isPending.value) return 'is-pending'
+  const s = props.card?.status || 'pending'
+  return `is-${s}`
+})
+
+function formatCell(v) {
+  if (v == null || v === '') return '—'
+  return String(v)
+}
+
+async function onConfirm() {
+  if (busy.value || !props.card?.action_id) return
+  busy.value = true
+  try {
+    const res = await confirmWrite(props.card.action_id)
+    const data = res.data || {}
+    emit('resolved', {
+      action_id: props.card.action_id,
+      status: data.status || 'confirmed',
+      result: data.result,
+    })
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '确认失败'
+    emit('resolved', {
+      action_id: props.card.action_id,
+      status: 'failed',
+      error: typeof msg === 'string' ? msg : JSON.stringify(msg),
+    })
+  } finally {
+    busy.value = false
+  }
+}
+
+async function onCancel() {
+  if (busy.value || !props.card?.action_id) return
+  busy.value = true
+  try {
+    await cancelWrite(props.card.action_id)
+    emit('resolved', {
+      action_id: props.card.action_id,
+      status: 'cancelled',
+    })
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '取消失败'
+    emit('resolved', {
+      action_id: props.card.action_id,
+      status: 'failed',
+      error: typeof msg === 'string' ? msg : JSON.stringify(msg),
+    })
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<style scoped>
+.write-confirm {
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0 2px;
+  padding: 14px 16px 12px;
+  border: 1px solid #e6d5c8;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 248, 242, 0.95) 0%, #fff 48%);
+  color: var(--ui-text, #1a1f26);
+  box-shadow: 0 1px 0 rgba(196, 92, 38, 0.06);
+}
+
+.write-confirm.is-confirmed {
+  border-color: #c5ddce;
+  background: linear-gradient(180deg, #f4faf6 0%, #fff 50%);
+  box-shadow: none;
+}
+
+.write-confirm.is-cancelled,
+.write-confirm.is-failed {
+  border-color: #d8dee6;
+  background: #f8f9fb;
+  box-shadow: none;
+}
+
+.wc-head {
+  margin-bottom: 12px;
+}
+
+.wc-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.wc-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #c45c26;
+  font-weight: 700;
+}
+
+.is-confirmed .wc-badge {
+  color: #2f7d4a;
+}
+
+.wc-hint {
+  font-size: 12px;
+  color: #9a6b52;
+  background: rgba(196, 92, 38, 0.08);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.wc-summary {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: #1f2630;
+}
+
+.wc-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.wc-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid #efe4db;
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.wc-k {
+  font-size: 11px;
+  color: #8a7468;
+}
+
+.wc-v {
+  font-size: 13px;
+  color: #2a3340;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wc-v.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.wc-v.strong {
+  font-weight: 700;
+  color: #c45c26;
+}
+
+.wc-section {
+  margin-bottom: 12px;
+}
+
+.wc-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #7a8494;
+  margin-bottom: 6px;
+}
+
+.wc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wc-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #f4f1ee;
+  color: #4a5360;
+  border: 1px solid #e8e1db;
+}
+
+.wc-more {
+  font-size: 12px;
+  color: #7a8494;
+  align-self: center;
+}
+
+.wc-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #eadfd6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.wc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wc-table th,
+.wc-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid #f0e8e1;
+  white-space: nowrap;
+}
+
+.wc-table th {
+  background: #faf6f3;
+  color: #6b5b50;
+  font-weight: 600;
+}
+
+.wc-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.wc-table td {
+  color: #3a4250;
+}
+
+.wc-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid #eadfd6;
+}
+
+.wc-btn {
+  border: 1px solid transparent;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #fff;
+  border-radius: 8px;
+  min-width: 96px;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.wc-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.wc-btn.cancel {
+  border-color: #d0d7e0;
+  color: #3a4250;
+  background: #fff;
+}
+
+.wc-btn.cancel:hover:not(:disabled) {
+  background: #f3f5f8;
+}
+
+.wc-btn.confirm {
+  background: #c45c26;
+  color: #fff !important;
+  border-color: #c45c26;
+}
+
+.wc-btn.confirm:hover:not(:disabled) {
+  background: #a84c1e;
+}
+
+.wc-result {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e6ebf0;
+  font-size: 13px;
+  color: #3a4250;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .wc-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .wc-title-row {
+    flex-wrap: wrap;
+  }
+}
+</style>

@@ -81,7 +81,11 @@ const visibleItems = computed(() =>
 
 const hasRunning = computed(() =>
   visibleItems.value.some(
-    (i) => i.state === 'running' || i.phase === 'generating' || i.phase === 'waiting'
+    (i) =>
+      i.state === 'running' ||
+      i.state === 'waiting' ||
+      i.phase === 'generating' ||
+      i.phase === 'waiting'
   )
 )
 
@@ -102,6 +106,7 @@ function toggle() {
 
 function itemClass(item) {
   if (item.phase === 'generating' || item.phase === 'waiting' || item.state === 'running') return 'is-running'
+  if (item.state === 'waiting') return 'is-running'
   if (item.state === 'error' || item.ok === false) return 'is-error'
   if (item.state === 'done' || item.phase === 'end') return 'is-ok'
   if (item.type === 'status') return 'is-status'
@@ -116,6 +121,7 @@ function itemLabel(item) {
 function statusLabel(item) {
   if (item.phase === 'generating') return '生成中'
   if (item.phase === 'waiting') return '整理中'
+  if (item.state === 'waiting') return '待确认'
   if (item.state === 'running') return '执行中'
   if (item.state === 'error' || item.ok === false) return '失败'
   if (item.state === 'done' || item.phase === 'end') return '完成'
