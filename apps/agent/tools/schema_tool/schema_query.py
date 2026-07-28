@@ -194,9 +194,9 @@ def analyze_schema_capabilities(
         dname = t.get("domain") or "未分类"
         by_domain.setdefault(dname, []).append(t)
 
-    # 按前缀聚合能力
+    # 按前缀聚合能力（聚焦时只统计过滤后的表，与报告逻辑一致）
     by_prefix: dict[str, int] = {}
-    for t in index.get("tables") or []:
+    for t in tables:
         p = t.get("table_prefix") or "?"
         by_prefix[p] = by_prefix.get(p, 0) + 1
 

@@ -49,10 +49,14 @@
       </div>
     </div>
 
+    <div class="wc-error" v-if="isPending && card.error">
+      上次写入失败：{{ card.error }}（可再次确认重试）
+    </div>
+
     <div class="wc-actions" v-if="isPending">
       <button type="button" class="wc-btn cancel" :disabled="busy" @click="onCancel">取消</button>
       <button type="button" class="wc-btn confirm" :disabled="busy" @click="onConfirm">
-        {{ busy ? '处理中…' : '确认写入' }}
+        {{ busy ? '处理中…' : (card.error ? '重试写入' : '确认写入') }}
       </button>
     </div>
     <div class="wc-result" v-else>
@@ -128,6 +132,7 @@ async function onConfirm() {
       action_id: props.card.action_id,
       status: data.status || 'confirmed',
       result: data.result,
+      preview: data.preview || props.card.preview,
     })
   } catch (err) {
     const msg = err?.response?.data?.detail || err?.message || '确认失败'
@@ -135,6 +140,7 @@ async function onConfirm() {
       action_id: props.card.action_id,
       status: 'failed',
       error: typeof msg === 'string' ? msg : JSON.stringify(msg),
+      preview: props.card.preview,
     })
   } finally {
     busy.value = false
@@ -145,10 +151,12 @@ async function onCancel() {
   if (busy.value || !props.card?.action_id) return
   busy.value = true
   try {
-    await cancelWrite(props.card.action_id)
+    const res = await cancelWrite(props.card.action_id)
+    const data = res.data || {}
     emit('resolved', {
       action_id: props.card.action_id,
       status: 'cancelled',
+      preview: data.preview || props.card.preview,
     })
   } catch (err) {
     const msg = err?.response?.data?.detail || err?.message || '取消失败'
@@ -156,6 +164,7 @@ async function onCancel() {
       action_id: props.card.action_id,
       status: 'failed',
       error: typeof msg === 'string' ? msg : JSON.stringify(msg),
+      preview: props.card.preview,
     })
   } finally {
     busy.value = false
@@ -194,6 +203,17 @@ async function onCancel() {
 
 .wc-head {
   margin-bottom: 12px;
+}
+
+.wc-error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #9a3412;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
 }
 
 .wc-title-row {

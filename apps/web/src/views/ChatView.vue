@@ -4,7 +4,7 @@
     <div class="messages-container" ref="msgContainer">
       <div v-if="messages.length === 0 && !loadingSession" class="empty-state">
         <div class="logo">MES 运维助手</div>
-        <p class="empty-desc">用自然语言管理 PCB 工单数据</p>
+        <p class="empty-desc">用自然语言管理 PCB MES系统</p>
         <div class="suggestions">
           <button v-for="s in suggestions" :key="s" class="suggest-btn" @click="send(s)">
             {{ s }}
@@ -212,11 +212,12 @@ const editingFromIndex = ref(-1)
 let activeRequestId = 0
 let copiedTimer = null
 
+// 首页快捷问法：对齐 docs/平台业务能力理解测试用例.md（表结构能力，非模拟查/导）
 const suggestions = [
-  '帮我看看平台有哪些工单',
-  '导入 test_data/new_orders.csv',
-  '导出全部工单为 Excel',
-  '查一下待排产的工单',
+  '平台能干什么？给我一个功能总览',
+  '仓储能管哪些事？相关表有哪些？',
+  '工单从下达到入库涉及哪些表？按流程串一下',
+  '导出一份摸底报告，Markdown 和 Excel 都要',
 ]
 
 function createThreadId() {
@@ -307,6 +308,43 @@ function mergeConfirmCards(existing, incoming) {
   return Array.from(map.values())
 }
 
+function looksLikePendingImportMessage(content) {
+  const t = String(content || '')
+  if (!t.trim()) return false
+  return (
+    /尚未写入平台/.test(t) ||
+    /确认卡片/.test(t) ||
+    /待导入/.test(t) ||
+    /确认写入/.test(t) ||
+    /写操作确认/.test(t) ||
+    /pending_confirmation/.test(t) ||
+    /文件预览[：:]/.test(t) ||
+    /文件摘要[：:]/.test(t) ||
+    /目标实体/.test(t)
+  )
+}
+
+/** 确认/取消后：删掉相邻的「尚未写入」重复助手气泡，只留一条结果 */
+function collapseImportDuplicateMessages(keepMsg) {
+  if (!keepMsg) return
+  const keepIdx = messages.value.indexOf(keepMsg)
+  if (keepIdx < 0) return
+  const removeIdx = []
+  for (let i = 0; i < messages.value.length; i++) {
+    if (i === keepIdx) continue
+    const m = messages.value[i]
+    if (m.role !== 'assistant') continue
+    if ((m.confirms || []).length) continue
+    if (!looksLikePendingImportMessage(m.content)) continue
+    // 只收紧 keep 附近的导入草稿（避免误删更早无关回复）
+    if (Math.abs(i - keepIdx) <= 2) removeIdx.push(i)
+  }
+  if (!removeIdx.length) return
+  for (const i of removeIdx.sort((a, b) => b - a)) {
+    messages.value.splice(i, 1)
+  }
+}
+
 async function attachPendingConfirms(targetThread) {
   if (!targetThread) return
   try {
@@ -314,25 +352,53 @@ async function attachPendingConfirms(targetThread) {
     const items = res.data?.items || []
     if (!items.length) return
     const cards = items.map(pendingItemToCard)
-    // 优先挂到最近一条助手消息；若无则进 streamConfirms（流中）或新建一条助手消息
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const msg = messages.value[i]
+    const actionIds = new Set(cards.map((c) => c.action_id).filter(Boolean))
+    const stable = buildImportSummaryMarkdown(cards[0]?.preview)
+
+    // 1) 已挂过该 action 的消息：合并卡片；若正文仍是「尚未写入」则换成稳定摘要
+    let mergedIntoExisting = false
+    for (const msg of messages.value) {
       if (msg.role !== 'assistant') continue
+      const owned = (msg.confirms || []).some((c) => actionIds.has(c.action_id))
+      if (!owned) continue
       msg.confirms = mergeConfirmCards(msg.confirms || [], cards)
-      const stable = buildImportSummaryMarkdown(cards[0]?.preview)
-      if (stable) msg.content = stable
+      if (stable && /尚未写入平台|确认卡片/.test(msg.content || '')) {
+        msg.content = stable
+      }
+      mergedIntoExisting = true
+    }
+    if (mergedIntoExisting) {
       await persistSession()
       scrollToBottom()
       return
     }
+
+    // 2) 流式中：挂到 streamConfirms，并用稳定摘要替换模型「尚未写入」散文
     if (streaming.value) {
       streamConfirms.value = mergeConfirmCards(streamConfirms.value, cards)
-      const stable = buildImportSummaryMarkdown(cards[0]?.preview)
-      if (stable) streamContent.value = stable
+      if (stable) {
+        streamContent.value = stable
+        streamAnswerPending.value = true
+      }
       scrollToBottom()
       return
     }
-    const stable = buildImportSummaryMarkdown(cards[0]?.preview)
+
+    // 3) 最近一条助手消息已是导入/待确认文案：合并进同一条，避免「模型一句 + 卡片一句」拆成两条
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const msg = messages.value[i]
+      if (msg.role !== 'assistant') continue
+      if ((msg.confirms || []).length || looksLikePendingImportMessage(msg.content)) {
+        msg.confirms = mergeConfirmCards(msg.confirms || [], cards)
+        if (stable) msg.content = stable
+        await persistSession()
+        scrollToBottom()
+        return
+      }
+      break
+    }
+
+    // 4) 确实没有可合并对象时，再单独插一条
     messages.value.push({
       role: 'assistant',
       content: stable || '有待确认的写操作，请确认或取消：',
@@ -751,12 +817,21 @@ async function send(text) {
 function applyConfirmResolved(list, payload) {
   if (!Array.isArray(list) || !payload?.action_id) return list || []
   const status = payload.status
-  // 确认成功或取消：移除卡片；失败保留以便重试
+  // 确认成功或取消：移除卡片
   if (status === 'confirmed' || status === 'cancelled') {
     return list.filter((c) => c.action_id !== payload.action_id)
   }
+  // 失败：保留 pending 以便重试，并带上错误信息
   return list.map((c) => {
     if (c.action_id !== payload.action_id) return c
+    if (status === 'failed') {
+      return {
+        ...c,
+        status: 'pending',
+        result: payload.result,
+        error: payload.error || payload.result?.error,
+      }
+    }
     return {
       ...c,
       status: status || c.status,
@@ -852,10 +927,18 @@ function scrubPendingConfirmHints(text) {
   if (!text) return ''
   let out = String(text)
 
+  // 整行/整段含「尚未写入」的直接丢掉（含 emoji、加粗）
+  out = out
+    .split('\n')
+    .filter((line) => !/尚未写入平台|请在下方确认卡片|请在确认卡片中点/.test(line))
+    .join('\n')
+
   const dropSentence = (s) => {
     const t = s.trim()
     if (!t) return false
-    if (/^已确认写入|^已取消写入|^写入失败|已取消写入，平台数据未变更|^文件预览/.test(t)) return false
+    if (/^已确认写入|^已取消写入|^写入失败|已取消写入，平台数据未变更|^文件预览[：:]|^文件摘要[：:]/.test(t)) {
+      return false
+    }
     // 保留已有 markdown 表格行
     if (/^\|/.test(t)) return false
     return (
@@ -873,7 +956,9 @@ function scrubPendingConfirmHints(text) {
       /确认前(?:我)?不会重复发起导入/.test(t) ||
       /不会重复发起导入/.test(t) ||
       /确认前[^\n。]{0,20}不会[^\n。]{0,20}导入/.test(t) ||
-      /列名\s*`?[a-z_]+`?/.test(t) // 散文列名罗列，改由表格展示
+      /列名\s*`?[a-z_]+`?/.test(t) ||
+      /文件预览正常/.test(t) ||
+      /共\s*\d+\s*条工单待导入/.test(t)
     )
   }
 
@@ -901,6 +986,7 @@ function scrubPendingConfirmHints(text) {
     /请点击界面中的[「"']?确认写入[」"']?按钮[^\n。]*/g,
     /请点击[「"']?确认写入[」"']?[^\n。]*/g,
     /或点击[「"']?取消[」"']?放弃本次操作[。.]?/g,
+    /⚠️\s*\*?\*?尚未写入平台\*?\*?[^\n]*/g,
   ]
   for (const re of phrasePatterns) {
     out = out.replace(re, '')
@@ -914,7 +1000,7 @@ function scrubPendingConfirmHints(text) {
 }
 
 function finalizeWriteMessage(content, tip, preview) {
-  // 有预览数据时固定成「摘要 + 表格 + 结果」，不再依赖模型临时文案
+  // 有预览数据时：只用「摘要 + 表格 + 结果」一条，丢掉模型「尚未写入」散文
   const stable = buildImportSummaryMarkdown(preview)
   if (stable) {
     if (!tip) return stable
@@ -938,10 +1024,12 @@ function onConfirmResolved(msg, payload) {
       ? `写入失败：${r.error}`
       : `已确认写入：${r.target_entity || ''} ${r.rows_imported != null ? r.rows_imported + ' 行' : ''}`.trim()
     msg.content = finalizeWriteMessage(msg.content, tip, preview)
+    collapseImportDuplicateMessages(msg)
   } else if (payload?.status === 'cancelled') {
     msg.content = finalizeWriteMessage(msg.content, '已取消写入，平台数据未变更。', preview)
+    collapseImportDuplicateMessages(msg)
   } else if (payload?.status === 'failed' && payload?.error) {
-    const tip = `写入失败：${payload.error}`
+    const tip = `写入失败：${payload.error}（可重试）`
     if (msg.content && !msg.content.includes(tip)) {
       msg.content = `${msg.content}\n\n${tip}`
     } else if (!msg.content) {
@@ -952,19 +1040,32 @@ function onConfirmResolved(msg, payload) {
 }
 
 function onStreamConfirmResolved(payload) {
-  const card = (streamConfirms.value || []).find((c) => c.action_id === payload.action_id)
-  const preview = card?.preview || payload?.preview || null
-  streamConfirms.value = applyConfirmResolved(streamConfirms.value, payload)
-  if (!streaming.value) return
-  if (payload?.status === 'confirmed' && payload?.result && !payload.result.error) {
-    const r = payload.result
-    const tip = `已确认写入：${r.target_entity || ''} ${r.rows_imported != null ? r.rows_imported + ' 行' : ''}`.trim()
-    streamContent.value = finalizeWriteMessage(streamContent.value, tip, preview)
-  } else if (payload?.status === 'cancelled') {
-    streamContent.value = finalizeWriteMessage(streamContent.value, '已取消写入，平台数据未变更。', preview)
-  } else if (payload?.status === 'failed') {
-    const tip = `写入失败：${payload.error || ''}`
-    streamContent.value = (streamContent.value || '') + (streamContent.value ? `\n\n${tip}` : tip)
+  // 流未结束：更新 streamConfirms
+  const inStream = (streamConfirms.value || []).some((c) => c.action_id === payload.action_id)
+  if (inStream && streaming.value) {
+    const card = (streamConfirms.value || []).find((c) => c.action_id === payload.action_id)
+    const preview = card?.preview || payload?.preview || null
+    streamConfirms.value = applyConfirmResolved(streamConfirms.value, payload)
+    if (payload?.status === 'confirmed' && payload?.result && !payload.result.error) {
+      const r = payload.result
+      const tip = `已确认写入：${r.target_entity || ''} ${r.rows_imported != null ? r.rows_imported + ' 行' : ''}`.trim()
+      streamContent.value = finalizeWriteMessage(streamContent.value, tip, preview)
+    } else if (payload?.status === 'cancelled') {
+      streamContent.value = finalizeWriteMessage(streamContent.value, '已取消写入，平台数据未变更。', preview)
+    } else if (payload?.status === 'failed') {
+      const tip = `写入失败：${payload.error || ''}（可重试）`
+      streamContent.value = (streamContent.value || '') + (streamContent.value ? `\n\n${tip}` : tip)
+    }
+    return
+  }
+
+  // 流已结束、卡片已落入 messages：按 action_id 更新，避免确认结果丢失导致二次写入
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i]
+    if (msg.role !== 'assistant') continue
+    if (!(msg.confirms || []).some((c) => c.action_id === payload.action_id)) continue
+    onConfirmResolved(msg, payload)
+    return
   }
 }
 

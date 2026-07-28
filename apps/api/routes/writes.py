@@ -19,7 +19,13 @@ if _parent not in sys.path:
 
 from routes.auth import require_auth, UserInfo
 from tools.platform_api import set_request_erp_token, reset_request_erp_token
-from middleware.write_store import get_action, list_pending, mark_action, query_audit
+from middleware.write_store import (
+    claim_action,
+    get_action,
+    list_pending,
+    mark_action,
+    query_audit,
+)
 from middleware.write_tools import WRITE_TOOLS
 from tools.file_ops import import_file_to_platform
 
@@ -50,15 +56,6 @@ def _assert_owner(action: dict[str, Any], user: UserInfo) -> None:
     if not aname and not uname:
         return
     raise HTTPException(status_code=403, detail="无权操作该写确认请求")
-
-
-def _ensure_pending(action: dict[str, Any]) -> None:
-    if action.get("status") != "pending":
-        raise HTTPException(status_code=409, detail=f"操作已结束，当前状态：{action.get('status')}")
-    expires = float(action.get("expires_at") or 0)
-    if expires and time.time() > expires:
-        mark_action(action["action_id"], status="expired")
-        raise HTTPException(status_code=410, detail="确认已过期，请重新发起导入")
 
 
 def _execute_write(action: dict[str, Any]) -> dict[str, Any]:
@@ -124,40 +121,79 @@ async def get_write_action(action_id: str, auth: tuple = Depends(require_auth)):
 
 @router.post("/actions/{action_id}/confirm", response_model=ActionResponse)
 async def confirm_write(action_id: str, auth: tuple = Depends(require_auth)):
-    """用户确认后执行真实写操作。"""
+    """用户确认后执行真实写操作（原子认领，防止双确认重复写入）。"""
     erp_token, user = auth
     action = get_action(action_id)
     if not action:
         raise HTTPException(status_code=404, detail="未找到该写操作")
     _assert_owner(action, user)
-    _ensure_pending(action)
+
+    # pending → executing：只有一个请求能赢；失败可回到 pending 重试
+    claimed = claim_action(
+        action_id,
+        to_status="executing",
+        expected_statuses=("pending",),
+        actor_username=user.username,
+    )
+    if not claimed:
+        cur = get_action(action_id)
+        if not cur:
+            raise HTTPException(status_code=404, detail="未找到该写操作")
+        if cur.get("status") == "expired":
+            raise HTTPException(status_code=410, detail="确认已过期，请重新发起导入")
+        raise HTTPException(
+            status_code=409,
+            detail=f"操作已结束或正在执行，当前状态：{cur.get('status')}",
+        )
 
     tok = set_request_erp_token(erp_token)
     try:
-        result = _execute_write(action)
+        result = _execute_write(claimed)
     finally:
         reset_request_erp_token(tok)
 
     ok = isinstance(result, dict) and not result.get("error")
-    status = "confirmed" if ok else "failed"
+    if not ok:
+        # 写失败：回到 pending，允许用户修正后重试（不落 write_failed 终态）
+        err_msg = str(result.get("error") if isinstance(result, dict) else result)
+        restored = mark_action(
+            action_id,
+            status="pending",
+            result={"error": err_msg, "retryable": True},
+            actor_username=user.username,
+            expected_statuses=("executing",),
+            write_audit=False,
+        )
+        # 额外记一条失败审计，便于排查
+        from middleware.write_store import append_audit
+
+        append_audit(
+            {
+                "event": "write_failed",
+                "action_id": action_id,
+                "tool": (restored or claimed).get("tool"),
+                "thread_id": (restored or claimed).get("thread_id"),
+                "user_id": (restored or claimed).get("user_id"),
+                "username": user.username,
+                "result_summary": {"error": err_msg, "retryable": True},
+                "ts": time.time(),
+            }
+        )
+        raise HTTPException(status_code=502, detail=err_msg)
+
     updated = mark_action(
         action_id,
-        status=status,
+        status="confirmed",
         result=result,
         actor_username=user.username,
+        expected_statuses=("executing",),
     )
     if not updated:
         raise HTTPException(status_code=500, detail="更新写操作状态失败")
 
-    if not ok:
-        raise HTTPException(
-            status_code=502,
-            detail=str(result.get("error") if isinstance(result, dict) else result),
-        )
-
     return ActionResponse(
         action_id=action_id,
-        status=status,
+        status="confirmed",
         tool=updated.get("tool"),
         thread_id=updated.get("thread_id"),
         preview=updated.get("preview"),
@@ -174,20 +210,32 @@ async def cancel_write(action_id: str, auth: tuple = Depends(require_auth)):
     if not action:
         raise HTTPException(status_code=404, detail="未找到该写操作")
     _assert_owner(action, user)
-    _ensure_pending(action)
 
-    updated = mark_action(
+    updated = claim_action(
         action_id,
-        status="cancelled",
-        result={"status": "cancelled"},
+        to_status="cancelled",
+        expected_statuses=("pending",),
         actor_username=user.username,
+        result={"status": "cancelled"},
+        audit=True,
     )
+    if not updated:
+        cur = get_action(action_id)
+        if not cur:
+            raise HTTPException(status_code=404, detail="未找到该写操作")
+        if cur.get("status") == "expired":
+            raise HTTPException(status_code=410, detail="确认已过期，请重新发起导入")
+        raise HTTPException(
+            status_code=409,
+            detail=f"操作已结束或正在执行，当前状态：{cur.get('status')}",
+        )
+
     return ActionResponse(
         action_id=action_id,
         status="cancelled",
-        tool=(updated or action).get("tool"),
-        thread_id=(updated or action).get("thread_id"),
-        preview=(updated or action).get("preview"),
+        tool=updated.get("tool"),
+        thread_id=updated.get("thread_id"),
+        preview=updated.get("preview"),
         result={"status": "cancelled"},
         message="已取消，未写入平台",
     )

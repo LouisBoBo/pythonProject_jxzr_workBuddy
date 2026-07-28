@@ -222,7 +222,10 @@ def preview_file(
         if ext in (".xlsx", ".xls"):
             df = pd.read_excel(file_path)
         elif ext == ".csv":
-            df = pd.read_csv(file_path)
+            try:
+                df = pd.read_csv(file_path, encoding="utf-8")
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_path, encoding="gbk")
         elif ext == ".json":
             df = pd.read_json(file_path)
         else:

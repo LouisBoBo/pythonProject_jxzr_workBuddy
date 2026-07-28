@@ -288,8 +288,8 @@ def _write_excel(payload: dict[str, Any], path: str) -> None:
 
 def export_schema_survey_report(
     format: Annotated[
-        Literal["markdown", "excel", "both"],
-        "导出格式：markdown / excel / both（默认 both）",
+        Literal["markdown", "excel", "both", "md", "xlsx"],
+        "导出格式：markdown / excel / both（可用别名 md / xlsx）",
     ] = "both",
     focus: Annotated[
         str | None, "可选聚焦关键字，如 品质、仓储；不传则全量域地图"

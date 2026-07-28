@@ -131,36 +131,110 @@ def list_pending(*, thread_id: str | None = None, username: str | None = None) -
     return out
 
 
+def claim_action(
+    action_id: str,
+    *,
+    to_status: str,
+    expected_statuses: tuple[str, ...] = ("pending",),
+    actor_username: str | None = None,
+    result: Any = None,
+    audit: bool = False,
+) -> dict[str, Any] | None:
+    """原子状态迁移：仅当当前 status ∈ expected_statuses 时成功，用于防双确认。"""
+    with _LOCK:
+        action = get_action(action_id)
+        if not action:
+            return None
+        cur = action.get("status")
+        if cur not in expected_statuses:
+            return None
+        if cur == "pending":
+            expires = float(action.get("expires_at") or 0)
+            if expires and time.time() > expires:
+                action["status"] = "expired"
+                action["resolved_at"] = time.time()
+                _save_action_unlocked(action)
+                append_audit(
+                    {
+                        "event": "write_expired",
+                        "action_id": action_id,
+                        "tool": action.get("tool"),
+                        "thread_id": action.get("thread_id"),
+                        "user_id": action.get("user_id"),
+                        "username": actor_username or action.get("username"),
+                        "args_summary": _brief_args(action.get("args") or {}),
+                        "ts": action["resolved_at"],
+                    }
+                )
+                return None
+        action["status"] = to_status
+        if result is not None:
+            action["result"] = result
+        if actor_username:
+            action["resolved_by"] = actor_username
+        if to_status in ("confirmed", "cancelled", "expired", "failed"):
+            action["resolved_at"] = time.time()
+        _save_action_unlocked(action)
+        if audit:
+            append_audit(
+                {
+                    "event": f"write_{to_status}",
+                    "action_id": action_id,
+                    "tool": action.get("tool"),
+                    "thread_id": action.get("thread_id"),
+                    "user_id": action.get("user_id"),
+                    "username": actor_username or action.get("username"),
+                    "args_summary": _brief_args(action.get("args") or {}),
+                    "result_summary": _brief_result(result),
+                    "ts": action.get("resolved_at") or time.time(),
+                }
+            )
+        return action
+
+
 def mark_action(
     action_id: str,
     *,
     status: str,
     result: Any = None,
     actor_username: str | None = None,
+    expected_statuses: tuple[str, ...] | None = None,
+    write_audit: bool = True,
 ) -> dict[str, Any] | None:
+    """更新写操作状态并写审计。
+
+    若传入 expected_statuses，则仅在当前状态匹配时更新（CAS）；否则无条件覆盖。
+    write_audit=False 时只改状态不写审计（用于执行失败回退 pending）。
+    """
     with _LOCK:
         action = get_action(action_id)
         if not action:
             return None
+        if expected_statuses is not None and action.get("status") not in expected_statuses:
+            return None
         action["status"] = status
-        action["resolved_at"] = time.time()
+        if status == "pending":
+            action["resolved_at"] = None
+        else:
+            action["resolved_at"] = time.time()
         action["result"] = result
         if actor_username:
             action["resolved_by"] = actor_username
         _save_action_unlocked(action)
-        append_audit(
-            {
-                "event": f"write_{status}",
-                "action_id": action_id,
-                "tool": action.get("tool"),
-                "thread_id": action.get("thread_id"),
-                "user_id": action.get("user_id"),
-                "username": actor_username or action.get("username"),
-                "args_summary": _brief_args(action.get("args") or {}),
-                "result_summary": _brief_result(result),
-                "ts": action["resolved_at"],
-            }
-        )
+        if write_audit:
+            append_audit(
+                {
+                    "event": f"write_{status}",
+                    "action_id": action_id,
+                    "tool": action.get("tool"),
+                    "thread_id": action.get("thread_id"),
+                    "user_id": action.get("user_id"),
+                    "username": actor_username or action.get("username"),
+                    "args_summary": _brief_args(action.get("args") or {}),
+                    "result_summary": _brief_result(result),
+                    "ts": action.get("resolved_at") or time.time(),
+                }
+            )
         return action
 
 
