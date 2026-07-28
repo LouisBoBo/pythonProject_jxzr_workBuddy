@@ -47,3 +47,4 @@ description: >-
 | 平台业务能力（表结构）/ 场景表包 / 摸底报告 | 本 Skill |
 | 查/导工单、生产计划（模拟演示） | `query-mes-data` / `import-export-data` |
 | 谁导入了文件 | `query_write_audit` |
+| 接口健康（docs×日志） | `analyze-api-health` |

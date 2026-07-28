@@ -20,12 +20,16 @@ data/exports/*
 data/history/*
 data/writes/*
 data/schema/*
+data/api_calls/*
+data/api_catalog/*
 !data/uploads/.gitkeep
 !data/converted/.gitkeep
 !data/exports/.gitkeep
 !data/history/.gitkeep
 !data/writes/.gitkeep
 !data/schema/.gitkeep
+!data/api_calls/.gitkeep
+!data/api_catalog/.gitkeep
 *.xlsx
 *.csv
 !apps/agent/test_data/**

@@ -148,7 +148,7 @@ async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), _auth: tuple = Depends(require_auth)):
-    """上传文件（CSV/Excel/JSON），保存到 uploads 目录并返回预览。"""
+    """上传文件（CSV/Excel/JSON/日志等），保存到 uploads 目录并返回预览。"""
     import time
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -176,6 +176,9 @@ async def upload_file(file: UploadFile = File(...), _auth: tuple = Depends(requi
         elif ext == "json":
             data = json.loads(content.decode("utf-8"))
             preview = json.dumps(data[:3] if isinstance(data, list) else data, ensure_ascii=False, indent=2)
+        elif ext in ("jsonl", "log", "txt", "yaml", "yml", "md"):
+            text = content.decode("utf-8", errors="ignore")
+            preview = "\n".join(text.splitlines()[:12])
     except Exception:
         preview = content.decode("utf-8", errors="ignore")[:500]
 

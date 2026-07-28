@@ -141,7 +141,7 @@
             ref="inputEl"
             v-model="input"
             class="prompt-input"
-            :placeholder="streaming ? '等待回复中...' : '描述你想做的事情，例如：把 test_data/new_orders.csv 导入到工单系统'"
+            :placeholder="streaming ? '等待回复中...' : '描述你想做的事情，例如：导入访问日志分析接口错误，或把 CSV 导入工单'"
             rows="1"
             :disabled="streaming"
             @keydown.enter.exact.prevent="send(input)"
@@ -152,7 +152,7 @@
             <input
               ref="fileInput"
               type="file"
-              accept=".csv,.xlsx,.xls,.json,.txt"
+              accept=".csv,.xlsx,.xls,.json,.jsonl,.log,.txt,.yaml,.yml,.md"
               style="display: none"
               @change="handleFileUpload"
             />

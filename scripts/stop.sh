@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# 停止由 scripts/dev.sh 启动的本地服务
+# 停止由 scripts/dev.sh 启动的本地服务（沙箱 / API / Web）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PID_DIR="$ROOT/.run"
 API_PORT="${MES_SERVER_PORT:-8765}"
 WEB_PORT="${VITE_PORT:-5180}"
+SANDBOX_PORT="${API_PROBE_SANDBOX_PORT:-8001}"
 
 log() { printf '\033[1;34m[stop]\033[0m %s\n' "$*"; }
 
@@ -24,10 +25,11 @@ kill_pidfile() {
   fi
 }
 
+kill_pidfile "$PID_DIR/sandbox.pid"
 kill_pidfile "$PID_DIR/api.pid"
 kill_pidfile "$PID_DIR/web.pid"
 
-for port in "$API_PORT" "$WEB_PORT"; do
+for port in "$SANDBOX_PORT" "$API_PORT" "$WEB_PORT"; do
   pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then
     log "释放端口 $port"

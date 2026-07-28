@@ -29,7 +29,7 @@ _TOOL_LABELS = {
     "list_platform_entities": "列出可查实体",
     "get_platform_summary": "汇总平台数据",
     "describe_entity": "查看实体结构",
-    "read_file": "查阅技能说明",
+    "read_file": "读取文件",
     "write_file": "写入文件",
     "edit_file": "编辑文件",
     "ls": "浏览目录",
@@ -52,6 +52,16 @@ _TOOL_LABELS = {
     "list_platform_capabilities": "人话能力地图",
     "describe_platform_capability": "能力模块详情",
     "list_platform_glossary": "术语小抄",
+    "build_api_catalog": "构建接口目录",
+    "list_api_catalog": "列出接口目录",
+    "query_api_call_log": "查询接口调用日志",
+    "summarize_api_doc_vs_logs": "汇总接口健康",
+    "rank_problematic_apis": "问题接口排行",
+    "inspect_api_path": "抽查接口路径",
+    "probe_api_catalog": "沙箱探活接口",
+    "render_api_health_report": "生成接口测试报告",
+    "import_external_api_logs": "导入外部访问日志",
+    "analyze_api_errors_from_logs": "分析接口错误",
 }
 
 _LINE_PREFIX = re.compile(r"(?m)^\s*\d+\|")
@@ -219,7 +229,21 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
 
     if isinstance(data, dict):
         if data.get("error"):
-            return f"失败：{data.get('error')}", []
+            return f"失败：{data.get('error')}", [str(data.get("hint") or data.get("next") or "")[:200]] if (data.get("hint") or data.get("next")) else []
+
+        if data.get("_rerouted_from"):
+            imported = data.get("imported")
+            summary = (
+                f"已自动导入访问日志 {imported} 条"
+                if imported is not None
+                else "已改走访问日志导入"
+            )
+            preview = []
+            if data.get("note"):
+                preview.append(str(data["note"])[:280])
+            if data.get("next"):
+                preview.append(f"下一步：{data['next']}")
+            return summary, preview
 
         if data.get("status") == "pending_confirmation" or data.get("__write_confirm__"):
             summary = data.get("summary") or "等待确认写入"
@@ -276,7 +300,21 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
             return summary, preview
 
     text = _strip_line_numbers(_as_text(out)).strip()
-    if name == "read_file" or text.lstrip().startswith("---") or "name:" in text[:200]:
+    # 虚拟 FS / 路径错误：不要误标成「已读取技能说明」
+    if re.search(r"path_not_found|Error:\s*Path|文件不存在|FileNotFound", text, re.I):
+        return f"失败：{text[:200]}", []
+
+    looks_like_skill = (
+        name == "read_file"
+        and ("name:" in text[:200] and "description:" in text[:800])
+        and ("analyze-" in text[:400] or "skill" in text[:400].lower())
+    )
+    if looks_like_skill or (
+        text.lstrip().startswith("---")
+        and "name:" in text[:200]
+        and "description:" in text[:800]
+        and name == "read_file"
+    ):
         skill = ""
         desc = ""
         for line in text.splitlines()[:40]:
@@ -284,7 +322,6 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                 skill = line.split(":", 1)[1].strip().strip("'\"")
             elif line.startswith("description:"):
                 desc = line.split(":", 1)[1].strip().strip("'\"")
-            # 行号已剥离后的 description 可能跨多行，取首段即可
         summary = f"已读取技能：{skill}" if skill else "已读取技能说明"
         if desc:
             preview.append(desc[:220] + ("…" if len(desc) > 220 else ""))
@@ -301,6 +338,9 @@ def _is_tool_failure(detail_src: Any) -> bool:
     data = _parse_jsonish(detail_src)
     if isinstance(data, dict):
         if data.get("status") == "pending_confirmation" or data.get("__write_confirm__"):
+            return False
+        # 访问日志被中间件改走导入：原工具名虽是 read_file，但实际已成功
+        if data.get("_rerouted_from") and not data.get("error"):
             return False
         if data.get("error"):
             return True
@@ -370,9 +410,16 @@ def _tool_label(name: str, inp: Any = None) -> str:
     if hint and name in ("query_platform_data", "import_file_to_platform", "export_platform_data"):
         return f"{base} · {hint}"
     if hint and name == "read_file":
-        if "SKILL" in hint or "skill" in hint.lower():
+        low = hint.lower()
+        if "skill" in low or hint.endswith(".md") and "skill" in low:
             return "查阅技能说明"
+        if low.endswith((".jsonl", ".log")) or "/uploads/" in low.replace("\\", "/"):
+            return f"读取附件 {Path(hint).name}"
         return f"读取 {hint}"
+    if name == "import_external_api_logs":
+        return "导入外部访问日志"
+    if name == "analyze_api_errors_from_logs":
+        return "分析接口错误"
     return base
 
 
@@ -424,19 +471,55 @@ class AgentRunner:
         self._model = None
 
     def _run_config(self, thread_id: str) -> dict[str, Any]:
+        from config import Config
+
         return {
             "configurable": {
                 "thread_id": thread_id or get_thread_id() or "default",
                 "user_id": get_user_id(),
                 "username": get_username(),
-            }
+            },
+            # Deep Agents + Skills + 多工具任务易超过默认 25
+            "recursion_limit": Config.AGENT_RECURSION_LIMIT,
         }
 
     def _build_message(self, message: str, file_paths: list[str] | None = None) -> str:
         if not file_paths:
             return message
         file_note = "\n".join([f"[附件路径]: {p}" for p in file_paths])
-        return f"{message}\n\n用户已上传以下文件，请按需读取或导入：\n{file_note}"
+        log_paths = [
+            p
+            for p in file_paths
+            if (
+                str(p).lower().endswith((".jsonl", ".log"))
+                or "api_access" in str(p).lower()
+                or (
+                    "/uploads/" in str(p).replace("\\", "/").lower()
+                    and str(p).lower().endswith((".jsonl", ".log", ".csv", ".txt"))
+                )
+            )
+        ]
+        if log_paths:
+            paths_block = "\n".join(f"- `{p}`" for p in log_paths)
+            return (
+                f"{message}\n\n"
+                "【系统强制路由·访问日志】检测到日志类附件。\n"
+                f"{paths_block}\n\n"
+                "禁止：read_file、ls、glob、transform_file、preview_file、build_api_catalog（这些会失败或误用）。\n"
+                "必须：\n"
+                f"1) import_external_api_logs(file_path=\"{log_paths[0]}\")\n"
+                "2) analyze_api_errors_from_logs(source_filter=\"import\")  "
+                "（不要 with_catalog、不要 docs_url；报告只谈本次日志条数与错误/正常接口）\n"
+                "3) 用 report_markdown 回复。禁止把历史接口文档的接口总数写进本报告；"
+                "文档探活请另走 build→probe→render_api_health_report。\n"
+                f"\n其他附件：\n{file_note}"
+            )
+        return (
+            f"{message}\n\n用户已上传以下文件，请按需读取或导入：\n{file_note}\n"
+            "若为访问日志（.log/.jsonl）：请 "
+            "import_external_api_logs(file_path=上方绝对路径) → analyze_api_errors_from_logs；"
+            "不要用 read_file。"
+        )
 
     def chat(self, message: str, thread_id: str = "default", file_paths: list[str] | None = None) -> str:
         final_message = self._build_message(message, file_paths)

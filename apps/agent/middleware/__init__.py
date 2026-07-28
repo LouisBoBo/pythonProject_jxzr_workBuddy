@@ -14,6 +14,7 @@ from typing import Any
 from middleware.audit_tools import AuditToolMiddleware
 from middleware.entity_guard import EntityGuardMiddleware
 from middleware.write_confirm import WriteConfirmMiddleware
+from middleware.access_log_route import AccessLogRouteMiddleware
 
 
 def build_custom_middleware() -> list[Any]:
@@ -22,8 +23,13 @@ def build_custom_middleware() -> list[Any]:
     - ENABLE_AUDIT_MIDDLEWARE=true（默认 true）：记录工具调用
     - ENABLE_ENTITY_GUARD=true（默认 false）：拦截明显选错实体的查询
     - REQUIRE_WRITE_CONFIRM=true（默认 true）：写工具须人工确认
+    - 访问日志路由：始终启用，纠正对 .jsonl/.log 的误用工具
     """
     stack: list[Any] = []
+
+    # 最先纠正访问日志误路由，避免 read_file 打到虚拟 FS 外失败
+    if os.getenv("ENABLE_ACCESS_LOG_ROUTE", "true").lower() in ("1", "true", "yes"):
+        stack.append(AccessLogRouteMiddleware())
 
     if os.getenv("ENABLE_AUDIT_MIDDLEWARE", "true").lower() in ("1", "true", "yes"):
         stack.append(AuditToolMiddleware())

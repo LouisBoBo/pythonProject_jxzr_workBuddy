@@ -103,7 +103,12 @@ def agent_mode(prompt: str = ""):
     from agents.agent import create_agent
 
     agent = create_agent()
-    config = {"configurable": {"thread_id": "single-shot"}}
+    from config import Config
+
+    config = {
+        "configurable": {"thread_id": "single-shot"},
+        "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+    }
 
     if prompt:
         print(f"> {prompt}")

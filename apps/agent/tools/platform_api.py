@@ -11,11 +11,30 @@ from __future__ import annotations
 
 import contextvars
 import json
+import time
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from config import Config
 from tools.query_tool.entity_catalog import get_entity_map, list_entity_ids, resolve_entity_id
+
+
+def _safe_log_call(**kwargs) -> None:
+    """写 API 调用日志；任何异常吞掉，保证不影响业务返回。"""
+    try:
+        from tools.api_log_tool.call_store import append_api_call
+        from middleware.request_context import get_thread_id, get_username
+
+        row = dict(kwargs)
+        row.setdefault("source", "erp")
+        try:
+            row.setdefault("thread_id", get_thread_id())
+            row.setdefault("username", get_username())
+        except Exception:
+            pass
+        append_api_call(row)
+    except Exception:
+        pass
 
 # 请求级用户 ERP token（登录后传入，优先于服务账号 Config.ERP_*）
 _erp_token_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -163,14 +182,30 @@ class ERPClient:
             data = json.dumps(body).encode()
             req = Request(f"{self.base}/api/v1/auth/login", data=data,
                           headers={"Content-Type": "application/json"}, method="POST")
+            t0 = time.perf_counter()
             with urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
                 self._token = result.get("access_token", "")
-        except Exception:
-            pass  # 登录失败不阻塞，继续无 token 调用
+            _safe_log_call(
+                method="POST",
+                path="/api/v1/auth/login",
+                status=200,
+                ok=True,
+                latency_ms=(time.perf_counter() - t0) * 1000,
+            )
+        except Exception as e:
+            _safe_log_call(
+                method="POST",
+                path="/api/v1/auth/login",
+                status=None,
+                ok=False,
+                latency_ms=None,
+                error=f"login_failed: {e}",
+            )
+            pass  # 登录失败不阻塞，继续无 token 调用（行为保持不变）
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict | list:
-        """发送 HTTP 请求到 ERP，自动附带 token。"""
+        """发送 HTTP 请求到 ERP，自动附带 token。出站调用写入 api_calls 日志（失败不影响返回）。"""
         self._ensure_auth()
         url = f"{self.base}{path}"
         data = json.dumps(body).encode() if body else None
@@ -180,16 +215,41 @@ class ERPClient:
             headers["Authorization"] = f"Bearer {token}"
 
         req = Request(url, data=data, headers=headers, method=method)
+        t0 = time.perf_counter()
         try:
             with urlopen(req, timeout=15) as resp:
                 text = resp.read().decode()
+                latency_ms = (time.perf_counter() - t0) * 1000
+                status = getattr(resp, "status", None) or 200
                 if not text:
+                    _safe_log_call(method=method, path=path, status=status, ok=True, latency_ms=latency_ms)
                     return {}
-                return json.loads(text)
+                parsed = json.loads(text)
+                # soft-fail：HTTP 200 但 body 含 error
+                soft_err = isinstance(parsed, dict) and parsed.get("error")
+                _safe_log_call(
+                    method=method,
+                    path=path,
+                    status=status,
+                    ok=not bool(soft_err),
+                    latency_ms=latency_ms,
+                    error=str(soft_err)[:200] if soft_err else None,
+                )
+                return parsed
         except HTTPError as e:
-            return {"error": f"HTTP {e.code}: {e.reason}"}
+            latency_ms = (time.perf_counter() - t0) * 1000
+            err = f"HTTP {e.code}: {e.reason}"
+            _safe_log_call(
+                method=method, path=path, status=e.code, ok=False, latency_ms=latency_ms, error=err
+            )
+            return {"error": err}
         except URLError as e:
-            return {"error": f"连接失败: {e.reason}"}
+            latency_ms = (time.perf_counter() - t0) * 1000
+            err = f"连接失败: {e.reason}"
+            _safe_log_call(
+                method=method, path=path, status=None, ok=False, latency_ms=latency_ms, error=err
+            )
+            return {"error": err}
 
     def _resolve_entity(self, entity: str) -> str | None:
         """将实体 id 或别名解析为 REST 资源名。未知实体返回 None。"""
@@ -276,7 +336,8 @@ class ERPClient:
 
         result = self._request("GET", path)
         if isinstance(result, dict) and "error" in result:
-            return []
+            # 保持可被 file_ops 识别；不再静默成 []（调用已记入 api_calls）
+            return result
         return result if isinstance(result, list) else []
 
     def query(self, entity: str, filters: dict | None = None, limit: int = 100) -> dict:

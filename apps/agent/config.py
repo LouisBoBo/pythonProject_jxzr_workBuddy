@@ -63,6 +63,8 @@ class Config:
     MAX_IMPORT_ROWS = int(os.getenv("MAX_IMPORT_ROWS", "10000"))
     EXPORT_DIR = os.getenv("EXPORT_DIR") or _default_export_dir()
     EXPORT_TO_DESKTOP = os.getenv("EXPORT_TO_DESKTOP", "true").lower() in ("true", "1", "yes")
+    # LangGraph 默认 recursion_limit=25；文档全量探活 + Skills 易触顶
+    AGENT_RECURSION_LIMIT = max(25, int(os.getenv("AGENT_RECURSION_LIMIT", "100")))
 
     @classmethod
     def summary(cls) -> str:

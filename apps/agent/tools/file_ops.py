@@ -158,6 +158,15 @@ def transform_file(
 
     try:
         ext = os.path.splitext(file_path)[1].lower()
+        if ext in (".jsonl", ".log"):
+            return {
+                "error": f"不支持的文件类型: {ext}",
+                "hint": (
+                    "访问日志请用 import_external_api_logs(file_path=...) 导入，"
+                    "再 analyze_api_errors_from_logs；不要用 transform_file。"
+                ),
+                "next": "import_external_api_logs → analyze_api_errors_from_logs",
+            }
         if ext in (".xlsx", ".xls"):
             df = pd.read_excel(file_path)
         elif ext == ".csv":
@@ -219,6 +228,19 @@ def preview_file(
 
     try:
         ext = os.path.splitext(file_path)[1].lower()
+        if ext in (".jsonl", ".log", ".txt"):
+            # 文本预览：便于确认是访问日志
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [ln.rstrip("\n") for _, ln in zip(range(max(1, int(rows or 5))), f)]
+            return {
+                "file": os.path.basename(file_path),
+                "total_rows": None,
+                "preview": lines,
+                "note": (
+                    "这是文本/日志预览。若为 API 访问日志，请改用 "
+                    "import_external_api_logs → analyze_api_errors_from_logs。"
+                ),
+            }
         if ext in (".xlsx", ".xls"):
             df = pd.read_excel(file_path)
         elif ext == ".csv":
@@ -229,7 +251,10 @@ def preview_file(
         elif ext == ".json":
             df = pd.read_json(file_path)
         else:
-            return {"error": f"不支持的文件类型: {ext}"}
+            return {
+                "error": f"不支持的文件类型: {ext}",
+                "hint": "表格用 csv/xlsx/json；访问日志用 import_external_api_logs",
+            }
 
         total = len(df)
         preview_df = df.head(rows).where(pd.notna(df.head(rows)), None)

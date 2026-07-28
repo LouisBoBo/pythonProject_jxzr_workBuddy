@@ -1,0 +1,7 @@
+{"method":"GET","path":"/api/orders/details/12","status":500,"latency_ms":820,"ts":"2026-07-28T10:01:00","error":"Internal Server Error"}
+{"method":"GET","path":"/api/orders/details/13","status":500,"latency_ms":910,"ts":"2026-07-28T10:01:05","error":"Internal Server Error"}
+{"method":"GET","path":"/api/orders/details/14","status":200,"latency_ms":45,"ts":"2026-07-28T10:01:10"}
+{"method":"POST","path":"/api/parts/create","status":201,"latency_ms":30,"ts":"2026-07-28T10:02:00"}
+{"method":"DELETE","path":"/api/suppliers/delete/9","status":404,"latency_ms":12,"ts":"2026-07-28T10:02:30","error":"not found"}
+{"method":"DELETE","path":"/api/suppliers/delete/9","status":404,"latency_ms":11,"ts":"2026-07-28T10:02:31","error":"not found"}
+{"method":"GET","path":"/api/customers/get/1","status":200,"latency_ms":20,"ts":"2026-07-28T10:03:00"}

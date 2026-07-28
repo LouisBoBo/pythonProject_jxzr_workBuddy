@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键启动本地开发：API (8765) + Web (5180)
+# 一键启动本地开发：API 探活沙箱 (8001) + API (8765) + Web (5180)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -7,8 +7,15 @@ cd "$ROOT"
 
 API_PORT="${MES_SERVER_PORT:-8765}"
 WEB_PORT="${VITE_PORT:-5180}"
+SANDBOX_PORT="${API_PROBE_SANDBOX_PORT:-8001}"
+SANDBOX_HOST="${API_PROBE_SANDBOX_HOST:-127.0.0.1}"
+# 开发默认指向本仓沙箱；已 export 的 API_PROBE_SANDBOX_URL 优先（Agent 经 dotenv 也会读 .env）
+export API_PROBE_SANDBOX_URL="${API_PROBE_SANDBOX_URL:-http://${SANDBOX_HOST}:${SANDBOX_PORT}}"
+export API_PROBE_SANDBOX_PORT="$SANDBOX_PORT"
+export API_PROBE_SANDBOX_HOST="$SANDBOX_HOST"
+
 PID_DIR="$ROOT/.run"
-mkdir -p "$PID_DIR" "$ROOT/data"/{history,uploads,exports,converted}
+mkdir -p "$PID_DIR" "$ROOT/data"/{history,uploads,exports,converted,api_calls,api_catalog}
 
 log() { printf '\033[1;34m[dev]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[dev]\033[0m %s\n' "$*" >&2; }
@@ -45,13 +52,40 @@ stop_port() {
   fi
 }
 
+stop_port "$SANDBOX_PORT"
 stop_port "$API_PORT"
 stop_port "$WEB_PORT"
+
+log "启动 API 探活沙箱 → ${API_PROBE_SANDBOX_URL}  (docs: /docs , health: /health)"
+(
+  cd "$ROOT"
+  export PYTHONUNBUFFERED=1
+  export API_PROBE_SANDBOX_PORT="$SANDBOX_PORT"
+  export API_PROBE_SANDBOX_HOST="$SANDBOX_HOST"
+  python3 "$ROOT/apps/sandbox/server.py"
+) >"$PID_DIR/sandbox.log" 2>&1 &
+echo $! >"$PID_DIR/sandbox.pid"
+
+# 等沙箱就绪
+for i in $(seq 1 30); do
+  if curl -sf "${API_PROBE_SANDBOX_URL}/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
+if curl -sf "${API_PROBE_SANDBOX_URL}/health" >/dev/null 2>&1; then
+  log "沙箱就绪（remote_url 探活将打到此地址，不碰生产 ERP）"
+else
+  err "沙箱启动失败，查看 $PID_DIR/sandbox.log"
+  tail -n 40 "$PID_DIR/sandbox.log" || true
+  exit 1
+fi
 
 log "启动 API → http://127.0.0.1:${API_PORT}  (health: /health)"
 (
   cd "$ROOT/apps/api"
   export PYTHONUNBUFFERED=1
+  export API_PROBE_SANDBOX_URL
   python3 main.py
 ) >"$PID_DIR/api.log" 2>&1 &
 echo $! >"$PID_DIR/api.pid"
@@ -80,11 +114,13 @@ else
 fi
 
 log "全部启动完成"
-log "  Web UI : http://127.0.0.1:${WEB_PORT}"
-log "  API    : http://127.0.0.1:${API_PORT}/health"
-log "  日志   : $PID_DIR/api.log , $PID_DIR/web.log"
-log "  停止   : ./scripts/stop.sh"
-log "  Agent CLI: python3 apps/agent/run.py cli"
+log "  Web UI     : http://127.0.0.1:${WEB_PORT}"
+log "  API        : http://127.0.0.1:${API_PORT}/health"
+log "  探活沙箱   : ${API_PROBE_SANDBOX_URL}/docs"
+log "  日志       : $PID_DIR/sandbox.log , $PID_DIR/api.log , $PID_DIR/web.log"
+log "  停止       : ./scripts/stop.sh"
+log "  测接口话术 : 根据 http://127.0.0.1:8000/docs 测试文档接口"
+log "               （目录=用户文档；探活→沙箱 ${API_PROBE_SANDBOX_URL}）"
 
 # 前台跟随日志（Ctrl+C 不杀后台；用 stop.sh 停止）
-tail -n 0 -f "$PID_DIR/api.log" "$PID_DIR/web.log"
+tail -n 0 -f "$PID_DIR/sandbox.log" "$PID_DIR/api.log" "$PID_DIR/web.log"

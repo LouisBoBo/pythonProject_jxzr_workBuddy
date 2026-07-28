@@ -40,6 +40,18 @@ from tools.schema_tool.capability_map import (
     describe_platform_capability,
     list_platform_glossary,
 )
+from tools.api_log_tool.api_health import (
+    build_api_catalog,
+    list_api_catalog,
+    query_api_call_log,
+    summarize_api_doc_vs_logs,
+    rank_problematic_apis,
+    inspect_api_path,
+    probe_api_catalog,
+    render_api_health_report,
+    import_external_api_logs,
+    analyze_api_errors_from_logs,
+)
 
 # apps/agent
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +82,17 @@ TOOLS = [
     list_platform_capabilities,
     describe_platform_capability,
     list_platform_glossary,
+    # API：文档接口测试一律默认沙箱探活再分析；live 仅明确要生产只读时
+    build_api_catalog,
+    list_api_catalog,
+    query_api_call_log,
+    summarize_api_doc_vs_logs,
+    rank_problematic_apis,
+    inspect_api_path,
+    probe_api_catalog,
+    render_api_health_report,
+    import_external_api_logs,
+    analyze_api_errors_from_logs,
 ]
 
 
@@ -148,7 +171,10 @@ def run_cli():
 
     agent = create_agent()
     thread_id = "cli-session-001"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+    }
 
     while True:
         try:
