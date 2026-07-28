@@ -40,3 +40,7 @@ data/api_catalog/*
 .vscode/
 *.log
 *.db
+
+# 样例访问日志（覆盖上方 *.log）
+!data/samples/*.nginx.log
+!data/samples/*.log
