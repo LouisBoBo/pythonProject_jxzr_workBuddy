@@ -61,6 +61,15 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
         return {}
 
 
+def _username_from_jwt(payload: dict[str, Any]) -> str | None:
+    """从 JWT claim 取登录名；没有则返回 None（再降级到请求头）。"""
+    for key in ("preferred_username", "username", "unique_name", "name"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
 def _erp_login(username: str, password: str, enterprise_code: str = "") -> dict[str, Any]:
     base = AgentConfig.PLATFORM_BASE_URL.rstrip("/")
     body: dict[str, Any] = {"username": username, "password": password}
@@ -118,7 +127,11 @@ def require_auth(
     authorization: Annotated[str | None, Header()] = None,
     x_user_name: Annotated[str | None, Header(alias="X-User-Name")] = None,
 ) -> tuple[str, UserInfo]:
-    """返回 (access_token, user)。AUTH_REQUIRED=false 时跳过（本地 Mock）。"""
+    """返回 (access_token, user)。AUTH_REQUIRED=false 时跳过（本地 Mock）。
+
+    生产：user_id 固定取 JWT sub；username 优先 JWT claim，其次才用 X-User-Name（展示/兼容）。
+    历史归属以 user_id 为准，避免仅靠请求头冒名访问他人会话。
+    """
     if not AUTH_REQUIRED:
         return "", UserInfo(username=x_user_name or "dev", user_id=0)
 
@@ -133,13 +146,22 @@ def require_auth(
     if isinstance(exp, (int, float)) and time.time() > float(exp):
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
 
-    username = (x_user_name or "").strip()
-    if not username:
-        username = f"user-{payload.get('sub')}" if payload.get("sub") is not None else "unknown"
+    sub = payload.get("sub")
+    jwt_name = _username_from_jwt(payload)
+    header_name = (x_user_name or "").strip()
+    if jwt_name:
+        username = jwt_name
+    elif header_name:
+        # JWT 无用户名 claim 时保留 header（正常登录页仍靠此展示）
+        username = header_name
+    elif sub is not None:
+        username = f"user-{sub}"
+    else:
+        username = "unknown"
 
     user = UserInfo(
         username=username,
-        user_id=payload.get("sub"),
+        user_id=sub,
         expires_at=int(exp) if isinstance(exp, (int, float)) else None,
     )
     return token, user

@@ -18,7 +18,7 @@ _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
 from routes_config import HISTORY_DIR
-from routes.auth import UserInfo, require_auth
+from routes.auth import AUTH_REQUIRED, UserInfo, require_auth
 
 router = APIRouter(prefix="/api", tags=["history"])
 
@@ -75,18 +75,28 @@ def _is_legacy_unowned(row: sqlite3.Row | dict) -> bool:
     return not row_uid and not row_uname
 
 
-def _owned_by(row: sqlite3.Row | dict, user: UserInfo) -> bool:
-    """本人会话，或升级前无归属的旧会话（可被当前用户认领）。"""
+def _strict_owned_by(row: sqlite3.Row | dict, user: UserInfo) -> bool:
+    """严格本人会话（列表用）。有 user_id 时只比 user_id，防止靠伪造用户名越权。"""
     uid, uname = _user_keys(user)
     row_uid, row_uname = _row_owner(row)
-    if uid and row_uid and str(row_uid) == uid:
-        return True
+    if row_uid:
+        return bool(uid) and str(row_uid) == uid
     if uname and row_uname and row_uname == uname:
         return True
-    # #5 之前写入的会话无 user 字段：对已登录用户可见，避免历史「消失」
-    if _is_legacy_unowned(row) and (uname or uid):
+    # 本地 Mock：无归属行对 dev 可见
+    if not AUTH_REQUIRED and not row_uid and not row_uname and uname in ("", "dev"):
         return True
-    if not row_uid and not row_uname and not uid and uname in ("", "dev"):
+    return False
+
+
+def _owned_by(row: sqlite3.Row | dict, user: UserInfo, *, allow_legacy_claim: bool = False) -> bool:
+    """本人会话；allow_legacy_claim 时允许对「已知 thread_id」的无主旧会话认领。"""
+    if _strict_owned_by(row, user):
+        return True
+    uid, uname = _user_keys(user)
+    if allow_legacy_claim and _is_legacy_unowned(row) and (uid or uname):
+        return True
+    if not AUTH_REQUIRED and _is_legacy_unowned(row):
         return True
     return False
 
@@ -115,22 +125,35 @@ class SaveRequest(BaseModel):
 
 @router.get("/history")
 async def list_history(limit: int = 50, auth: tuple = Depends(require_auth)):
-    """获取当前用户的历史会话列表，按更新时间倒序。"""
+    """获取当前用户的历史会话列表，按更新时间倒序。
+
+    列表不返回、不认领无主旧会话（避免多用户抢领）；持有 thread_id 时仍可 get/save 认领。
+    """
     _, user = auth
+    uid, uname = _user_keys(user)
     db = get_db()
+    # 先按归属键收窄，再严格过滤（有 user_id 的行只认 user_id）
     rows = db.execute(
-        "SELECT id, title, created_at, updated_at, user_id, username "
-        "FROM conversations ORDER BY updated_at DESC LIMIT ?",
-        (max(limit * 5, 100),),
+        """SELECT id, title, created_at, updated_at, user_id, username
+           FROM conversations
+           WHERE (? != '' AND user_id = ?)
+              OR ((user_id IS NULL OR user_id = '') AND ? != '' AND username = ?)
+              OR (? = 0 AND (user_id IS NULL OR user_id = '') AND (username IS NULL OR username = ''))
+           ORDER BY updated_at DESC
+           LIMIT ?""",
+        (
+            uid,
+            uid,
+            uname,
+            uname,
+            0 if AUTH_REQUIRED else 1,
+            max(limit, 1),
+        ),
     ).fetchall()
     out = []
-    claimed = False
     for r in rows:
-        if not _owned_by(r, user):
+        if not _strict_owned_by(r, user):
             continue
-        if _is_legacy_unowned(r):
-            _claim_legacy(db, r["id"], user)
-            claimed = True
         out.append(
             {
                 "id": r["id"],
@@ -141,22 +164,20 @@ async def list_history(limit: int = 50, auth: tuple = Depends(require_auth)):
         )
         if len(out) >= limit:
             break
-    if claimed:
-        db.commit()
     db.close()
     return out
 
 
 @router.get("/history/{thread_id}")
 async def get_history(thread_id: str, auth: tuple = Depends(require_auth)):
-    """获取某次会话的完整对话记录（仅本人）。"""
+    """获取某次会话的完整对话记录（仅本人；已知 id 可认领无主旧会话）。"""
     _, user = auth
     db = get_db()
     row = db.execute("SELECT * FROM conversations WHERE id = ?", (thread_id,)).fetchone()
     if not row:
         db.close()
         raise HTTPException(status_code=404, detail="会话不存在")
-    if not _owned_by(row, user):
+    if not _owned_by(row, user, allow_legacy_claim=True):
         db.close()
         raise HTTPException(status_code=404, detail="会话不存在")
     if _is_legacy_unowned(row):
@@ -175,15 +196,17 @@ async def get_history(thread_id: str, auth: tuple = Depends(require_auth)):
 
 @router.post("/history/save")
 async def save_history(req: SaveRequest, auth: tuple = Depends(require_auth)):
-    """保存或更新会话记录（绑定当前用户）。"""
+    """保存或更新会话记录（绑定当前用户；已知 id 可认领无主旧会话）。"""
     _, user = auth
     uid, uname = _user_keys(user)
     now = time.time()
     db = get_db()
     existing = db.execute("SELECT * FROM conversations WHERE id = ?", (req.thread_id,)).fetchone()
-    if existing and not _owned_by(existing, user):
+    if existing and not _owned_by(existing, user, allow_legacy_claim=True):
         db.close()
         raise HTTPException(status_code=403, detail="无权覆盖他人会话")
+    if existing and _is_legacy_unowned(existing):
+        _claim_legacy(db, req.thread_id, user)
 
     title = req.title
     if not title and req.messages:
@@ -239,9 +262,12 @@ async def delete_history(thread_id: str, auth: tuple = Depends(require_auth)):
     if not row:
         db.close()
         return {"status": "ok"}
-    if not _owned_by(row, user):
+    if not _owned_by(row, user, allow_legacy_claim=True):
         db.close()
         raise HTTPException(status_code=404, detail="会话不存在")
+    if _is_legacy_unowned(row):
+        # 无主会话：先认领再删，避免他人仅凭猜测 id 误删；此处调用方已通过归属检查
+        _claim_legacy(db, thread_id, user)
     db.execute("DELETE FROM conversations WHERE id = ?", (thread_id,))
     db.commit()
     db.close()

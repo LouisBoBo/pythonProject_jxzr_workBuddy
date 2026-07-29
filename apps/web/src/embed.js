@@ -65,6 +65,29 @@ function pickContext(params) {
   return Object.keys(ctx).length ? ctx : null
 }
 
+/** 只读 JWT payload（不校验签名）；归属以服务端解析为准。 */
+function decodeJwtPayload(token) {
+  try {
+    const parts = String(token).split('.')
+    if (parts.length < 2) return {}
+    let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    payload += '='.repeat((4 - (payload.length % 4)) % 4)
+    const json = atob(payload)
+    const data = JSON.parse(json)
+    return data && typeof data === 'object' ? data : {}
+  } catch {
+    return {}
+  }
+}
+
+function jwtDisplayName(payload) {
+  for (const key of ['preferred_username', 'username', 'unique_name', 'name']) {
+    const v = payload?.[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return ''
+}
+
 /**
  * 在创建 router 前调用：消费 URL 中的 token / 上下文，并清理敏感 query。
  * @returns {{ embedded: boolean, sessionApplied: boolean }}
@@ -87,17 +110,27 @@ export function bootstrapEmbedFromUrl() {
   let sessionApplied = false
   if (token) {
     const prev = getSession() || {}
+    const payload = decodeJwtPayload(token)
+    const jwtName = jwtDisplayName(payload)
+    // 归属键优先 JWT sub；URL user_id 仅作兜底展示，不当最终信任源
     const user_id =
-      userIdRaw != null && String(userIdRaw).trim() !== ''
-        ? String(userIdRaw).trim()
-        : prev.user_id ?? null
+      payload.sub != null && String(payload.sub).trim() !== ''
+        ? String(payload.sub).trim()
+        : userIdRaw != null && String(userIdRaw).trim() !== ''
+          ? String(userIdRaw).trim()
+          : prev.user_id ?? null
+    const expires_at =
+      typeof payload.exp === 'number'
+        ? payload.exp
+        : prev.expires_at ?? null
     setSession({
       ...prev,
       access_token: token,
-      username: username || prev.username || displayName || 'embed-user',
-      display_name: displayName || username || prev.display_name || '',
+      // 展示名：JWT > URL > 旧会话；服务端仍以 JWT sub 定归属
+      username: jwtName || username || prev.username || displayName || 'embed-user',
+      display_name: displayName || username || jwtName || prev.display_name || '',
       user_id,
-      expires_at: prev.expires_at ?? null,
+      expires_at,
       from_embed: true,
     })
     sessionApplied = true

@@ -2,7 +2,10 @@
 """无 LLM：嵌入身份 / 历史归属 / 页上下文前缀冒烟。"""
 from __future__ import annotations
 
+import base64
+import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,9 +24,18 @@ def _ok(name: str) -> None:
     print(f"OK   {name}")
 
 
+def _fake_jwt(*, sub: str, username: str | None = None, exp_offset: int = 3600) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
+    payload_obj: dict = {"sub": sub, "exp": int(time.time()) + exp_offset}
+    if username is not None:
+        payload_obj["username"] = username
+    payload = base64.urlsafe_b64encode(json.dumps(payload_obj).encode()).decode().rstrip("=")
+    return f"{header}.{payload}.x"
+
+
 def test_history_ownership() -> None:
     from routes.auth import UserInfo
-    from routes.history import _owned_by
+    from routes.history import _owned_by, _strict_owned_by
 
     class Row(dict):
         def keys(self):
@@ -34,20 +46,59 @@ def test_history_ownership() -> None:
 
     alice = UserInfo(username="alice", user_id="1")
     bob = UserInfo(username="bob", user_id="2")
+    # 有效 token 属 alice，但伪造用户名 bob —— 不得靠用户名打开 bob 的已归属会话
+    spoof = UserInfo(username="bob", user_id="1")
     row_a = Row(user_id="1", username="alice")
     row_b = Row(user_id="2", username="bob")
     legacy = Row(user_id="", username="")
 
-    if not _owned_by(row_a, alice):
+    if not _strict_owned_by(row_a, alice):
         _fail("own_alice", "alice should own her row")
-    if _owned_by(row_a, bob):
+    if _strict_owned_by(row_a, bob):
         _fail("leak_bob", "bob must not own alice row")
-    if _owned_by(row_b, alice):
+    if _strict_owned_by(row_b, alice):
         _fail("leak_alice", "alice must not own bob row")
-    # 升级前无主会话：已登录用户可见（避免历史消失），再由 list 认领
-    if not _owned_by(legacy, alice):
-        _fail("legacy", "logged-in user should see unowned legacy rows")
+    if _strict_owned_by(row_b, spoof):
+        _fail("spoof_uname", "user_id=1 + username=bob must not own bob's row")
+    # 列表：无主不可见
+    if _strict_owned_by(legacy, alice):
+        _fail("list_legacy", "unowned must not appear in strict list ownership")
+    # 已知 thread_id：可认领
+    if not _owned_by(legacy, alice, allow_legacy_claim=True):
+        _fail("claim_legacy", "known-id claim should allow unowned")
+    if _owned_by(legacy, alice, allow_legacy_claim=False):
+        _fail("no_claim", "without claim flag unowned must be denied")
     _ok("history ownership")
+
+
+def test_require_auth_jwt_first() -> None:
+    from routes import auth as auth_mod
+
+    prev = auth_mod.AUTH_REQUIRED
+    auth_mod.AUTH_REQUIRED = True
+    try:
+        token = _fake_jwt(sub="42", username="from-jwt")
+        _, user = auth_mod.require_auth(
+            authorization=f"Bearer {token}",
+            x_user_name="spoofed-header",
+        )
+        if str(user.user_id) != "42":
+            _fail("jwt_sub", f"user_id={user.user_id}")
+        if user.username != "from-jwt":
+            _fail("jwt_name", f"username={user.username} (header must not win)")
+
+        token2 = _fake_jwt(sub="7")
+        _, user2 = auth_mod.require_auth(
+            authorization=f"Bearer {token2}",
+            x_user_name="login-user",
+        )
+        if user2.username != "login-user":
+            _fail("header_fallback", f"expected login-user got {user2.username}")
+        if str(user2.user_id) != "7":
+            _fail("jwt_sub2", f"user_id={user2.user_id}")
+    finally:
+        auth_mod.AUTH_REQUIRED = prev
+    _ok("require_auth jwt-first")
 
 
 def test_page_context_prefix() -> None:
@@ -91,6 +142,7 @@ def test_thread_default_rewrite_logic() -> None:
 
 def main() -> None:
     test_history_ownership()
+    test_require_auth_jwt_first()
     test_thread_default_rewrite_logic()
     test_page_context_prefix()
     print("SMOKE_OK embed-identity")
