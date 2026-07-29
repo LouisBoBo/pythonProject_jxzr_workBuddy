@@ -235,8 +235,7 @@
 
 | 优先级 | 项 |
 |--------|-----|
-| P1 | 「8081 → 6 步 → 报告」无 LLM 冒烟进 CI |
-| P1 | 「jsonl 导入 → analyze」无 LLM 冒烟：断言无 62、无 inventory 串入 |
+| P1 | 「8081 → 探活抽样 + jsonl 分析」无 LLM 冒烟：`make smoke-api-health` / `scripts/smoke_api_health.py` |
 | P1 | 探活 / 导入按 `run_id` 隔离，汇总默认只看本轮 |
 | P2 | 失败接口一键 `inspect` 进报告附录 |
 | P2 | 可选真实预发沙箱做合同级验收 |

@@ -36,7 +36,8 @@ def _default_export_dir() -> str:
 class Config:
     # --- 路径 ---
     REPO_ROOT = REPO_ROOT
-    DATA_DIR = REPO_ROOT / "data"
+    # 多实例 HA：挂载同一卷时设置 DATA_DIR=/shared/mes-data
+    DATA_DIR = Path(os.getenv("DATA_DIR") or (REPO_ROOT / "data")).expanduser().resolve()
 
     # --- LLM 配置 ---
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")

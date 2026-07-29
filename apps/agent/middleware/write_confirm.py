@@ -77,6 +77,7 @@ def _maybe_hold(request: Any) -> ToolMessage | None:
         "action_id": action["action_id"],
         "tool": name,
         "thread_id": action["thread_id"],
+        "expires_at": action.get("expires_at"),
         "summary": preview.get("summary") or f"待确认写入：{name}",
         "preview": preview,
         "message": (

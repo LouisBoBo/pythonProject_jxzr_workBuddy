@@ -3,23 +3,29 @@ ERP 出站调用日志落盘（JSONL）。
 
 仅记录助手 → 平台 HTTP 调用，不含 Authorization。
 失败写盘不影响主请求返回。
+
+支持 run_id：探活 / 外部导入按轮次隔离，汇总可默认只看本轮。
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import threading
 import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from config import Config
+from ha.fs_lock import InterProcessLock, instance_id
 
-_LOCK = threading.RLock()
+_LOCK = InterProcessLock("api_calls")
 CALL_LOG_MAX_LINES = int(os.getenv("API_CALL_LOG_MAX_LINES", "50000"))
+_run_id_ctx: ContextVar[str | None] = ContextVar("api_call_run_id", default=None)
 
 
 def _root() -> Path:
@@ -31,6 +37,94 @@ def _root() -> Path:
 def call_log_path() -> Path:
     return _root() / "calls.jsonl"
 
+
+def last_run_path() -> Path:
+    return _root() / "last_run.json"
+
+
+def new_run_id(prefix: str = "run") -> str:
+    """生成一轮探活/导入的 run_id，例 probe_20260729_093015_a1b2c3。"""
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "", (prefix or "run").strip()) or "run"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{safe}_{stamp}_{uuid.uuid4().hex[:6]}"
+
+
+@contextmanager
+def bind_run_id(run_id: str | None) -> Iterator[str | None]:
+    """在上下文内 append_api_call 自动带上 run_id（显式传入优先）。"""
+    token = _run_id_ctx.set(run_id)
+    try:
+        yield run_id
+    finally:
+        _run_id_ctx.reset(token)
+
+
+def set_last_run_id(source: str, run_id: str) -> None:
+    """记录某 source 最近一轮 run_id，供 summarize/analyze 默认 latest。"""
+    src = (source or "").strip().lower()
+    rid = (run_id or "").strip()
+    if not src or not rid:
+        return
+    path = last_run_path()
+    with _LOCK:
+        data: dict[str, Any] = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8") or "{}")
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        runs = data.get("runs") if isinstance(data.get("runs"), dict) else {}
+        runs[src] = rid
+        data["runs"] = runs
+        data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def get_last_run_id(source: str | None = None) -> str | None:
+    src = (source or "").strip().lower() or None
+    path = last_run_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return None
+    runs = data.get("runs") if isinstance(data, dict) else None
+    if not isinstance(runs, dict):
+        return None
+    if src:
+        rid = runs.get(src)
+        return str(rid) if rid else None
+    # 无 source：优先 sandbox，再 import，再任意
+    for key in ("sandbox", "probe", "import"):
+        if runs.get(key):
+            return str(runs[key])
+    for v in runs.values():
+        if v:
+            return str(v)
+    return None
+
+
+def resolve_run_id_filter(
+    run_id: str | None,
+    *,
+    source: str | None = None,
+    default: str = "all",
+) -> str | None:
+    """把工具参数解析成具体 run_id；返回 None 表示不过滤。
+
+    - ``all`` / 空：不过滤
+    - ``latest``：取该 source 最近一轮（无则不过滤，避免误空结果）
+    - 其它：按字面匹配
+    """
+    raw = default if run_id is None else str(run_id).strip()
+    if not raw or raw.lower() in ("all", "*", "any"):
+        return None
+    if raw.lower() == "latest":
+        return get_last_run_id(source)
+    return raw
 
 def clear_call_logs(
     *,
@@ -163,6 +257,12 @@ def append_api_call(record: dict[str, Any]) -> None:
         # 脱敏：禁止落 token
         row.pop("authorization", None)
         row.pop("token", None)
+        # run_id：显式优先，否则取上下文（探活/导入绑定）
+        if not row.get("run_id"):
+            ctx_rid = _run_id_ctx.get()
+            if ctx_rid:
+                row["run_id"] = ctx_rid
+        row.setdefault("instance_id", instance_id())
         line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
         path_file = call_log_path()
         with _LOCK:
@@ -198,6 +298,7 @@ def query_api_calls(
     path_keyword: str | None = None,
     ok: bool | None = None,
     source: str | None = None,
+    run_id: str | None = None,
     since_ts: float | None = None,
     until_ts: float | None = None,
     offset: int = 0,
@@ -211,6 +312,7 @@ def query_api_calls(
         "offset": offset,
         "limit": limit,
         "log_path": str(path),
+        "run_id_filter": run_id,
     }
     if not path.exists():
         return empty
@@ -220,6 +322,7 @@ def query_api_calls(
     method_u = (method or "").strip().upper() or None
     kw = (path_keyword or "").strip().lower() or None
     src = (source or "").strip().lower() or None
+    rid = (run_id or "").strip() or None
     need = offset + limit + 1
     matched: list[dict[str, Any]] = []
 
@@ -251,6 +354,8 @@ def query_api_calls(
             continue
         if src and str(row.get("source") or "").lower() != src:
             continue
+        if rid and str(row.get("run_id") or "") != rid:
+            continue
         if kw:
             blob = f"{row.get('path') or ''} {row.get('path_key') or ''}".lower()
             if kw not in blob:
@@ -272,6 +377,7 @@ def query_api_calls(
         "since_ts": since_ts,
         "until_ts": until_ts,
         "source_filter": src,
+        "run_id_filter": rid,
     }
 
 

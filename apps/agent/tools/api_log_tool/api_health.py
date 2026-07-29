@@ -11,6 +11,7 @@ from tools.api_log_tool.call_store import (
     default_since_ts,
     path_pattern_key,
     query_api_calls,
+    resolve_run_id_filter,
 )
 from tools.api_log_tool.catalog import (
     build_catalog_from_file,
@@ -19,6 +20,42 @@ from tools.api_log_tool.catalog import (
 )
 from tools.api_log_tool.probe import run_catalog_probe
 from tools.api_log_tool.log_import import import_log_file
+
+
+def _fetch_calls(
+    *,
+    since_ts: float | None,
+    source: str | None,
+    run_id: str | None,
+    limit_pages: int = 20000,
+) -> list[dict[str, Any]]:
+    """分页拉取调用日志。"""
+    calls: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = query_api_calls(
+            since_ts=since_ts,
+            offset=offset,
+            limit=200,
+            source=source,
+            run_id=run_id,
+        )
+        items = page.get("items") or []
+        calls.extend(items)
+        if not page.get("has_more") or not items:
+            break
+        offset += len(items)
+        if offset > limit_pages:
+            break
+    return calls
+
+
+def _default_run_id_for_source(source_filter: str | None) -> str:
+    """文档探活/导入分析默认 latest；未指定 source 时 all（避免误伤 erp 混查）。"""
+    src = (source_filter or "").strip().lower()
+    if src in ("sandbox", "probe", "import"):
+        return "latest"
+    return "all"
 
 
 def build_api_catalog(
@@ -119,6 +156,10 @@ def query_api_call_log(
         str | None,
         "日志来源过滤：erp / sandbox / probe / import；空=全部",
     ] = None,
+    run_id: Annotated[
+        str | None,
+        "轮次：具体 run_id / latest / all；默认 all（原始查询不过滤轮次）",
+    ] = "all",
     lookback_days: Annotated[int, "未指定 since 时的回溯天数，默认 7"] = 7,
     since: Annotated[str | None, "起始时间 YYYY-MM-DD"] = None,
     offset: Annotated[int, "分页偏移"] = 0,
@@ -127,18 +168,22 @@ def query_api_call_log(
     """查询调用日志（助手出站 / 沙箱探活 / 外部导入）。"""
     since_ts = _parse_since(since, lookback_days)
     ok = False if only_errors else None
+    rid = resolve_run_id_filter(run_id, source=source, default="all")
     page = query_api_calls(
         method=method,
         path_keyword=path_keyword,
         ok=ok,
         source=source,
+        run_id=rid,
         since_ts=since_ts,
         offset=offset,
         limit=limit,
     )
     page["since"] = datetime.fromtimestamp(since_ts).strftime("%Y-%m-%d %H:%M:%S") if since_ts else None
+    page["run_id"] = rid
     page["note"] = (
         "来源：erp=助手出站，sandbox/probe=探活，import=外部日志导入。"
+        "run_id=latest 只看该 source 最近一轮；all=不按轮次过滤。"
         "未见调用≠接口不可用。"
     )
     return page
@@ -153,6 +198,11 @@ def summarize_api_doc_vs_logs(
         str | None,
         "仅统计该 source：erp / sandbox / import；空=全部来源合并",
     ] = None,
+    run_id: Annotated[
+        str | None,
+        "轮次过滤：latest=该 source 最近一轮（探活后默认）；all=不限；或传具体 run_id。"
+        "source 为空时默认 all。",
+    ] = None,
 ) -> dict[str, Any]:
     """对照当前接口目录与调用日志：可行 / 有问题 / 未见调用。"""
     index = load_index()
@@ -164,18 +214,9 @@ def summarize_api_doc_vs_logs(
 
     since_ts = default_since_ts(lookback_days)
     src = (source_filter or "").strip() or None
-    # 拉取时间窗内全部调用（分页拼）
-    calls: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        page = query_api_calls(since_ts=since_ts, offset=offset, limit=200, source=src)
-        items = page.get("items") or []
-        calls.extend(items)
-        if not page.get("has_more") or not items:
-            break
-        offset += len(items)
-        if offset > 20000:
-            break
+    rid_default = _default_run_id_for_source(src)
+    rid = resolve_run_id_filter(run_id, source=src, default=rid_default)
+    calls = _fetch_calls(since_ts=since_ts, source=src, run_id=rid)
 
     # 按 method+path_key 聚合日志
     stats: dict[tuple[str, str], dict[str, Any]] = {}
@@ -305,6 +346,7 @@ def summarize_api_doc_vs_logs(
             "error_rate_threshold": thr,
             "slow_ms": slow_ms,
             "source_filter": src,
+            "run_id": rid,
         },
         "summary": {
             "healthy": len(ok_list),
@@ -343,21 +385,16 @@ def rank_problematic_apis(
         str | None,
         "仅统计该 source：erp / sandbox / import；空=全部",
     ] = None,
+    run_id: Annotated[
+        str | None,
+        "轮次：latest / all / 具体 run_id；source 为 sandbox|import 时默认 latest",
+    ] = None,
 ) -> dict[str, Any]:
     """仅按调用日志排行问题接口（可不依赖目录）。"""
     since_ts = default_since_ts(lookback_days)
     src = (source_filter or "").strip() or None
-    calls: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        page = query_api_calls(since_ts=since_ts, offset=offset, limit=200, source=src)
-        items = page.get("items") or []
-        calls.extend(items)
-        if not page.get("has_more") or not items:
-            break
-        offset += len(items)
-        if offset > 20000:
-            break
+    rid = resolve_run_id_filter(run_id, source=src, default=_default_run_id_for_source(src))
+    calls = _fetch_calls(since_ts=since_ts, source=src, run_id=rid)
 
     buckets: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {"total": 0, "fail": 0, "slow": 0, "latencies": [], "sample_error": "", "sample_status": None}
@@ -406,9 +443,13 @@ def rank_problematic_apis(
         "lookback_days": lookback_days,
         "since": datetime.fromtimestamp(since_ts).strftime("%Y-%m-%d %H:%M:%S"),
         "source_filter": src,
+        "run_id": rid,
         "returned": min(len(ranked), max(1, min(int(top_n or 20), 50))),
         "items": ranked[: max(1, min(int(top_n or 20), 50))],
-        "note": "仅基于调用日志；可与 summarize_api_doc_vs_logs 配合。外部导入请 source_filter='import'。",
+        "note": (
+            "仅基于调用日志；可与 summarize_api_doc_vs_logs 配合。"
+            "外部导入请 source_filter='import'、run_id='latest'。"
+        ),
     }
 
 
@@ -557,12 +598,16 @@ def analyze_api_errors_from_logs(
         str | None,
         "可选：用户明确要求对照文档时传入；会建目录并做附录对照。纯日志分析请留空。",
     ] = None,
+    run_id: Annotated[
+        str | None,
+        "轮次：默认 latest（只分析最近一次导入）；all=该 source 全部；或传具体 run_id",
+    ] = "latest",
     error_rate_threshold: Annotated[float, "错误率阈值，默认 0.3"] = 0.3,
 ) -> dict[str, Any]:
     """基于（导入的）调用日志分析 API 接口错误：排行 + 样例 + 好/坏接口总评。
 
     典型流程：用户上传网关日志 → import_external_api_logs([附件路径]) → 本工具。
-    默认只分析本次导入日志，不把接口文档目录的接口总数写进主报告。
+    默认只分析本轮导入（run_id=latest），不把接口文档目录的接口总数写进主报告。
     文档沙箱探活请走 build_api_catalog → probe → render_api_health_report，勿与本工具混用。
     """
     src_raw = source_filter if source_filter is not None else "import"
@@ -579,19 +624,14 @@ def analyze_api_errors_from_logs(
 
     since_ts = default_since_ts(lookback_days)
     thr = max(0.0, min(float(error_rate_threshold or 0.3), 1.0))
+    rid = resolve_run_id_filter(
+        run_id,
+        source=src_filter,
+        default=_default_run_id_for_source(src_filter or "import"),
+    )
 
-    # 拉取该来源全部调用，同时算好/坏
-    calls: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        page = query_api_calls(since_ts=since_ts, offset=offset, limit=200, source=src_filter)
-        items = page.get("items") or []
-        calls.extend(items)
-        if not page.get("has_more") or not items:
-            break
-        offset += len(items)
-        if offset > 20000:
-            break
+    # 拉取该来源（本轮）全部调用
+    calls = _fetch_calls(since_ts=since_ts, source=src_filter, run_id=rid)
 
     buckets: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
@@ -723,6 +763,7 @@ def analyze_api_errors_from_logs(
     err_page = query_api_calls(
         ok=False,
         source=src_filter,
+        run_id=rid,
         since_ts=since_ts,
         offset=0,
         limit=min(30, max(5, int(top_n or 20))),
@@ -759,6 +800,7 @@ def analyze_api_errors_from_logs(
             source_filter=src_filter,
             top_n=top_n,
             error_rate_threshold=thr,
+            run_id=rid or "all",
         )
         catalog_part = {
             "summary": health.get("summary"),
@@ -790,11 +832,13 @@ def analyze_api_errors_from_logs(
         undocumented_apis=undocumented_apis if use_catalog else [],
         catalog_total=len(catalog_endpoints) if use_catalog else 0,
         with_catalog=use_catalog,
+        run_id=rid,
     )
 
     return {
         "status": "ok",
         "source_filter": src_filter,
+        "run_id": rid,
         "lookback_days": lookback_days,
         "call_count": len(calls),
         "endpoint_count": len(buckets),
@@ -812,7 +856,7 @@ def analyze_api_errors_from_logs(
         "report_markdown": report_md,
         "reply_hint": (
             "请把 report_markdown 作为最终回复主体。"
-            "本报告以「本次导入日志」为准（调用条数 / 错误与正常接口）；"
+            "本报告以「本轮导入日志」为准（run_id / 调用条数 / 错误与正常接口）；"
             "不要把接口文档的接口总数说成日志里的接口数。"
             "文档沙箱探活请用 render_api_health_report，勿与本报告混谈。"
         ),
@@ -835,6 +879,7 @@ def _compose_error_analysis_report(
     undocumented_apis: list[dict[str, Any]] | None = None,
     catalog_total: int = 0,
     with_catalog: bool = False,
+    run_id: str | None = None,
 ) -> str:
     src_label = {
         "import": "外部导入日志（source=import）",
@@ -848,15 +893,20 @@ def _compose_error_analysis_report(
     cat_total = int(catalog_total or catalog_summary.get("catalog_total") or 0) if with_catalog else 0
     log_hit = int(catalog_summary.get("log_hit") or (len(ranked) + len(healthy_apis))) if with_catalog else 0
 
-    # —— 主报告只谈「本次日志」，文档数字绝不进覆盖行 ——
     lines = [
         "## API 接口错误分析",
         "",
         f"**证据来源**：{src_label}（近 {lookback_days} 天）",
-        "**分析范围**：仅本次导入日志中出现的调用；与接口文档目录相互独立，不把文档接口总数当作日志接口数。",
-        f"**本次日志**：共 **{call_count}** 条调用，归并为 **{endpoint_count}** 个接口"
-        f"（同一 path 模板多次调用合并统计）。",
     ]
+    if run_id:
+        lines.append(f"**本轮 run_id**：`{run_id}`（仅统计本轮导入，与历史轮次隔离）")
+    lines.extend(
+        [
+            "**分析范围**：仅本轮导入日志中出现的调用；与接口文档目录相互独立，不把文档接口总数当作日志接口数。",
+            f"**本次日志**：共 **{call_count}** 条调用，归并为 **{endpoint_count}** 个接口"
+            f"（同一 path 模板多次调用合并统计）。",
+        ]
+    )
 
     lines.extend(["", "### 结果总览", ""])
     err_n = len(ranked)
@@ -1031,7 +1081,16 @@ def render_api_health_report(
     if not index:
         return {"error": "尚未构建接口目录", "hint": "先 build_api_catalog"}
 
-    health = summarize_api_doc_vs_logs(lookback_days=lookback_days)
+    from tools.api_log_tool.call_store import get_last_run_id
+
+    # 文档探活报告优先本轮 sandbox/probe，避免被最近一次 import 抢 latest
+    rid = get_last_run_id("sandbox") or get_last_run_id("probe")
+    src = "sandbox" if get_last_run_id("sandbox") else ("probe" if get_last_run_id("probe") else None)
+    health = summarize_api_doc_vs_logs(
+        lookback_days=lookback_days,
+        source_filter=src,
+        run_id=rid or "all",
+    )
     if health.get("error"):
         return health
 
@@ -1382,7 +1441,8 @@ def _compact_probe_payload(raw: dict[str, Any]) -> dict[str, Any]:
     }
     out["methods"] = dict(methods)
     out["results_omitted"] = True
-    out["next"] = "summarize_api_doc_vs_logs → rank_problematic_apis → render_api_health_report"
+    out["run_id"] = raw.get("run_id")
+    out["next"] = "summarize_api_doc_vs_logs(run_id='latest') → rank_problematic_apis → render_api_health_report"
     out["note"] = (
         str(raw.get("note") or "")
         + " 详细 results 已省略；请继续 summarize / rank / render_api_health_report。"

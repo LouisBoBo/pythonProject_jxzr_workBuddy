@@ -24,6 +24,16 @@ export function getUsername() {
   return getSession()?.username || ''
 }
 
+export function getDisplayName() {
+  const s = getSession()
+  return s?.display_name || s?.username || ''
+}
+
+export function getUserId() {
+  const s = getSession()
+  return s?.user_id != null && s.user_id !== '' ? String(s.user_id) : ''
+}
+
 export function setSession(session) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
 }

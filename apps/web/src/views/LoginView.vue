@@ -66,6 +66,7 @@ async function onSubmit() {
       access_token: data.access_token,
       token_type: data.token_type || 'bearer',
       username: data.username,
+      display_name: data.username,
       user_id: data.user_id,
       enterprise_code: data.enterprise_code || '',
       expires_at: data.expires_at,

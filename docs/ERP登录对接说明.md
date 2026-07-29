@@ -33,3 +33,5 @@
 - API：`apps/api/routes/auth.py`
 - Web：`apps/web/src/views/LoginView.vue`、`auth.js`、`router.js`
 - ERP token 透传：`apps/agent/tools/platform_api.py`（`set_request_erp_token`）
+
+从 MES 页带 token 打开助手（iframe / 新开页）：见 [`平台嵌入说明.md`](./平台嵌入说明.md)。

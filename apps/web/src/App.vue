@@ -2,8 +2,8 @@
   <div v-if="isLoginRoute" class="login-shell">
     <router-view />
   </div>
-  <div v-else class="app-shell">
-    <aside class="sidebar">
+  <div v-else :class="['app-shell', { 'is-embed': embedMode }]">
+    <aside v-if="!embedMode" class="sidebar">
       <div class="sidebar-brand">
         <div class="brand-icon">
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
@@ -83,6 +83,16 @@
     </aside>
 
     <main class="main-content">
+      <div v-if="embedMode" class="embed-bar">
+        <div class="embed-bar-left">
+          <span class="embed-brand">MES Agent</span>
+          <span v-if="contextLabel" class="embed-ctx">{{ contextLabel }}</span>
+        </div>
+        <div class="embed-bar-right">
+          <span class="embed-user">{{ displayName }}</span>
+          <button type="button" class="embed-new" @click="goNewChat">新对话</button>
+        </div>
+      </div>
       <router-view />
     </main>
   </div>
@@ -94,14 +104,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { FolderOpened } from '@element-plus/icons-vue'
 import { getHistoryList, deleteHistory } from './api.js'
-import { clearSession, getUsername } from './auth.js'
+import { clearSession, getDisplayName, getUsername } from './auth.js'
+import { isEmbedMode, pageContextLabel, getPageContext, setEmbedMode, clearPageContext } from './embed.js'
 
 const route = useRoute()
 const router = useRouter()
 
 const sessions = ref([])
 const historyLoading = ref(false)
-const displayName = ref(getUsername() || '用户')
+const displayName = ref(getDisplayName() || getUsername() || '用户')
+const embedMode = ref(isEmbedMode())
+const contextLabel = ref(pageContextLabel(getPageContext()))
 
 const isLoginRoute = computed(() => route.name === 'login' || route.path === '/login')
 const groupedHistory = computed(() => groupSessions(sessions.value))
@@ -189,6 +202,8 @@ async function onSessionCommand(cmd, item) {
 
 function onLogout() {
   clearSession()
+  setEmbedMode(false)
+  clearPageContext()
   router.replace('/login')
 }
 
@@ -198,13 +213,17 @@ function onHistoryUpdated() {
 
 watch(isLoginRoute, (v) => {
   if (!v) {
-    displayName.value = getUsername() || '用户'
+    displayName.value = getDisplayName() || getUsername() || '用户'
+    embedMode.value = isEmbedMode()
+    contextLabel.value = pageContextLabel(getPageContext())
     loadHistory()
   }
 })
 
 onMounted(() => {
-  displayName.value = getUsername() || '用户'
+  displayName.value = getDisplayName() || getUsername() || '用户'
+  embedMode.value = isEmbedMode()
+  contextLabel.value = pageContextLabel(getPageContext())
   loadHistory()
   window.addEventListener('mes-history-updated', onHistoryUpdated)
 })
@@ -457,5 +476,61 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg-secondary);
+}
+
+.app-shell.is-embed .main-content {
+  width: 100%;
+}
+
+.embed-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-primary, #e5e7eb);
+  background: #f8fafc;
+}
+
+.embed-bar-left,
+.embed-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.embed-brand {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #0f172a);
+}
+
+.embed-ctx {
+  font-size: 12px;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.embed-user {
+  font-size: 12px;
+  color: #475569;
+}
+
+.embed-new {
+  border: 1px solid #dbe1ea;
+  background: #fff;
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.embed-new:hover {
+  background: #f1f5f9;
 }
 </style>

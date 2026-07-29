@@ -30,6 +30,7 @@ data/api_catalog/*
 !data/schema/.gitkeep
 !data/api_calls/.gitkeep
 !data/api_catalog/.gitkeep
+data/.locks/
 *.xlsx
 *.csv
 !apps/agent/test_data/**

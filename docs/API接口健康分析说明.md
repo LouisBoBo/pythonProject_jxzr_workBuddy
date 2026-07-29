@@ -114,8 +114,9 @@ build_api_catalog → list_api_catalog → probe_api_catalog
 - MockClient **不写**日志
 - 行数上限：`API_CALL_LOG_MAX_LINES`（默认 50000）
 
-探活开始会清理历史 `source=sandbox|probe`（保留 `erp`）。  
-外部导入默认清理旧 `source=import`，只保留本次文件。
+探活开始会清理历史 `source=sandbox|probe`（保留 `erp`），并为本轮写入 **`run_id`**。  
+外部导入默认清理旧 `source=import`，并写入新的 **`run_id`**。  
+`summarize` / `analyze` / `rank` 在 source 为 sandbox|import 时默认 **`run_id=latest`**（只看本轮）；需要跨轮对比时传 `run_id="all"`。
 
 ### path_key 通用规则
 
@@ -165,3 +166,13 @@ Skill：`apps/agent/skills/analyze-api-health/SKILL.md`
 - **能力 A**：8081 文档 → 报告展示文档接口总数（如 62），沙箱探活通过  
 - **能力 B**：只上传 `api_access_sample.jsonl` → 报告为 **7 条调用 / 4 个接口**，主报告无「文档 62」、无历史 nginx 串入  
 - 故意断网或错误 path 时日志有 `ok=false`，业务工具仍返回 `error` 结构而非崩溃  
+
+### 无 LLM 冒烟（回归）
+
+```bash
+# 仓库根目录；日志分析必跑；探活需本机 8081 + 8001（没有则 SKIP）
+make smoke-api-health
+
+# CI / 强制探活也必须过：
+SMOKE_REQUIRE_PROBE=1 make smoke-api-health
+```

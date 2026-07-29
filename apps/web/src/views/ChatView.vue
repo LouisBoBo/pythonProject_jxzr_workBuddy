@@ -117,6 +117,25 @@
 
     <!-- Prompt bar: 1:1 CloudPromptBar style -->
     <div class="prompt-area">
+      <div class="audit-strip" v-if="threadId">
+        <button type="button" class="audit-toggle" @click="toggleAudit">
+          {{ auditOpen ? '收起本会话写操作记录' : '本会话写操作记录' }}
+          <span v-if="!auditOpen && auditItems.length" class="audit-count">{{ auditItems.length }}</span>
+        </button>
+        <div v-if="auditOpen" class="audit-panel">
+          <div v-if="auditLoading" class="audit-empty">加载中…</div>
+          <div v-else-if="!auditItems.length" class="audit-empty">暂无写操作审计（确认/取消/过期会落在这里）</div>
+          <ul v-else class="audit-list">
+            <li v-for="(it, idx) in auditItems" :key="idx" class="audit-item">
+              <span class="audit-event" :class="'ev-' + (it.event || '').replace('write_', '')">
+                {{ auditEventLabel(it.event) }}
+              </span>
+              <span class="audit-main">{{ auditMainText(it) }}</span>
+              <span class="audit-time">{{ formatAuditTime(it.ts) }}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
       <div class="prompt-bar-wrapper">
         <div class="prompt-bar">
           <div v-if="attachedFiles.length" class="attached-files">
@@ -184,9 +203,10 @@
 <script setup>
 import { ref, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites } from '../api.js'
+import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
+import { getUsername, getUserId } from '../auth.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -209,6 +229,9 @@ const threadId = ref('')
 const loadingSession = ref(false)
 const copiedIndex = ref(-1)
 const editingFromIndex = ref(-1)
+const auditOpen = ref(false)
+const auditLoading = ref(false)
+const auditItems = ref([])
 let activeRequestId = 0
 let copiedTimer = null
 
@@ -221,7 +244,8 @@ const suggestions = [
 ]
 
 function createThreadId() {
-  return 'session-' + Date.now()
+  const u = (getUserId() || getUsername() || 'anon').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24)
+  return `session-${u || 'anon'}-${Date.now()}`
 }
 
 function notifyHistoryUpdated() {
@@ -289,6 +313,7 @@ function pendingItemToCard(item) {
     status: 'pending',
     tool: item.tool,
     thread_id: item.thread_id,
+    expires_at: item.expires_at,
     summary: preview.summary || `待确认写入：${item.tool || '写操作'}`,
     preview,
     message: '',
@@ -352,30 +377,36 @@ async function attachPendingConfirms(targetThread) {
     const items = res.data?.items || []
     if (!items.length) return
     const cards = items.map(pendingItemToCard)
-    const actionIds = new Set(cards.map((c) => c.action_id).filter(Boolean))
-    const stable = buildImportSummaryMarkdown(cards[0]?.preview)
+    const byId = new Map(cards.map((c) => [c.action_id, c]))
+    const attached = new Set()
 
-    // 1) 已挂过该 action 的消息：合并卡片；若正文仍是「尚未写入」则换成稳定摘要
-    let mergedIntoExisting = false
+    // 1) 只把「该消息已拥有的 action」合并回去，避免一笔 pending 把整队都挂到同一条
     for (const msg of messages.value) {
       if (msg.role !== 'assistant') continue
-      const owned = (msg.confirms || []).some((c) => actionIds.has(c.action_id))
-      if (!owned) continue
-      msg.confirms = mergeConfirmCards(msg.confirms || [], cards)
+      const ownedIds = (msg.confirms || []).map((c) => c.action_id).filter(Boolean)
+      if (!ownedIds.length) continue
+      const mine = ownedIds.map((id) => byId.get(id)).filter(Boolean)
+      if (!mine.length) continue
+      msg.confirms = mergeConfirmCards(msg.confirms || [], mine)
+      mine.forEach((c) => attached.add(c.action_id))
+      const stable = buildImportSummaryMarkdown(mine[0]?.preview)
       if (stable && /尚未写入平台|确认卡片/.test(msg.content || '')) {
         msg.content = stable
       }
-      mergedIntoExisting = true
     }
-    if (mergedIntoExisting) {
+
+    const leftover = cards.filter((c) => c.action_id && !attached.has(c.action_id))
+    if (!leftover.length) {
       await persistSession()
       scrollToBottom()
       return
     }
 
-    // 2) 流式中：挂到 streamConfirms，并用稳定摘要替换模型「尚未写入」散文
+    const stable = buildImportSummaryMarkdown(leftover[0]?.preview)
+
+    // 2) 流式中：剩余挂到 streamConfirms
     if (streaming.value) {
-      streamConfirms.value = mergeConfirmCards(streamConfirms.value, cards)
+      streamConfirms.value = mergeConfirmCards(streamConfirms.value, leftover)
       if (stable) {
         streamContent.value = stable
         streamAnswerPending.value = true
@@ -384,12 +415,12 @@ async function attachPendingConfirms(targetThread) {
       return
     }
 
-    // 3) 最近一条助手消息已是导入/待确认文案：合并进同一条，避免「模型一句 + 卡片一句」拆成两条
+    // 3) 最近助手消息可合并（导入文案 / 已有确认卡）
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const msg = messages.value[i]
       if (msg.role !== 'assistant') continue
       if ((msg.confirms || []).length || looksLikePendingImportMessage(msg.content)) {
-        msg.confirms = mergeConfirmCards(msg.confirms || [], cards)
+        msg.confirms = mergeConfirmCards(msg.confirms || [], leftover)
         if (stable) msg.content = stable
         await persistSession()
         scrollToBottom()
@@ -398,11 +429,14 @@ async function attachPendingConfirms(targetThread) {
       break
     }
 
-    // 4) 确实没有可合并对象时，再单独插一条
+    // 4) 单独插一条（可含多张确认卡）
     messages.value.push({
       role: 'assistant',
-      content: stable || '有待确认的写操作，请确认或取消：',
-      confirms: cards,
+      content:
+        leftover.length > 1
+          ? `有 ${leftover.length} 笔待确认写操作，请逐一确认或取消：`
+          : stable || '有待确认的写操作，请确认或取消：',
+      confirms: leftover,
       process: [],
       processCollapsed: true,
     })
@@ -482,6 +516,69 @@ async function loadSession(id) {
     loadingSession.value = false
     nextTick(() => inputEl.value?.focus())
     await attachPendingConfirms(id)
+    await loadWriteAudit(id)
+  }
+}
+
+async function loadWriteAudit(tid) {
+  if (!tid) {
+    auditItems.value = []
+    return
+  }
+  auditLoading.value = true
+  try {
+    const res = await fetchWriteAudit({ threadId: tid, limit: 20 })
+    auditItems.value = res.data?.items || []
+  } catch (e) {
+    console.warn('拉取写操作审计失败', e)
+    auditItems.value = []
+  } finally {
+    auditLoading.value = false
+  }
+}
+
+function toggleAudit() {
+  auditOpen.value = !auditOpen.value
+  if (auditOpen.value) loadWriteAudit(threadId.value)
+}
+
+function auditEventLabel(ev) {
+  const map = {
+    write_pending: '待确认',
+    write_confirmed: '已写入',
+    write_cancelled: '已取消',
+    write_expired: '已过期',
+    write_failed: '失败',
+    write_executing: '执行中',
+  }
+  return map[ev] || (ev || '事件').replace(/^write_/, '')
+}
+
+function auditMainText(it) {
+  const tool = it?.tool || '写操作'
+  const file =
+    it?.args_summary?.file ||
+    it?.preview_summary?.file ||
+    it?.result_summary?.file ||
+    ''
+  const entity =
+    it?.preview_summary?.target_entity ||
+    it?.result_summary?.target_entity ||
+    ''
+  const bits = [tool]
+  if (entity) bits.push(String(entity))
+  if (file) bits.push(String(file))
+  if (it?.result_summary?.error) bits.push(String(it.result_summary.error).slice(0, 40))
+  return bits.join(' · ')
+}
+
+function formatAuditTime(ts) {
+  const n = Number(ts)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  try {
+    return new Date(n * 1000).toLocaleString()
+  } catch {
+    return ''
   }
 }
 
@@ -496,6 +593,8 @@ function startNewChat() {
   streamConfirms.value = []
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
+  auditOpen.value = false
+  auditItems.value = []
   attachedFiles.value = []
   streaming.value = false
   editingFromIndex.value = -1
@@ -618,6 +717,7 @@ async function send(text) {
       status: 'pending',
       tool: event.tool,
       thread_id: event.thread_id || currentThread,
+      expires_at: event.expires_at,
       summary: event.summary || '待确认写入平台',
       preview: event.preview || {},
       message: event.message || '',
@@ -766,6 +866,7 @@ async function send(text) {
         scrollToBottom()
         await persistSession()
         await attachPendingConfirms(currentThread)
+        await loadWriteAudit(currentThread)
       },
       async (err) => {
         if (requestId !== activeRequestId || threadId.value !== currentThread) return
@@ -789,6 +890,7 @@ async function send(text) {
         scrollToBottom()
         await persistSession()
         await attachPendingConfirms(currentThread)
+        await loadWriteAudit(currentThread)
       },
       filePaths
     )
@@ -811,14 +913,15 @@ async function send(text) {
     scrollToBottom()
     await persistSession()
     await attachPendingConfirms(currentThread)
+    await loadWriteAudit(currentThread)
   }
 }
 
 function applyConfirmResolved(list, payload) {
   if (!Array.isArray(list) || !payload?.action_id) return list || []
   const status = payload.status
-  // 确认成功或取消：移除卡片
-  if (status === 'confirmed' || status === 'cancelled') {
+  // 确认成功 / 取消 / 过期：移除卡片（过期不可重试）
+  if (status === 'confirmed' || status === 'cancelled' || status === 'expired') {
     return list.filter((c) => c.action_id !== payload.action_id)
   }
   // 失败：保留 pending 以便重试，并带上错误信息
@@ -1028,6 +1131,13 @@ function onConfirmResolved(msg, payload) {
   } else if (payload?.status === 'cancelled') {
     msg.content = finalizeWriteMessage(msg.content, '已取消写入，平台数据未变更。', preview)
     collapseImportDuplicateMessages(msg)
+  } else if (payload?.status === 'expired') {
+    msg.content = finalizeWriteMessage(
+      msg.content,
+      '确认已过期，未写入平台。请重新发起导入后再确认。',
+      preview
+    )
+    collapseImportDuplicateMessages(msg)
   } else if (payload?.status === 'failed' && payload?.error) {
     const tip = `写入失败：${payload.error}（可重试）`
     if (msg.content && !msg.content.includes(tip)) {
@@ -1037,6 +1147,7 @@ function onConfirmResolved(msg, payload) {
     }
   }
   persistSession()
+  loadWriteAudit(threadId.value)
 }
 
 function onStreamConfirmResolved(payload) {
@@ -1052,10 +1163,17 @@ function onStreamConfirmResolved(payload) {
       streamContent.value = finalizeWriteMessage(streamContent.value, tip, preview)
     } else if (payload?.status === 'cancelled') {
       streamContent.value = finalizeWriteMessage(streamContent.value, '已取消写入，平台数据未变更。', preview)
+    } else if (payload?.status === 'expired') {
+      streamContent.value = finalizeWriteMessage(
+        streamContent.value,
+        '确认已过期，未写入平台。请重新发起导入后再确认。',
+        preview
+      )
     } else if (payload?.status === 'failed') {
       const tip = `写入失败：${payload.error || ''}（可重试）`
       streamContent.value = (streamContent.value || '') + (streamContent.value ? `\n\n${tip}` : tip)
     }
+    loadWriteAudit(threadId.value)
     return
   }
 
@@ -1486,6 +1604,91 @@ onMounted(async () => {
   flex-shrink: 0;
   padding: 16px 24px 24px;
   background: linear-gradient(180deg, transparent 0%, var(--ui-bg) 30%);
+}
+
+.audit-strip {
+  max-width: 100%;
+  margin: 0 auto 10px;
+}
+
+.audit-toggle {
+  border: none;
+  background: transparent;
+  color: var(--ui-text-dim);
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.audit-toggle:hover {
+  color: var(--ui-text);
+}
+
+.audit-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ui-text-dim) 18%, transparent);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.audit-panel {
+  margin-top: 8px;
+  max-height: 140px;
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, var(--ui-border, #ddd) 70%, transparent);
+  padding-top: 8px;
+}
+
+.audit-empty {
+  font-size: 12px;
+  color: var(--ui-text-dim);
+}
+
+.audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audit-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--ui-text-dim);
+}
+
+.audit-event {
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.audit-event.ev-confirmed { color: #1a7f37; }
+.audit-event.ev-cancelled { color: #9a6700; }
+.audit-event.ev-expired { color: #cf222e; }
+.audit-event.ev-failed { color: #cf222e; }
+.audit-event.ev-pending { color: #0969da; }
+
+.audit-main {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-time {
+  white-space: nowrap;
+  opacity: 0.85;
 }
 
 .prompt-bar-wrapper {
