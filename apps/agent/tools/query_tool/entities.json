@@ -9,9 +9,15 @@
         "制造工单",
         "派工单",
         "工作订单",
+        "在制工单",
+        "异常工单",
+        "紧急工单",
         "WO",
+        "wo",
         "work order",
-        "work orders"
+        "work orders",
+        "workorder",
+        "workorders"
       ],
       "path": "work-orders",
       "ops": ["query", "import", "export"],
@@ -45,9 +51,13 @@
         "计划排程",
         "排产单",
         "排程单",
+        "主生产计划",
+        "MPS",
         "PP",
         "production plan",
-        "production plans"
+        "production plans",
+        "production-plan",
+        "production-plans"
       ],
       "path": "production-plans",
       "ops": ["query", "import", "export"],
@@ -58,7 +68,7 @@
         {"name": "plan_quantity", "label": "计划数量"},
         {"name": "plan_date", "label": "计划日期"},
         {"name": "priority", "label": "优先级"},
-        {"name": "status", "label": "状态（draft/released 等）"},
+        {"name": "status", "label": "状态（draft/released/confirmed 等）"},
         {"name": "remark", "label": "备注"}
       ]
     }

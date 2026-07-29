@@ -371,29 +371,38 @@ def _extract_write_confirm(detail_src: Any) -> dict[str, Any] | None:
 
 
 def _confirm_from_pending_store(thread_id: str, tool_name: str | None = None) -> dict[str, Any] | None:
-    """当 SSE 解析失败时，从落盘 pending 回补确认事件。"""
+    """兼容旧调用：返回第一条 pending。"""
+    items = _confirms_from_pending_store(thread_id, tool_name)
+    return items[0] if items else None
+
+
+def _confirms_from_pending_store(thread_id: str, tool_name: str | None = None) -> list[dict[str, Any]]:
+    """从落盘 pending 回补全部确认事件（多笔排队）。"""
     try:
         from middleware.write_store import list_pending
         from middleware.write_tools import WRITE_TOOLS
     except Exception:
-        return None
+        return []
     if tool_name and tool_name not in WRITE_TOOLS and tool_name != "import_file_to_platform":
-        return None
+        return []
     items = list_pending(thread_id=thread_id or "default")
-    if not items:
-        return None
-    action = items[0]
-    preview = action.get("preview") if isinstance(action.get("preview"), dict) else {}
-    return {
-        "__write_confirm__": True,
-        "status": "pending_confirmation",
-        "action_id": action.get("action_id"),
-        "tool": action.get("tool") or tool_name,
-        "thread_id": action.get("thread_id") or thread_id,
-        "summary": preview.get("summary") or "待确认写入平台",
-        "preview": preview,
-        "message": "写操作已挂起，请在界面确认或取消。",
-    }
+    out: list[dict[str, Any]] = []
+    for action in items:
+        preview = action.get("preview") if isinstance(action.get("preview"), dict) else {}
+        out.append(
+            {
+                "__write_confirm__": True,
+                "status": "pending_confirmation",
+                "action_id": action.get("action_id"),
+                "tool": action.get("tool") or tool_name,
+                "thread_id": action.get("thread_id") or thread_id,
+                "expires_at": action.get("expires_at"),
+                "summary": preview.get("summary") or "待确认写入平台",
+                "preview": preview,
+                "message": "写操作已挂起，请在界面确认或取消。",
+            }
+        )
+    return out
 
 
 def _tool_name(event: dict) -> str:
@@ -484,8 +493,30 @@ class AgentRunner:
         }
 
     def _build_message(self, message: str, file_paths: list[str] | None = None) -> str:
+        prefix = ""
+        try:
+            from middleware.request_context import get_page_context
+
+            ctx = get_page_context() or {}
+            bits: list[str] = []
+            if ctx.get("entity"):
+                bits.append(f"entity={ctx['entity']}")
+            if ctx.get("plan_no"):
+                bits.append(f"plan_no={ctx['plan_no']}")
+            if ctx.get("order_no"):
+                bits.append(f"order_no={ctx['order_no']}")
+            if bits:
+                prefix = (
+                    "[平台上下文] 用户从 MES 页面打开助手，当前页："
+                    + "，".join(bits)
+                    + "。若问题指「这个/当前」计划或工单，优先用上述字段查询对应实体。\n\n"
+                )
+        except Exception:
+            prefix = ""
+
+        body = message
         if not file_paths:
-            return message
+            return prefix + body
         file_note = "\n".join([f"[附件路径]: {p}" for p in file_paths])
         log_paths = [
             p
@@ -502,7 +533,7 @@ class AgentRunner:
         if log_paths:
             paths_block = "\n".join(f"- `{p}`" for p in log_paths)
             return (
-                f"{message}\n\n"
+                f"{prefix}{body}\n\n"
                 "【系统强制路由·访问日志】检测到日志类附件。\n"
                 f"{paths_block}\n\n"
                 "禁止：read_file、ls、glob、transform_file、preview_file、build_api_catalog（这些会失败或误用）。\n"
@@ -515,7 +546,7 @@ class AgentRunner:
                 f"\n其他附件：\n{file_note}"
             )
         return (
-            f"{message}\n\n用户已上传以下文件，请按需读取或导入：\n{file_note}\n"
+            f"{prefix}{body}\n\n用户已上传以下文件，请按需读取或导入：\n{file_note}\n"
             "若为访问日志（.log/.jsonl）：请 "
             "import_external_api_logs(file_path=上方绝对路径) → analyze_api_errors_from_logs；"
             "不要用 read_file。"
@@ -603,12 +634,15 @@ class AgentRunner:
                     title = _tool_label(name, {"entity": parsed.get("entity")})
                 summary, preview = _result_detail(name, detail_src)
                 confirm = _extract_write_confirm(detail_src)
-                if not confirm and name in (
+                confirms = []
+                if confirm and confirm.get("action_id"):
+                    confirms = [confirm]
+                elif name in (
                     "import_file_to_platform",
                     "import_platform_data",
                 ):
-                    confirm = _confirm_from_pending_store(thread_id, name)
-                step_state = "waiting" if confirm else ("done" if ok else "error")
+                    confirms = _confirms_from_pending_store(thread_id, name)
+                step_state = "waiting" if confirms else ("done" if ok else "error")
                 yield {
                     "type": "step",
                     "id": run_id,
@@ -619,23 +653,28 @@ class AgentRunner:
                     "args": _input_detail(name, data.get("input")) if data.get("input") else "",
                     "detail": summary,
                     "preview": preview,
-                    "ok": ok if not confirm else None,
+                    "ok": ok if not confirms else None,
                 }
-                if confirm and confirm.get("action_id"):
-                    aid = str(confirm.get("action_id"))
-                    if aid not in emitted_confirm_ids:
-                        emitted_confirm_ids.add(aid)
-                        pv = confirm.get("preview") if isinstance(confirm.get("preview"), dict) else {}
-                        yield {
-                            "type": "confirm",
-                            "action_id": aid,
-                            "tool": confirm.get("tool") or name,
-                            "thread_id": confirm.get("thread_id") or thread_id,
-                            "summary": confirm.get("summary") or summary,
-                            "preview": pv,
-                            "message": confirm.get("message") or "请确认是否写入平台",
-                        }
-                        yield {"type": "status", "text": "等待你确认写入…", "phase": "waiting"}
+                emitted_any = False
+                for confirm in confirms:
+                    aid = str(confirm.get("action_id") or "")
+                    if not aid or aid in emitted_confirm_ids:
+                        continue
+                    emitted_confirm_ids.add(aid)
+                    emitted_any = True
+                    pv = confirm.get("preview") if isinstance(confirm.get("preview"), dict) else {}
+                    yield {
+                        "type": "confirm",
+                        "action_id": aid,
+                        "tool": confirm.get("tool") or name,
+                        "thread_id": confirm.get("thread_id") or thread_id,
+                        "expires_at": confirm.get("expires_at"),
+                        "summary": confirm.get("summary") or summary,
+                        "preview": pv,
+                        "message": confirm.get("message") or "请确认是否写入平台",
+                    }
+                if emitted_any:
+                    yield {"type": "status", "text": "等待你确认写入…", "phase": "waiting"}
                 # 工具间隙：提示仍在推进（可能还有下一轮工具），不要过早宣称「生成回答」
                 elif not active_runs:
                     yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
@@ -691,17 +730,21 @@ class AgentRunner:
                 yield {"type": "token", "text": text, "token": text}
                 continue
 
-        # 流结束兜底：本轮调用了写工具但未成功推送 confirm 时，从 pending 回补
+        # 流结束兜底：本轮调用了写工具但未成功推送 confirm 时，从 pending 回补全部
         if saw_write_tool and not emitted_confirm_ids:
             try:
-                pending = _confirm_from_pending_store(thread_id)
-                if pending and pending.get("action_id"):
+                for pending in _confirms_from_pending_store(thread_id):
+                    aid = str(pending.get("action_id") or "")
+                    if not aid or aid in emitted_confirm_ids:
+                        continue
+                    emitted_confirm_ids.add(aid)
                     pv = pending.get("preview") if isinstance(pending.get("preview"), dict) else {}
                     yield {
                         "type": "confirm",
-                        "action_id": pending.get("action_id"),
+                        "action_id": aid,
                         "tool": pending.get("tool") or "import_file_to_platform",
                         "thread_id": pending.get("thread_id") or thread_id,
+                        "expires_at": pending.get("expires_at"),
                         "summary": pending.get("summary") or "待确认写入平台",
                         "preview": pv,
                         "message": pending.get("message") or "请确认是否写入平台",

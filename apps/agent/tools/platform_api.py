@@ -69,6 +69,9 @@ _MOCK_SEED: dict[str, list[dict]] = {
         {"id": 3, "order_no": "WO-0703", "product_name": "柔性双面板",
          "production_line": "钻孔线", "plan_quantity": 1000, "status": "pending",
          "priority": "normal", "assignee": "王工"},
+        {"id": 4, "order_no": "WO-0704", "product_name": "高多层板",
+         "production_line": "压合线", "plan_quantity": 80, "status": "pending",
+         "priority": "urgent", "assignee": "赵工"},
     ],
     "production-plans": [
         {"id": 1, "plan_no": "PP-0801", "product_name": "四层HDI板",

@@ -3,7 +3,8 @@
     <div class="wc-head">
       <div class="wc-title-row">
         <span class="wc-badge">写操作确认</span>
-        <span class="wc-hint" v-if="isPending">确认后才会写入平台</span>
+        <span class="wc-hint" v-if="isPending && !isExpiredLocally">确认后才会写入平台</span>
+        <span class="wc-hint wc-expire" v-if="isPending && expireLabel">{{ expireLabel }}</span>
       </div>
       <p class="wc-summary">{{ card.summary || '待确认写入平台' }}</p>
     </div>
@@ -49,11 +50,11 @@
       </div>
     </div>
 
-    <div class="wc-error" v-if="isPending && card.error">
+    <div class="wc-error" v-if="isPending && card.error && !isExpiredLocally">
       上次写入失败：{{ card.error }}（可再次确认重试）
     </div>
 
-    <div class="wc-actions" v-if="isPending">
+    <div class="wc-actions" v-if="isPending && !isExpiredLocally">
       <button type="button" class="wc-btn cancel" :disabled="busy" @click="onCancel">取消</button>
       <button type="button" class="wc-btn confirm" :disabled="busy" @click="onConfirm">
         {{ busy ? '处理中…' : (card.error ? '重试写入' : '确认写入') }}
@@ -62,6 +63,7 @@
     <div class="wc-result" v-else>
       <template v-if="card.status === 'confirmed'">已写入平台</template>
       <template v-else-if="card.status === 'cancelled'">已取消，未写入</template>
+      <template v-else-if="card.status === 'expired' || isExpiredLocally">确认已过期，请重新发起导入</template>
       <template v-else-if="card.status === 'failed'">写入失败：{{ card.error || '未知错误' }}</template>
       <template v-else>{{ card.status || '待确认' }}</template>
     </div>
@@ -69,7 +71,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { confirmWrite, cancelWrite } from '../api.js'
 
 const props = defineProps({
@@ -82,6 +84,8 @@ const props = defineProps({
 const emit = defineEmits(['resolved'])
 
 const busy = ref(false)
+const nowTs = ref(Date.now() / 1000)
+let timer = null
 
 const preview = computed(() => props.card?.preview || {})
 
@@ -95,6 +99,32 @@ const hasMeta = computed(
 const isPending = computed(() => {
   const s = props.card?.status
   return !s || s === 'pending' || s === 'pending_confirmation'
+})
+
+const expiresAt = computed(() => {
+  const raw = props.card?.expires_at
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : null
+})
+
+const isExpiredLocally = computed(() => {
+  if (props.card?.status === 'expired') return true
+  if (!expiresAt.value) return false
+  return nowTs.value >= expiresAt.value
+})
+
+const expireLabel = computed(() => {
+  if (!expiresAt.value || !isPending.value) return ''
+  const left = Math.max(0, Math.floor(expiresAt.value - nowTs.value))
+  if (left <= 0) return '已过期'
+  const m = Math.floor(left / 60)
+  const s = left % 60
+  if (m >= 60) {
+    const h = Math.floor(m / 60)
+    return `${h}小时${m % 60}分后过期`
+  }
+  if (m > 0) return `${m}分${String(s).padStart(2, '0')}秒后过期`
+  return `${s}秒后过期`
 })
 
 const sampleRows = computed(() => {
@@ -112,6 +142,7 @@ const sampleColumns = computed(() => {
 })
 
 const statusClass = computed(() => {
+  if (isExpiredLocally.value) return 'is-expired'
   if (isPending.value) return 'is-pending'
   const s = props.card?.status || 'pending'
   return `is-${s}`
@@ -122,8 +153,18 @@ function formatCell(v) {
   return String(v)
 }
 
+onMounted(() => {
+  timer = setInterval(() => {
+    nowTs.value = Date.now() / 1000
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
+
 async function onConfirm() {
-  if (busy.value || !props.card?.action_id) return
+  if (busy.value || !props.card?.action_id || isExpiredLocally.value) return
   busy.value = true
   try {
     const res = await confirmWrite(props.card.action_id)
@@ -135,20 +176,31 @@ async function onConfirm() {
       preview: data.preview || props.card.preview,
     })
   } catch (err) {
+    const status = err?.response?.status
     const msg = err?.response?.data?.detail || err?.message || '确认失败'
-    emit('resolved', {
-      action_id: props.card.action_id,
-      status: 'failed',
-      error: typeof msg === 'string' ? msg : JSON.stringify(msg),
-      preview: props.card.preview,
-    })
+    const text = typeof msg === 'string' ? msg : JSON.stringify(msg)
+    if (status === 410 || /过期/.test(text)) {
+      emit('resolved', {
+        action_id: props.card.action_id,
+        status: 'expired',
+        error: text,
+        preview: props.card.preview,
+      })
+    } else {
+      emit('resolved', {
+        action_id: props.card.action_id,
+        status: 'failed',
+        error: text,
+        preview: props.card.preview,
+      })
+    }
   } finally {
     busy.value = false
   }
 }
 
 async function onCancel() {
-  if (busy.value || !props.card?.action_id) return
+  if (busy.value || !props.card?.action_id || isExpiredLocally.value) return
   busy.value = true
   try {
     const res = await cancelWrite(props.card.action_id)
@@ -159,13 +211,24 @@ async function onCancel() {
       preview: data.preview || props.card.preview,
     })
   } catch (err) {
+    const status = err?.response?.status
     const msg = err?.response?.data?.detail || err?.message || '取消失败'
-    emit('resolved', {
-      action_id: props.card.action_id,
-      status: 'failed',
-      error: typeof msg === 'string' ? msg : JSON.stringify(msg),
-      preview: props.card.preview,
-    })
+    const text = typeof msg === 'string' ? msg : JSON.stringify(msg)
+    if (status === 410 || /过期/.test(text)) {
+      emit('resolved', {
+        action_id: props.card.action_id,
+        status: 'expired',
+        error: text,
+        preview: props.card.preview,
+      })
+    } else {
+      emit('resolved', {
+        action_id: props.card.action_id,
+        status: 'failed',
+        error: text,
+        preview: props.card.preview,
+      })
+    }
   } finally {
     busy.value = false
   }
@@ -195,10 +258,16 @@ async function onCancel() {
 }
 
 .write-confirm.is-cancelled,
-.write-confirm.is-failed {
+.write-confirm.is-failed,
+.write-confirm.is-expired {
   border-color: #d8dee6;
   background: #f8f9fb;
   box-shadow: none;
+}
+
+.wc-hint.wc-expire {
+  color: #9a3412;
+  background: rgba(154, 52, 18, 0.08);
 }
 
 .wc-head {

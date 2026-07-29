@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: str = "default"
     file_paths: list[str] = []
+    page_context: dict | None = None
 
 
 class ChatResponse(BaseModel):
@@ -37,16 +38,20 @@ class ChatResponse(BaseModel):
 async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
     """同步对话：发送消息，等待完整回复后返回。"""
     token, user = auth
+    thread_id = (req.thread_id or "").strip() or f"session-{(user.username or 'anon')}"
+    if thread_id == "default" and user.username:
+        thread_id = f"session-{user.username}"
     tok = set_request_erp_token(token)
     ctx = set_request_agent_context(
-        thread_id=req.thread_id,
+        thread_id=thread_id,
         user_id=user.user_id,
         username=user.username,
+        page_context=req.page_context,
     )
     try:
         runner = AgentRunner()
-        reply = runner.chat(req.message, req.thread_id, req.file_paths)
-        return ChatResponse(reply=reply, thread_id=req.thread_id)
+        reply = runner.chat(req.message, thread_id, req.file_paths)
+        return ChatResponse(reply=reply, thread_id=thread_id)
     finally:
         reset_request_agent_context(ctx)
         reset_request_erp_token(tok)
@@ -58,19 +63,23 @@ async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
     import asyncio
 
     erp_token, user = auth
+    thread_id = (req.thread_id or "").strip() or f"session-{(user.username or 'anon')}"
+    if thread_id == "default" and user.username:
+        thread_id = f"session-{user.username}"
 
     async def generate():
         runner = AgentRunner()
         tok = set_request_erp_token(erp_token)
         ctx = set_request_agent_context(
-            thread_id=req.thread_id,
+            thread_id=thread_id,
             user_id=user.user_id,
             username=user.username,
+            page_context=req.page_context,
         )
         try:
             # 先发一条带填充的 SSE 注释，冲掉代理/内核初始缓冲
             yield ": " + (" " * 2048) + "\n\n"
-            async for event in runner.stream_chat(req.message, req.thread_id, req.file_paths):
+            async for event in runner.stream_chat(req.message, thread_id, req.file_paths):
                 if not isinstance(event, dict):
                     event = {"type": "token", "text": str(event), "token": str(event)}
                 payload = json.dumps(event, ensure_ascii=False)
@@ -82,7 +91,7 @@ async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
                     await asyncio.sleep(0.04)
                 else:
                     await asyncio.sleep(0)
-            yield f"data: {json.dumps({'type': 'done', 'done': True, 'thread_id': req.thread_id}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'done': True, 'thread_id': thread_id}, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0)
         except Exception as e:
             import logging

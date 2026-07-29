@@ -20,6 +20,7 @@ description: >-
 - 勿把用户 docs 改成 `:8001`
 - 外部导入结论须注明「来自导入日志」，不要说成沙箱探活通过
 - **禁止串数**：文档 62 ≠ 日志 7 条；两套报告主数字不得混写
+- **run_id**：探活/导入每轮生成；`summarize`/`analyze` 对 sandbox|import 默认 `run_id=latest` 只看本轮
 
 ---
 

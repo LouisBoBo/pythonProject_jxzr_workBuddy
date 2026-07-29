@@ -366,7 +366,12 @@ def import_log_file(
     replace_previous=True（默认）时先清除同 source 的旧导入，
     避免上次 nginx/jsonl 残留污染本次分析。
     """
-    from tools.api_log_tool.call_store import clear_call_logs
+    from tools.api_log_tool.call_store import (
+        bind_run_id,
+        clear_call_logs,
+        new_run_id,
+        set_last_run_id,
+    )
 
     resolved = resolve_upload_path(file_path)
     if resolved.get("error"):
@@ -379,16 +384,19 @@ def import_log_file(
     records = list(parsed.get("records") or [])
     written = 0
     src = (source or "import").strip() or "import"
+    run_id = new_run_id("import")
     cleared: dict[str, Any] | None = None
     if replace_previous:
         cleared = clear_call_logs(remove_sources={src})
-    # 去重：同一文件内按 method+path+status+ts 不去重，但统计唯一接口形态
     unique_keys: set[tuple[str, str]] = set()
-    for rec in records:
-        rec["source"] = src
-        append_api_call(rec)
-        written += 1
-        unique_keys.add((str(rec.get("method") or "GET").upper(), str(rec.get("path_key") or "")))
+    with bind_run_id(run_id):
+        for rec in records:
+            rec["source"] = src
+            rec["run_id"] = run_id
+            append_api_call(rec)
+            written += 1
+            unique_keys.add((str(rec.get("method") or "GET").upper(), str(rec.get("path_key") or "")))
+    set_last_run_id(src, run_id)
     fail_n = sum(1 for r in records if not r.get("ok", True))
     return {
         "status": "ok",
@@ -401,6 +409,7 @@ def import_log_file(
         "skipped": parsed.get("skipped"),
         "failures_imported": fail_n,
         "source": src,
+        "run_id": run_id,
         "replaced_previous": bool(replace_previous),
         "cleared_previous": (cleared or {}).get("removed", 0) if cleared else 0,
         "sample_failures": [
@@ -416,12 +425,13 @@ def import_log_file(
             if not r.get("ok", True)
         ][:15],
         "note": (
-            f"已导入 {written} 条（{len(unique_keys)} 个接口形态）到 calls.jsonl（source={src}）"
+            f"已导入 {written} 条（{len(unique_keys)} 个接口形态）到 calls.jsonl"
+            f"（source={src}, run_id={run_id}）"
             + ("；已清除同来源旧导入" if replace_previous else "")
-            + "。请用 analyze_api_errors_from_logs(source_filter='import') 分析；"
-            "结论只基于本次导入日志中真实出现的路径，勿编造未出现的接口。"
+            + "。请用 analyze_api_errors_from_logs(source_filter='import', run_id='latest') 分析；"
+            "结论只基于本轮导入，勿编造未出现的接口。"
         ),
-        "next": "analyze_api_errors_from_logs(lookback_days=7) 或先 build_api_catalog 再对照文档",
+        "next": "analyze_api_errors_from_logs(source_filter='import', run_id='latest')",
     }
 
 

@@ -17,8 +17,9 @@ from config import Config as AgentConfig  # noqa: E402
 # 服务端口
 SERVER_PORT = int(os.getenv("MES_SERVER_PORT", "8765"))
 
-# 统一数据目录（历史 / 上传 / 转换 / 导出）
-DATA_DIR = REPO_ROOT / "data"
+# 统一数据目录（历史 / 上传 / 转换 / 导出 / writes / api_calls）
+# 与 Agent Config.DATA_DIR 一致，支持 DATA_DIR 环境变量做共享卷
+DATA_DIR = Path(AgentConfig.DATA_DIR)
 HISTORY_DIR = str(DATA_DIR / "history")
 UPLOAD_DIR = str(DATA_DIR / "uploads")
 CONVERT_DIR = str(DATA_DIR / "converted")

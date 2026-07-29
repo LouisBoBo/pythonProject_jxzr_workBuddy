@@ -43,6 +43,9 @@ cp .env.example .env   # 填入 DEEPSEEK_API_KEY / USE_ERP 等
 # 对话示例：「根据 http://127.0.0.1:8000/docs 测试文档接口」
 # （目录来自 8000；探活自动打沙箱 8001，不改生产）
 # 停止: ./scripts/stop.sh
+
+# API 健康分析无 LLM 冒烟（日志必跑；探活需 8081+8001）
+make smoke-api-health
 ```
 
 仅 CLI Agent：

@@ -20,7 +20,14 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from config import Config
-from tools.api_log_tool.call_store import append_api_call, path_pattern_key, query_api_calls
+from tools.api_log_tool.call_store import (
+    append_api_call,
+    bind_run_id,
+    new_run_id,
+    path_pattern_key,
+    query_api_calls,
+    set_last_run_id,
+)
 from tools.api_log_tool.catalog import load_index
 
 _SAFE_METHODS = frozenset({"GET", "HEAD"})
@@ -792,6 +799,8 @@ def run_catalog_probe(
 
         log_cleared = clear_call_logs(keep_sources={"erp"})
 
+    run_id = new_run_id("probe" if mode_l == "sandbox" else "live")
+
     sandbox_url = _sandbox_url()
     if mode_l == "sandbox":
         if sandbox_url:
@@ -832,6 +841,52 @@ def run_catalog_probe(
                 ),
             }
 
+    # 本轮 run_id：写入日志并供 summarize(latest) 隔离
+    # （用 bind 上下文，避免改每一处 _log_and_result 调用）
+    _probe_cm = bind_run_id(run_id)
+    _probe_cm.__enter__()
+    try:
+        return _execute_catalog_probe(
+            index=index,
+            mode_l=mode_l,
+            sandbox_kind=sandbox_kind,
+            base=base,
+            source=source,
+            run_id=run_id,
+            log_cleared=log_cleared,
+            methods=methods,
+            only_unseen=only_unseen,
+            lookback_days=lookback_days,
+            sample_id=sample_id,
+            keyword=keyword,
+            tag=tag,
+            limit=limit,
+            timeout_sec=timeout_sec,
+            include_writes=include_writes,
+        )
+    finally:
+        _probe_cm.__exit__(None, None, None)
+
+
+def _execute_catalog_probe(
+    *,
+    index: dict[str, Any],
+    mode_l: str,
+    sandbox_kind: str | None,
+    base: str,
+    source: str,
+    run_id: str,
+    log_cleared: dict[str, Any] | None,
+    methods: list[str] | None,
+    only_unseen: bool,
+    lookback_days: int,
+    sample_id: str | None,
+    keyword: str | None,
+    tag: str | None,
+    limit: int,
+    timeout_sec: float,
+    include_writes: bool | None,
+) -> dict[str, Any]:
     if include_writes:
         allowed = set(_ALL_METHODS)
     else:
@@ -1125,12 +1180,16 @@ def run_catalog_probe(
             f"已清理历史探活日志（removed={log_cleared.get('removed')}，kept_erp={log_cleared.get('kept')}），"
             "避免旧失败污染本次健康汇总。"
         )
+    notes.append(f"本轮 run_id={run_id}；summarize/rank 默认 run_id=latest 只看本轮。")
+
+    set_last_run_id(source, run_id)
 
     return {
         "status": "ok",
         "mode": mode_l,
         "sandbox_kind": sandbox_kind,
         "base_url": base,
+        "run_id": run_id,
         "probe_started_at": datetime.fromtimestamp(probe_started_ts).strftime("%Y-%m-%d %H:%M:%S"),
         "policy": {
             "methods": sorted(allowed),
@@ -1141,6 +1200,7 @@ def run_catalog_probe(
             "limit": limit,
             "created_ids": family_ids,
             "cleared_prior_probe_logs": log_cleared,
+            "run_id": run_id,
         },
         "planned": len(to_run),
         "probed": len(results),
@@ -1152,5 +1212,5 @@ def run_catalog_probe(
         "created_ids": family_ids,
         "results": results,
         "note": " ".join(notes),
-        "next": "summarize_api_doc_vs_logs(lookback_days=7)",
+        "next": "summarize_api_doc_vs_logs(lookback_days=7, run_id='latest')",
     }

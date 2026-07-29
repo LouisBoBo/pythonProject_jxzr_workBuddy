@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { authHeaders, clearSession } from './auth.js'
+import { getPageContext } from './embed.js'
 
 const api = axios.create({
   baseURL: '/api',
@@ -33,8 +34,12 @@ export function fetchMe() {
   return api.get('/auth/me')
 }
 
-export function sendMessage(message, threadId = 'default') {
-  return api.post('/chat', { message, thread_id: threadId })
+export function sendMessage(message, threadId = 'default', filePaths = [], pageContext = null) {
+  const body = { message, thread_id: threadId, file_paths: filePaths || [] }
+  if (pageContext && Object.keys(pageContext).length) {
+    body.page_context = pageContext
+  }
+  return api.post('/chat', body)
 }
 
 /**
@@ -64,11 +69,16 @@ function paintFrame() {
 
 export function streamMessage(message, threadId, onEvent, onDone, onError, filePaths = []) {
   const handleEvent = typeof onEvent === 'function' ? onEvent : async () => {}
+  const pageContext = getPageContext()
+  const body = { message, thread_id: threadId, file_paths: filePaths }
+  if (pageContext && Object.keys(pageContext).length) {
+    body.page_context = pageContext
+  }
 
   return fetch(streamEndpoint(), {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ message, thread_id: threadId, file_paths: filePaths }),
+    body: JSON.stringify(body),
   }).then(async (response) => {
     if (response.status === 401) {
       clearSession()

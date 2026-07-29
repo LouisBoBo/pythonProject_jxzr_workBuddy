@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from config import Config
+from ha.fs_lock import InterProcessLock, instance_id
 
-_LOCK = threading.RLock()
+_LOCK = InterProcessLock("writes")
 
 ACTION_TTL_SEC = int(os.getenv("WRITE_CONFIRM_TTL_SEC", "1800"))  # 默认 30 分钟
 # 审计文件超过该行数时轮转：audit.jsonl → audit.jsonl.1（只保留一份备份）
@@ -71,6 +71,7 @@ def create_pending_action(
         "expires_at": now + ACTION_TTL_SEC,
         "resolved_at": None,
         "result": None,
+        "instance_id": instance_id(),
     }
     path = _pending_path(action["action_id"])
     with _LOCK:
@@ -121,7 +122,20 @@ def list_pending(*, thread_id: str | None = None, username: str | None = None) -
                 continue
             if float(data.get("expires_at") or 0) < now:
                 data["status"] = "expired"
+                data["resolved_at"] = now
                 _save_action_unlocked(data)
+                append_audit(
+                    {
+                        "event": "write_expired",
+                        "action_id": data.get("action_id"),
+                        "tool": data.get("tool"),
+                        "thread_id": data.get("thread_id"),
+                        "user_id": data.get("user_id"),
+                        "username": data.get("username"),
+                        "args_summary": _brief_args(data.get("args") or {}),
+                        "ts": now,
+                    }
+                )
                 continue
             if thread_id and data.get("thread_id") != thread_id:
                 continue
@@ -245,6 +259,8 @@ def _save_action_unlocked(action: dict[str, Any]) -> None:
 
 def append_audit(record: dict[str, Any]) -> None:
     """追加一行审计；超限时轮转旧文件。"""
+    if "instance_id" not in record:
+        record = {**record, "instance_id": instance_id()}
     line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
     path = _audit_path()
     with _LOCK:
