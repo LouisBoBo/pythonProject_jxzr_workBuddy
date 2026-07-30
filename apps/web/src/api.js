@@ -67,11 +67,22 @@ function paintFrame() {
   })
 }
 
-export function streamMessage(message, threadId, onEvent, onDone, onError, filePaths = []) {
+export function streamMessage(
+  message,
+  threadId,
+  onEvent,
+  onDone,
+  onError,
+  filePaths = [],
+  extraPageContext = null,
+) {
   const handleEvent = typeof onEvent === 'function' ? onEvent : async () => {}
-  const pageContext = getPageContext()
+  const pageContext = {
+    ...(getPageContext() || {}),
+    ...(extraPageContext && typeof extraPageContext === 'object' ? extraPageContext : {}),
+  }
   const body = { message, thread_id: threadId, file_paths: filePaths }
-  if (pageContext && Object.keys(pageContext).length) {
+  if (Object.keys(pageContext).length) {
     body.page_context = pageContext
   }
 
@@ -217,4 +228,14 @@ export function fetchWriteAudit({ threadId, tool, limit = 50 } = {}) {
       limit,
     },
   })
+}
+
+/** M1：本地代码载体（IDE Bridge）在线状态 */
+export function fetchIdeBridgeStatus() {
+  return api.get('/ide/bridge/status')
+}
+
+/** 网页签发 VS Code 配对码 */
+export function createIdeBridgePairing() {
+  return api.post('/ide/bridge/pairing/create')
 }

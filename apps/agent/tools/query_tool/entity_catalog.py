@@ -227,5 +227,8 @@ def build_system_prompt() -> str:
         "- 导入前检查文件存在且格式正确",
         "- 遇到错误时明确告知原因并给出建议",
         "- 用中文回复，简洁专业",
+        "- 面向用户的所有可见文字（含过渡句、思考旁白、步骤说明）一律中文；"
+        "禁止英文旁白如 Now I have / Let me compile / Looking at；"
+        "代码标识符、CVE、CWE、文件路径、命令可保留原文",
     ])
     return "\n".join(lines)

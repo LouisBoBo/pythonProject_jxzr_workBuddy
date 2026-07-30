@@ -136,6 +136,36 @@ def _build_backend() -> FilesystemBackend:
     return FilesystemBackend(root_dir=str(AGENT_ROOT), virtual_mode=True)
 
 
+_IDE_REVIEW_PROMPT = """
+【本机 IDE / 代码审核 — 硬约束】
+- 禁止 read_file/grep/glob 读本机绝对路径。
+- 已选工程或「审核代码」：禁止再追问，立刻 request_ide_review。
+- file_contents 不足则 request_ide_read_files；并按 gate-90 补拉依赖/配置
+  （pom.xml、package.json、requirements.txt、application*.yml/properties、appsettings.json、go.mod 等存在者）。
+- Bridge 离线 → request_git_review；selected-not-open ≠ 离线。
+- 方法论：Viprasol（/skills/code-review/references/viprasol-skill.md）+
+  公司门禁（/skills/code-review/references/workbuddy-gate-90.md）：
+  必扫依赖/配置/日志脱敏；鉴权缺失与数据损坏竞态可上调 P0；
+  P0/P1 必须含可粘贴修复 + 验证（复现与通过标准）；总览条数=正文条数。
+- 禁止自造检查清单替代上述两份 reference。
+- 【语言】用户可见全文必须中文（含报告前过渡句、处理过程旁白）。
+  禁止输出英文句子，例如 "Now I have all files…" / "Let me compile the report"。
+  可保留：代码、路径、CVE/CWE、命令、专有名词缩写。
+  正确示例：「源码已齐，开始汇总审核报告。」
+
+【终稿】
+## 🔍 代码审核报告
+工作区 / 审核范围(含未覆盖) / 引擎(Bridge+Viprasol+gate-90) / 结论 / 重点
+### 📊 问题总览（数量自洽）
+### 🔴 P0（触发+修复代码+验证）
+### 🟠 P1（同上）
+### 🟡 P2
+### ✅ 质量较好的部分
+### 🎯 优先修复建议
+### 🔎 验证清单（可选）
+"""
+
+
 def create_agent(model=None):
     """创建 Deep Agent 实例（含 Skills + 自定义 Middleware）。
 
@@ -145,10 +175,25 @@ def create_agent(model=None):
     if model is None:
         model = build_model()
 
+    tools = list(TOOLS)
+    system_prompt = build_system_prompt()
+    # 仅特性开关打开时追加；模块级 TOOLS 保持不变，默认现网行为一致
+    if Config.IDE_REVIEW_ENABLED:
+        from tools.ide_review import (
+            request_git_review,
+            request_ide_read_files,
+            request_ide_review,
+        )
+
+        tools.append(request_ide_review)
+        tools.append(request_ide_read_files)
+        tools.append(request_git_review)
+        system_prompt = system_prompt + _IDE_REVIEW_PROMPT
+
     return create_deep_agent(
         model=model,
-        tools=TOOLS,
-        system_prompt=build_system_prompt(),
+        tools=tools,
+        system_prompt=system_prompt,
         backend=_build_backend(),
         skills=SKILL_SOURCES,
         middleware=build_custom_middleware(),

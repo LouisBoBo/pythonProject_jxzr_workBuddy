@@ -131,6 +131,7 @@ def require_auth(
 
     生产：user_id 固定取 JWT sub；username 优先 JWT claim，其次才用 X-User-Name（展示/兼容）。
     历史归属以 user_id 为准，避免仅靠请求头冒名访问他人会话。
+    亦接受 IDE Bridge 长期凭证（wb1.…），供 VS Code 扩展在网页 JWT 过期后继续工作。
     """
     if not AUTH_REQUIRED:
         return "", UserInfo(username=x_user_name or "dev", user_id=0)
@@ -140,6 +141,27 @@ def require_auth(
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise HTTPException(status_code=401, detail="未登录，请先登录")
+
+    # 长期 Bridge 凭证（配对一次 ≈ 90 天）
+    try:
+        from tools.ide_review.bridge_token import is_bridge_token, verify_bridge_token
+
+        if is_bridge_token(token):
+            bridge = verify_bridge_token(token)
+            if not bridge:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Bridge 凭证无效或已过期，请在网页重新「配对 VS Code」",
+                )
+            return token, UserInfo(
+                username=str(bridge.get("username") or f"user-{bridge.get('sub')}"),
+                user_id=bridge.get("sub"),
+                expires_at=int(bridge["exp"]) if isinstance(bridge.get("exp"), (int, float)) else None,
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     payload = _decode_jwt_payload(token)
     exp = payload.get("exp")
@@ -152,7 +174,6 @@ def require_auth(
     if jwt_name:
         username = jwt_name
     elif header_name:
-        # JWT 无用户名 claim 时保留 header（正常登录页仍靠此展示）
         username = header_name
     elif sub is not None:
         username = f"user-{sub}"

@@ -62,6 +62,9 @@ _TOOL_LABELS = {
     "render_api_health_report": "生成接口测试报告",
     "import_external_api_logs": "导入外部访问日志",
     "analyze_api_errors_from_logs": "分析接口错误",
+    "request_ide_review": "本地代码审核",
+    "request_ide_read_files": "读取本机工程文件",
+    "request_git_review": "Git/本地目录审核",
 }
 
 _LINE_PREFIX = re.compile(r"(?m)^\s*\d+\|")

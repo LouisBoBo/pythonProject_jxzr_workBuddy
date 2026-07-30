@@ -67,6 +67,13 @@ class Config:
     # LangGraph 默认 recursion_limit=25；文档全量探活 + Skills 易触顶
     AGENT_RECURSION_LIMIT = max(25, int(os.getenv("AGENT_RECURSION_LIMIT", "100")))
 
+    # --- IDE 代码审核（M0 POC，默认关闭，不影响现网工具集）---
+    IDE_REVIEW_ENABLED = os.getenv("IDE_REVIEW_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     @classmethod
     def summary(cls) -> str:
         lines = [

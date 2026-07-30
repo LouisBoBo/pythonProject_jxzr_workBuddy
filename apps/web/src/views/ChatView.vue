@@ -39,7 +39,12 @@
             :card="card"
             @resolved="(payload) => onConfirmResolved(msg, payload)"
           />
-          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length">
+          <IdeWorkspacePickCard
+            v-if="msg.idePick"
+            :card="msg.idePick"
+            @resolved="(payload) => onIdePickResolved(msg, payload)"
+          />
+          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length || msg.idePick">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -203,9 +208,10 @@
 <script setup>
 import { ref, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit } from '../api.js'
+import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
+import IdeWorkspacePickCard from '../components/IdeWorkspacePickCard.vue'
 import { getUsername, getUserId } from '../auth.js'
 
 const route = useRoute()
@@ -454,6 +460,7 @@ function persistableMessages() {
     ...(m.meta ? { meta: m.meta } : {}),
     ...(m.process?.length ? { process: m.process } : {}),
     ...(m.confirms?.length ? { confirms: m.confirms } : {}),
+    ...(m.idePick ? { idePick: m.idePick } : {}),
   }))
 }
 
@@ -505,6 +512,7 @@ async function loadSession(id) {
         meta: m.meta,
         process: m.process || [],
         confirms,
+        ...(m.idePick ? { idePick: { ...m.idePick } } : {}),
         processCollapsed: true,
       }
     })
@@ -626,10 +634,67 @@ watch(
   }
 )
 
+
+function looksLikeCodeReview(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  return /审核代码|代码审核|代码审查|审查代码|检查代码|code\s*review|review\s+(this\s+)?code|帮我审(一下|下)?(代码|工程|项目)/i.test(
+    t
+  )
+}
+
+function hasPendingIdePick() {
+  return messages.value.some((m) => m.idePick && m.idePick.status === 'pending')
+}
+
+async function fetchIdeWorkspaces() {
+  try {
+    const resp = await fetchIdeBridgeStatus()
+    const data = resp.data || {}
+    if (!data.feature_enabled || !data.online) return []
+    let list = Array.isArray(data.recent_workspaces)
+      ? data.recent_workspaces.filter((w) => w?.path)
+      : []
+    if (!list.length && data.workspace_root) {
+      const name =
+        String(data.workspace_root).split(/[/\\]/).filter(Boolean).pop() || data.workspace_root
+      list = [{ path: data.workspace_root, name, current: true }]
+    }
+    return list
+  } catch {
+    return []
+  }
+}
+
+async function onIdePickResolved(msg, payload) {
+  if (!msg?.idePick || !payload) return
+  if (msg.idePick.status && msg.idePick.status !== 'pending') return
+
+  const selected = payload.selected || msg.idePick.selected || ''
+  const content = msg.idePick.pendingContent || ''
+  const files = Array.isArray(msg.idePick.pendingFiles) ? [...msg.idePick.pendingFiles] : []
+
+  msg.idePick = {
+    ...msg.idePick,
+    status: payload.status,
+    selected,
+  }
+  await persistSession()
+  scrollToBottom()
+
+  if (payload.status !== 'confirmed') return
+  if (streaming.value) return
+  if (!content && !files.length) return
+
+  await startAssistantStream(content, files, selected || null)
+}
+
 async function send(text) {
   const content = text || input.value.trim()
   const files = attachedFiles.value
   if ((!content && files.length === 0) || streaming.value) return
+  if (hasPendingIdePick()) return
+
   if (!threadId.value) {
     threadId.value = createThreadId()
     syncThreadQuery(threadId.value)
@@ -641,19 +706,54 @@ async function send(text) {
     editingFromIndex.value = -1
   }
 
-  const requestId = ++activeRequestId
-  const currentThread = threadId.value
-
   input.value = ''
   if (inputEl.value) {
     inputEl.value.style.height = 'auto'
   }
 
   const displayContent = buildUserDisplayContent(content, files)
-  messages.value.push({ role: 'user', content: displayContent, files: [...files] })
+  const filesSnapshot = [...files]
+  messages.value.push({ role: 'user', content: displayContent, files: filesSnapshot })
   attachedFiles.value = []
   scrollToBottom()
   await persistSession()
+
+  if (looksLikeCodeReview(content)) {
+    const workspaces = await fetchIdeWorkspaces()
+    if (workspaces.length) {
+      const selected = workspaces.find((w) => w.current)?.path || workspaces[0].path
+      messages.value.push({
+        role: 'assistant',
+        content: '',
+        idePick: {
+          id: `ide-pick-${Date.now()}`,
+          status: 'pending',
+          workspaces,
+          selected,
+          pendingContent: content,
+          pendingFiles: filesSnapshot,
+        },
+        process: [],
+        processCollapsed: true,
+      })
+      await persistSession()
+      scrollToBottom()
+      return
+    }
+  }
+
+  await startAssistantStream(content, filesSnapshot, null)
+}
+
+async function startAssistantStream(content, files, ideWorkspaceRoot) {
+  if (streaming.value) return
+  if (!threadId.value) {
+    threadId.value = createThreadId()
+    syncThreadQuery(threadId.value)
+  }
+
+  const requestId = ++activeRequestId
+  const currentThread = threadId.value
 
   streaming.value = true
   streamContent.value = ''
@@ -735,6 +835,9 @@ async function send(text) {
 
   try {
     const filePaths = files.map(f => f.path).filter(Boolean)
+    const extraPageContext = ideWorkspaceRoot
+      ? { ide_workspace_root: ideWorkspaceRoot }
+      : null
     await streamMessage(
       content,
       currentThread,
@@ -892,7 +995,8 @@ async function send(text) {
         await attachPendingConfirms(currentThread)
         await loadWriteAudit(currentThread)
       },
-      filePaths
+      filePaths,
+      extraPageContext
     )
   } catch (err) {
     if (requestId !== activeRequestId || threadId.value !== currentThread) return
@@ -1442,7 +1546,8 @@ onMounted(async () => {
 }
 
 /* 确认卡与同条消息体同宽（跟随较宽的表格气泡拉伸） */
-.message.assistant .msg-content :deep(.write-confirm) {
+.message.assistant .msg-content :deep(.write-confirm),
+.message.assistant .msg-content :deep(.ide-ws-pick) {
   align-self: stretch;
   width: 100%;
   max-width: 100%;

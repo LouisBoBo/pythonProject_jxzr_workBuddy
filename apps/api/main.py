@@ -19,10 +19,21 @@ from routes.history import router as history_router
 from routes.convert import router as convert_router
 from routes.auth import router as auth_router
 from routes.writes import router as writes_router
+from routes.ide_bridge import router as ide_bridge_router
 from routes_config import DATA_DIR, SERVER_PORT
 
 # 确保数据目录存在
-for sub in ("history", "uploads", "exports", "converted", "writes", "writes/pending", "api_calls", ".locks"):
+for sub in (
+    "history",
+    "uploads",
+    "exports",
+    "converted",
+    "writes",
+    "writes/pending",
+    "api_calls",
+    "ide_bridge",
+    ".locks",
+):
     os.makedirs(DATA_DIR / sub, exist_ok=True)
 
 app = FastAPI(
@@ -46,6 +57,7 @@ app.include_router(chat_router)
 app.include_router(history_router)
 app.include_router(convert_router)
 app.include_router(writes_router)
+app.include_router(ide_bridge_router)
 
 app.mount("/exports", StaticFiles(directory=str(DATA_DIR / "exports")), name="exports")
 

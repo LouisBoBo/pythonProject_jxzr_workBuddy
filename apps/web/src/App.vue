@@ -68,11 +68,40 @@
       </div>
 
       <div class="sidebar-footer">
-        <router-link to="/files" class="footer-link" active-class="active">
+        <div
+          v-if="ideBridgeUiVisible"
+          class="ide-bridge-panel"
+        >
+          <div
+            class="ide-bridge-status"
+            :class="{ online: ideBridgeOnline, warn: ideBridgeWarn }"
+            :title="ideBridgeHint"
+          >
+            <span class="ide-dot" />
+            <span>代码载体：{{ ideBridgeLabel }}</span>
+          </div>
+          <button
+            v-if="idePairUiVisible"
+            type="button"
+            class="ide-pair-btn"
+            :disabled="idePairLoading"
+            @click="onPairIde"
+          >
+            {{ idePairLoading ? '生成中…' : '配对 VS Code' }}
+          </button>
+          <div v-if="idePairUiVisible && idePairCode" class="ide-pair-box">
+            <div class="ide-pair-code">{{ idePairCode }}</div>
+            <div class="ide-pair-hint">
+              VS Code 执行 <b>WorkBuddy: Pair</b> 输入此码
+              <span v-if="idePairExpiresIn">（码 {{ idePairExpiresIn }}s 内有效）</span>
+              <br />配对成功后约 90 天自动连接，网页重新登录也不用再贴 token
+            </div>
+            <button type="button" class="ide-pair-copy" @click="copyPairCode">复制配对码</button>
+          </div>
+        </div>        <router-link to="/files" class="footer-link" active-class="active">
           <el-icon :size="16"><FolderOpened /></el-icon>
           <span>文件管理</span>
-        </router-link>
-        <div class="user-row">
+        </router-link>        <div class="user-row">
           <div class="user-meta">
             <span class="user-name">{{ displayName }}</span>
             <span class="user-sub">ERP 已登录</span>
@@ -103,7 +132,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { FolderOpened } from '@element-plus/icons-vue'
-import { getHistoryList, deleteHistory } from './api.js'
+import { getHistoryList, deleteHistory, fetchIdeBridgeStatus, createIdeBridgePairing } from './api.js'
 import { clearSession, getDisplayName, getUsername } from './auth.js'
 import { isEmbedMode, pageContextLabel, getPageContext, setEmbedMode, clearPageContext } from './embed.js'
 
@@ -116,6 +145,22 @@ const displayName = ref(getDisplayName() || getUsername() || '用户')
 const embedMode = ref(isEmbedMode())
 const contextLabel = ref(pageContextLabel(getPageContext()))
 
+const ideBridgeUiVisible = ref(false)
+const ideBridgeOnline = ref(false)
+const ideBridgeWarn = ref(false)
+const ideBridgeConnected = ref(false)
+const ideBridgeLabel = ref('离线')
+const ideBridgeHint = ref('')
+const idePairLoading = ref(false)
+const idePairCode = ref('')
+const idePairExpiresIn = ref(0)
+let ideBridgeTimer = null
+let idePairCountdown = null
+
+/** 仅未连接时显示配对（已在线/未开工程都不需要再配对） */
+const idePairUiVisible = computed(
+  () => ideBridgeUiVisible.value && !ideBridgeConnected.value
+)
 const isLoginRoute = computed(() => route.name === 'login' || route.path === '/login')
 const groupedHistory = computed(() => groupSessions(sessions.value))
 
@@ -204,6 +249,10 @@ function onLogout() {
   clearSession()
   setEmbedMode(false)
   clearPageContext()
+  stopIdeBridgePolling()
+  ideBridgeUiVisible.value = false
+  ideBridgeOnline.value = false
+  ideBridgeConnected.value = false
   router.replace('/login')
 }
 
@@ -211,12 +260,111 @@ function onHistoryUpdated() {
   loadHistory()
 }
 
+async function refreshIdeBridgeStatus() {
+  if (isLoginRoute.value) return
+  try {
+    const resp = await fetchIdeBridgeStatus()
+    const data = resp.data || {}
+    ideBridgeUiVisible.value = !!data.feature_enabled
+    const online = !!data.online
+    const ready = !!data.workspace_ready
+    ideBridgeConnected.value = online
+    ideBridgeOnline.value = online && ready
+    ideBridgeWarn.value = online && !ready
+    if (online) {
+      // 已连上则收起配对码，避免误导
+      clearPairCountdown()
+      idePairCode.value = ''
+      idePairExpiresIn.value = 0
+    }
+    if (!data.feature_enabled) {
+      ideBridgeLabel.value = '离线'
+      ideBridgeHint.value = ''
+    } else if (!online) {
+      ideBridgeLabel.value = '离线'
+      ideBridgeHint.value =
+        '点下方「配对 VS Code」，或在扩展中执行 WorkBuddy: Pair / Connect'
+    } else if (!ready) {
+      ideBridgeLabel.value = '未开工程'
+      ideBridgeHint.value = '已连接；发「审核代码」可从最近工程中选择，或先在 VS Code 打开文件夹'
+    } else {
+      ideBridgeLabel.value = '在线'
+      ideBridgeHint.value = `${data.carrier || 'vscode'} · ${data.workspace_root || ''}`
+    }
+  } catch {
+    ideBridgeUiVisible.value = false
+    ideBridgeOnline.value = false
+    ideBridgeWarn.value = false
+    ideBridgeConnected.value = false
+  }
+}
+function clearPairCountdown() {
+  if (idePairCountdown != null) {
+    clearInterval(idePairCountdown)
+    idePairCountdown = null
+  }
+}
+
+async function onPairIde() {
+  idePairLoading.value = true
+  try {
+    const resp = await createIdeBridgePairing()
+    const data = resp.data || {}
+    idePairCode.value = String(data.code || '')
+    idePairExpiresIn.value = Number(data.expires_in || 120)
+    clearPairCountdown()
+    idePairCountdown = window.setInterval(() => {
+      if (idePairExpiresIn.value <= 1) {
+        clearPairCountdown()
+        idePairCode.value = ''
+        idePairExpiresIn.value = 0
+        return
+      }
+      idePairExpiresIn.value -= 1
+    }, 1000)
+  } catch (e) {
+    idePairCode.value = ''
+    const msg = e?.response?.data?.detail || e?.message || '配对失败'
+    window.alert(typeof msg === 'string' ? msg : '配对失败，请确认已登录且启用了 IDE 审核')
+  } finally {
+    idePairLoading.value = false
+  }
+}
+
+async function copyPairCode() {
+  if (!idePairCode.value) return
+  try {
+    await navigator.clipboard.writeText(idePairCode.value)
+  } catch {
+    // ignore
+  }
+}
+
+function startIdeBridgePolling() {
+  stopIdeBridgePolling()
+  refreshIdeBridgeStatus()
+  ideBridgeTimer = window.setInterval(refreshIdeBridgeStatus, 15000)
+}
+
+function stopIdeBridgePolling() {
+  if (ideBridgeTimer != null) {
+    clearInterval(ideBridgeTimer)
+    ideBridgeTimer = null
+  }
+  clearPairCountdown()
+  idePairCode.value = ''
+  idePairExpiresIn.value = 0
+}
 watch(isLoginRoute, (v) => {
   if (!v) {
     displayName.value = getDisplayName() || getUsername() || '用户'
     embedMode.value = isEmbedMode()
     contextLabel.value = pageContextLabel(getPageContext())
     loadHistory()
+    startIdeBridgePolling()
+  } else {
+    stopIdeBridgePolling()
+    ideBridgeUiVisible.value = false
   }
 })
 
@@ -226,10 +374,14 @@ onMounted(() => {
   contextLabel.value = pageContextLabel(getPageContext())
   loadHistory()
   window.addEventListener('mes-history-updated', onHistoryUpdated)
+  if (!isLoginRoute.value) {
+    startIdeBridgePolling()
+  }
 })
 
 onUnmounted(() => {
   window.removeEventListener('mes-history-updated', onHistoryUpdated)
+  stopIdeBridgePolling()
 })
 </script>
 
@@ -403,6 +555,101 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.ide-bridge-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ide-bridge-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: #eef1f5;
+}
+
+.ide-bridge-status.online {
+  color: #166534;
+  background: #ecfdf5;
+}
+
+.ide-bridge-status.warn {
+  color: #a16207;
+  background: #fffbeb;
+}
+
+.ide-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+  flex-shrink: 0;
+}
+
+.ide-bridge-status.online .ide-dot {
+  background: #22c55e;
+}
+
+.ide-bridge-status.warn .ide-dot {
+  background: #eab308;
+}
+
+.ide-pair-btn {
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.ide-pair-btn:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.ide-pair-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ide-pair-box {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+}
+
+.ide-pair-code {
+  font-size: 22px;
+  letter-spacing: 0.28em;
+  font-weight: 700;
+  text-align: center;
+  padding: 4px 0 8px;
+}
+
+.ide-pair-hint {
+  opacity: 0.85;
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.ide-pair-copy {
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: #334155;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
 }
 
 .footer-link {

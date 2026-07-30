@@ -1,4 +1,4 @@
-.PHONY: install install-web dev stop api web agent-cli health smoke-api-health smoke-entity-phrases smoke-embed-identity smoke-ha
+.PHONY: install install-web dev stop api web agent-cli health smoke-api-health smoke-entity-phrases smoke-embed-identity smoke-ha smoke-ide-review-m0 smoke-ide-bridge-m1 package-vscode-bridge
 
 install:
 	python3 -m pip install -r requirements.txt
@@ -40,3 +40,15 @@ smoke-embed-identity:
 # 无 LLM：跨进程锁 + 双实例抢确认 CAS
 smoke-ha:
 	python3 scripts/smoke_ha.py
+
+# 无 LLM：M0 IDE 审核（默认 mock 必过；可选 IDE_REVIEW_MCP=1 试本机 MCP）
+smoke-ide-review-m0:
+	python3 scripts/smoke_ide_review_m0.py
+
+# 无 LLM：M1 Bridge 注册/投递/回传闭环
+smoke-ide-bridge-m1:
+	python3 scripts/smoke_ide_bridge_m1.py
+
+# 打包 VS Code Bridge 为 dist/*.vsix
+package-vscode-bridge:
+	bash scripts/package_vscode_bridge.sh

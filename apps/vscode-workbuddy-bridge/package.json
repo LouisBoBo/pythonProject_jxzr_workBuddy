@@ -1,0 +1,94 @@
+{
+  "name": "workbuddy-bridge",
+  "displayName": "WorkBuddy Bridge",
+  "description": "将当前 VS Code 工作区连接到 WorkBuddy；网页配对码一键登录",
+  "version": "0.4.4",
+  "publisher": "workbuddy",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onCommand:workbuddy.connect",
+    "onCommand:workbuddy.disconnect",
+    "onCommand:workbuddy.setToken",
+    "onCommand:workbuddy.pair",
+    "onCommand:workbuddy.statusMenu",
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "workbuddy.connect",
+        "title": "WorkBuddy: Connect"
+      },
+      {
+        "command": "workbuddy.pair",
+        "title": "WorkBuddy: Pair"
+      },
+      {
+        "command": "workbuddy.statusMenu",
+        "title": "WorkBuddy: Status Menu"
+      },
+      {
+        "command": "workbuddy.disconnect",
+        "title": "WorkBuddy: Disconnect"
+      },
+      {
+        "command": "workbuddy.setToken",
+        "title": "WorkBuddy: Set Token"
+      }
+    ],
+    "configuration": {
+      "title": "WorkBuddy Bridge",
+      "properties": {
+        "workbuddy.apiBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "WorkBuddy API 根地址"
+        },
+        "workbuddy.token": {
+          "type": "string",
+          "default": "",
+          "description": "与网页登录相同的 access_token（JWT）；推荐用配对码写入，勿手搜设置"
+        },
+        "workbuddy.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "启动时若已有 token 则自动 Connect"
+        },
+        "workbuddy.mcpEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否调用 MCP code_checker（默认关，诊断+规则+源码回传已够用）"
+        },
+        "workbuddy.mcpCommand": {
+          "type": "string",
+          "default": "npx",
+          "description": "MCP Server 启动命令"
+        },
+        "workbuddy.mcpArgs": {
+          "type": "string",
+          "default": "-y,vscode-as-mcp-server",
+          "description": "MCP 参数，逗号分隔"
+        },
+        "workbuddy.mcpTool": {
+          "type": "string",
+          "default": "code_checker",
+          "description": "优先调用的 MCP tool 名"
+        },
+        "workbuddy.mcpTimeoutSec": {
+          "type": "number",
+          "default": 12,
+          "description": "单次 MCP 调用超时（秒）"
+        },
+        "workbuddy.allowFallbackRules": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用本地安全/质量规则兜底"
+        }
+      }
+    }
+  }
+}
