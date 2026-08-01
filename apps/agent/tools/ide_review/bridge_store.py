@@ -13,7 +13,7 @@ from typing import Any
 
 from ha.fs_lock import InterProcessLock
 
-_HEARTBEAT_TTL = float(os.getenv("IDE_BRIDGE_HEARTBEAT_TTL_SEC", "45") or "45")
+_HEARTBEAT_TTL = float(os.getenv("IDE_BRIDGE_HEARTBEAT_TTL_SEC", "120") or "120")
 _TASK_WAIT_DEFAULT = float(os.getenv("IDE_BRIDGE_TASK_TIMEOUT_SEC", "120") or "120")
 _lock = InterProcessLock("ide-bridge")
 
@@ -602,6 +602,28 @@ def submit_read_files_task(
         user_id,
         intent="read_files",
         paths=paths,
+        thread_id=thread_id,
+        timeout_sec=timeout_sec,
+        extra=extra or None,
+    )
+
+
+def submit_list_files_task(
+    user_id: Any,
+    *,
+    thread_id: str = "",
+    timeout_sec: float | None = None,
+    workspace_root: str | None = None,
+) -> dict[str, Any]:
+    """枚举工程可审源文件并按每批 5 个切分。"""
+    extra: dict[str, Any] = {}
+    root = (workspace_root or "").strip()
+    if root:
+        extra["workspace_root"] = root
+    return submit_bridge_task(
+        user_id,
+        intent="list_files",
+        paths=[],
         thread_id=thread_id,
         timeout_sec=timeout_sec,
         extra=extra or None,

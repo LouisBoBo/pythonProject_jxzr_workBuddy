@@ -227,6 +227,7 @@ A: 可以放 `scripts/` 作参考或由 Agent 在允许的后端里执行；默�
 - [ ] `SKILL.md` 有合法 YAML frontmatter（`name` + `description`）
 - [ ] `description` 含触发场景关键词
 - [ ] 正文工具名 ∈ `TOOLS` 列表
+- [ ] **已更新** [`功能清单与测试用例.md`](./功能清单与测试用例.md)（§1 功能 + §2 用例）
 - [ ] 需要的实体已在 `entities.json`
 - [ ] 已重启 API / CLI 进程
 - [ ] 用自然语言测过至少 1 条正向用例

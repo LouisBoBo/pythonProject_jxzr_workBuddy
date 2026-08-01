@@ -6,10 +6,151 @@ import re
 from pathlib import Path
 from typing import Any
 
-# 单文件 / 总字节 / 文件数上限，避免撑爆 Agent 上下文
+# 单文件 / 总字节 / 文件数上限（单批读；全仓用 list + 多批循环）
 MAX_FILE_BYTES = int(os.getenv("IDE_BRIDGE_MAX_FILE_BYTES", str(80 * 1024)))
-MAX_TOTAL_BYTES = int(os.getenv("IDE_BRIDGE_MAX_TOTAL_BYTES", str(240 * 1024)))
-MAX_FILES = int(os.getenv("IDE_BRIDGE_MAX_FILES", "8"))
+MAX_TOTAL_BYTES = int(os.getenv("IDE_BRIDGE_MAX_TOTAL_BYTES", str(320 * 1024)))
+MAX_FILES = int(os.getenv("IDE_BRIDGE_MAX_FILES", "5"))
+BATCH_SIZE = int(os.getenv("IDE_BRIDGE_BATCH_SIZE", "5") or "5")
+MAX_REPO_FILES = int(os.getenv("IDE_BRIDGE_MAX_REPO_FILES", "200") or "200")
+
+# 仅功能/业务源码后缀（配置、锁文件、样式、文档不进审核队列）
+_CODE_SUFFIXES = {
+    ".java",
+    ".cs",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".py",
+    ".go",
+    ".kt",
+    ".kts",
+    ".rs",
+    ".php",
+    ".rb",
+    ".swift",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".scala",
+    ".groovy",
+    ".sql",
+}
+_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "target",
+    "bin",
+    "obj",
+    "dist",
+    "build",
+    "vendor",
+    "__pycache__",
+    ".idea",
+    ".vs",
+    "packages",
+    "coverage",
+    ".next",
+    ".nuxt",
+    "unpackage",
+    "miniprogram_npm",
+    "uni_modules",
+    "wxcomponents",
+    "nativeplugins",
+    "uview-ui",
+    "uview-plus",
+    "colorui",
+    "tuniao-ui",
+    "static",
+    "assets",
+    "public",
+    "locale",
+    "locales",
+    "i18n",
+    "mock",
+    "mocks",
+    "fixtures",
+    "__tests__",
+    "e2e",
+}
+# 仅在仓库根或 src/ 下跳过（避免误伤 com/example 等业务包名）
+_SKIP_DIRS_AT_SRC_OR_ROOT = {
+    "test",
+    "tests",
+    "example",
+    "examples",
+    "docs",
+    "doc",
+}
+_SKIP_BASENAMES = {
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "package.json",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "requirements.txt",
+    "pyproject.toml",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "manifest.json",
+    "pages.json",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "application.properties",
+    "application.yml",
+    "application.yaml",
+    "appsettings.json",
+    "vue.config.js",
+    "vite.config.js",
+    "vite.config.ts",
+    "webpack.config.js",
+    "babel.config.js",
+    "babel.config.cjs",
+    "jest.config.js",
+    "jest.config.ts",
+    "jsconfig.json",
+    "tsconfig.json",
+    "tsconfig.node.json",
+    "project.config.json",
+    "project.private.config.json",
+    "uni.promisify.adaptor.js",
+    "uni.scss",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "AGENTS.md",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".prettierrc",
+    ".prettierrc.js",
+    "prettier.config.js",
+}
+_SKIP_NAME_RE = re.compile(
+    r"("
+    r"\.(min|bundle)\.js$"
+    r"|\.d\.ts$"
+    r"|\.(test|spec)\.(js|jsx|ts|tsx)$"
+    r"|(^|/)(mock|mocks|__mocks__)(/|$)"
+    r"|(^|/)(locale|locales|i18n)(/|$)"
+    r"|(^|/)(static|assets|public)(/|$)"
+    r"|\.(css|scss|sass|less|styl)$"
+    r"|\.(md|map|lock)$"
+    r"|\.(json|yml|yaml|toml|properties|xml|gradle)$"
+    r")",
+    re.I,
+)
 
 # 敏感文件名（basename）与后缀：拒绝读入审核上下文
 _SENSITIVE_BASENAMES = {
@@ -162,4 +303,121 @@ def read_workspace_files(
         "errors": errors,
         "provider": "bridge",
         "raw_summary": f"已读取 {len(items)} 个文件（共 {total} 字节）",
+    }
+
+
+def _should_skip_dir(name: str, rel_dir: str) -> bool:
+    """目录是否跳过。example/test 仅在仓库根或 src 下跳过，避免误伤 com/example 包名。"""
+    if name in _SKIP_DIRS:
+        return True
+    if name in _SKIP_DIRS_AT_SRC_OR_ROOT:
+        parent = (rel_dir or "").replace("\\", "/").strip("/")
+        if parent == "" or parent == "src" or parent.endswith("/src"):
+            return True
+    return False
+
+
+def is_functional_source_rel(rel: str) -> bool:
+    """是否纳入全仓审核：只要功能/业务源码，排除配置与非核心文件。"""
+    r = (rel or "").replace("\\", "/").strip()
+    if not r:
+        return False
+    base = Path(r).name
+    if base in _SKIP_BASENAMES or base.startswith("."):
+        return False
+    if _SKIP_NAME_RE.search(r):
+        return False
+    if is_sensitive_rel(r):
+        return False
+    low = base.lower()
+    return any(low.endswith(suf) for suf in _CODE_SUFFIXES)
+
+
+def list_workspace_source_files(
+    workspace_root: Path,
+    *,
+    max_files: int = MAX_REPO_FILES,
+    batch_size: int = BATCH_SIZE,
+) -> dict[str, Any]:
+    """枚举工作区「功能源码」文件，并切成每批 batch_size 的路径列表。
+
+    不含配置/锁文件/样式/文档/测试/静态资源等非核心文件。
+    """
+    root = workspace_root.resolve()
+    if not root.is_dir():
+        return {
+            "status": "error",
+            "message": f"工程目录不存在: {root}",
+            "files": [],
+            "batches": [],
+            "total": 0,
+            "batch_size": batch_size,
+            "batch_count": 0,
+        }
+
+    bs = max(1, int(batch_size or BATCH_SIZE))
+    limit = max(1, int(max_files or MAX_REPO_FILES))
+    seen: set[str] = set()
+    files: list[str] = []
+
+    def add(rel: str) -> None:
+        if not rel or rel in seen or len(files) >= limit:
+            return
+        if not is_functional_source_rel(rel):
+            return
+        abs_path = root / rel
+        if abs_path.is_file():
+            seen.add(rel)
+            files.append(rel)
+
+    truncated = False
+
+    def walk(abs_dir: Path, rel_dir: str, depth: int) -> None:
+        nonlocal truncated
+        if len(files) >= limit or depth > 8:
+            if len(files) >= limit:
+                truncated = True
+            return
+        try:
+            entries = sorted(abs_dir.iterdir(), key=lambda p: (not p.is_file(), p.name.lower()))
+        except OSError:
+            return
+        for ent in entries:
+            if len(files) >= limit:
+                truncated = True
+                return
+            name = ent.name
+            if name.startswith("."):
+                continue
+            if ent.is_dir():
+                if _should_skip_dir(name, rel_dir):
+                    continue
+                walk(ent, f"{rel_dir}/{name}" if rel_dir else name, depth + 1)
+                continue
+            rel = f"{rel_dir}/{name}" if rel_dir else name
+            add(rel.replace("\\", "/"))
+
+    walk(root, "", 0)
+
+    batches = [files[i : i + bs] for i in range(0, len(files), bs)] if files else []
+    return {
+        "status": "ok",
+        "workspace_root": str(root),
+        "files": files,
+        "total": len(files),
+        "batch_size": bs,
+        "batch_count": len(batches),
+        "batches": batches,
+        "truncated": truncated,
+        "provider": "local",
+        "filter": "functional_source_only",
+        "raw_summary": (
+            f"共 {len(files)} 个功能源码文件（已排除配置/锁文件/样式/文档等），"
+            f"分成 {len(batches)} 批（每批 {bs} 个）"
+            + ("；已达枚举上限" if truncated else "")
+        ),
+        "next_step": (
+            "按 batches 下标依次 request_ide_read_batch → 批纪要 → 终稿。"
+            "禁止只审首批就结案。"
+        ),
     }

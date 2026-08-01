@@ -1,10 +1,9 @@
 <template>
   <div class="chat-view">
     <!-- Messages area -->
-    <div class="messages-container" ref="msgContainer">
+    <div class="messages-container" ref="msgContainer" @click="onMessagesClick">
       <div v-if="messages.length === 0 && !loadingSession" class="empty-state">
-        <div class="logo">MES 运维助手</div>
-        <p class="empty-desc">用自然语言管理 PCB MES系统</p>
+        <div class="empty-title">我能为您做些什么？</div>
         <div class="suggestions">
           <button v-for="s in suggestions" :key="s" class="suggest-btn" @click="send(s)">
             {{ s }}
@@ -12,19 +11,15 @@
         </div>
       </div>
       <div v-if="loadingSession" class="empty-state">
-        <p class="empty-desc">正在加载会话...</p>
+        <p class="empty-loading">正在加载会话...</p>
       </div>
 
       <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
-        <div class="msg-avatar assistant-avatar" v-if="msg.role === 'assistant'">
-          <svg width="36" height="36" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="14" fill="var(--ui-accent)"/>
-            <circle cx="10.5" cy="12" r="1.6" fill="#fff"/>
-            <circle cx="17.5" cy="12" r="1.6" fill="#fff"/>
-            <path d="M10 18c2-1.6 6-1.6 8 0" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </div>
         <div class="msg-content">
+          <div v-if="msg.role === 'assistant'" class="msg-brand">
+            <AiAvatarIcon />
+            <span class="msg-brand-name">ZR WorkBuddy</span>
+          </div>
           <ProcessPanel
             v-if="msg.role === 'assistant' && msg.process?.length"
             :items="msg.process"
@@ -43,6 +38,7 @@
             v-if="msg.idePick"
             :card="msg.idePick"
             @resolved="(payload) => onIdePickResolved(msg, payload)"
+            @retry="() => retryIdeReview(msg)"
           />
           <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length || msg.idePick">
             <el-tooltip
@@ -75,21 +71,14 @@
             </el-tooltip>
           </div>
         </div>
-        <div class="msg-avatar user-avatar" v-if="msg.role === 'user'">
-          <div class="avatar-letter">U</div>
-        </div>
       </div>
 
       <div v-if="streaming" class="message assistant">
-        <div class="msg-avatar assistant-avatar">
-          <svg width="36" height="36" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="14" fill="var(--ui-accent)"/>
-            <circle cx="10.5" cy="12" r="1.6" fill="#fff"/>
-            <circle cx="17.5" cy="12" r="1.6" fill="#fff"/>
-            <path d="M10 18c2-1.6 6-1.6 8 0" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </div>
         <div class="msg-content">
+          <div class="msg-brand">
+            <AiAvatarIcon spinning />
+            <span class="msg-brand-name">ZR WorkBuddy</span>
+          </div>
           <ProcessPanel
             v-if="streamProcess.length"
             :items="streamProcess"
@@ -97,9 +86,9 @@
             :duration-text="streamDurationText"
             @update:collapsed="(v) => { streamProcessCollapsed = v }"
           />
-          <!-- 生成态立刻出气泡（打点），过程区本身无气泡 -->
+          <!-- 生成态立刻出气泡（打点）；有过程面板时也显示，避免「选完工程像没开始」 -->
           <div
-            v-if="streamContent || streamAnswerPending || (!streamProcess.length && streaming)"
+            v-if="streamContent || streamAnswerPending || streaming"
             class="msg-body"
             :class="{ thinking: !streamContent }"
           >
@@ -165,12 +154,12 @@
             ref="inputEl"
             v-model="input"
             class="prompt-input"
-            :placeholder="streaming ? '等待回复中...' : '描述你想做的事情，例如：导入访问日志分析接口错误，或把 CSV 导入工单'"
+            :placeholder="streaming ? '生成中可继续编辑下一条，或点右侧停止…' : '描述你想做的事情，例如：导入访问日志分析接口错误，或把 CSV 导入工单'"
             rows="1"
-            :disabled="streaming"
-            @keydown.enter.exact.prevent="send(input)"
+            @keydown.enter.exact.prevent="onEnterSend"
             @keydown.enter.shift.exact="input += '\n'"
             @input="autoResize"
+            @paste="onPasteResize"
           ></textarea>
           <div class="prompt-actions">
             <input
@@ -189,8 +178,20 @@
               <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1v13M1 7.5h13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
             <button
+              v-if="streaming"
+              class="stop-btn"
+              type="button"
+              title="停止生成"
+              @click="stopStreaming"
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor"/>
+              </svg>
+            </button>
+            <button
+              v-else
               class="send-btn"
-              :disabled="(!input.trim() && attachedFiles.length === 0) || streaming"
+              :disabled="!input.trim() && attachedFiles.length === 0"
               @click="send(input)"
               title="发送"
             >
@@ -212,6 +213,7 @@ import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingW
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 import IdeWorkspacePickCard from '../components/IdeWorkspacePickCard.vue'
+import AiAvatarIcon from '../components/AiAvatarIcon.vue'
 import { getUsername, getUserId } from '../auth.js'
 
 const route = useRoute()
@@ -220,6 +222,7 @@ const router = useRouter()
 const messages = ref([])
 const input = ref('')
 const streaming = ref(false)
+const streamAbort = ref(null)
 const streamContent = ref('')
 const streamProcess = ref([])
 const streamProcessCollapsed = ref(false)
@@ -241,12 +244,12 @@ const auditItems = ref([])
 let activeRequestId = 0
 let copiedTimer = null
 
-// 首页快捷问法：对齐 docs/平台业务能力理解测试用例.md（表结构能力，非模拟查/导）
+// 首页快捷问法：区分 WorkBuddy（平台）与 MES 系统
 const suggestions = [
-  '平台能干什么？给我一个功能总览',
-  '仓储能管哪些事？相关表有哪些？',
+  '这个平台能帮我做什么？',
+  '阻抗是什么？和线宽线距怎么配合？',
+  'MES系统有什么功能？给我一个功能总览',
   '工单从下达到入库涉及哪些表？按流程串一下',
-  '导出一份摸底报告，Markdown 和 Excel 都要',
 ]
 
 function createThreadId() {
@@ -259,24 +262,56 @@ function notifyHistoryUpdated() {
 }
 
 async function copyMessage(content, index) {
-  const text = (content || '').trim()
+  const text = stripStoppedNote(content || '')
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.left = '-9999px'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
+  const ok = await copyTextToClipboard(text)
+  if (!ok) return
   copiedIndex.value = index
   if (copiedTimer) clearTimeout(copiedTimer)
   copiedTimer = setTimeout(() => {
     copiedIndex.value = -1
+  }, 1500)
+}
+
+async function copyTextToClipboard(text) {
+  const value = text || ''
+  if (!value) return false
+  try {
+    await navigator.clipboard.writeText(value)
+    return true
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = value
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+async function onMessagesClick(e) {
+  const btn = e.target?.closest?.('[data-code-copy]')
+  if (!btn) return
+  e.preventDefault()
+  const wrap = btn.closest('.code-block-wrap')
+  const codeEl = wrap?.querySelector('code')
+  const text = codeEl?.textContent || ''
+  if (!text) return
+  const ok = await copyTextToClipboard(text)
+  if (!ok) return
+  const prev = btn.textContent
+  btn.textContent = '已复制'
+  btn.classList.add('is-copied')
+  setTimeout(() => {
+    btn.textContent = prev || '复制'
+    btn.classList.remove('is-copied')
   }, 1500)
 }
 
@@ -297,11 +332,204 @@ function editUserMessage(index) {
   })
 }
 
+function promptInputMaxHeight() {
+  // 长文本先撑开输入杠（接近图二），再超出才内部滚动
+  if (typeof window === 'undefined') return 480
+  return Math.max(240, Math.min(Math.round(window.innerHeight * 0.55), 560))
+}
+
 function autoResize() {
   const el = inputEl.value
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+  const max = promptInputMaxHeight()
+  const scroll = el.scrollHeight
+  const next = Math.min(Math.max(scroll, 52), max)
+  el.style.height = `${next}px`
+  el.style.overflowY = scroll > max ? 'auto' : 'hidden'
+}
+
+function onPasteResize() {
+  // paste 后内容写入略晚于事件，多拍一次保证撑开
+  nextTick(() => {
+    autoResize()
+    requestAnimationFrame(() => autoResize())
+  })
+}
+
+watch(input, () => {
+  nextTick(() => autoResize())
+})
+
+function onEnterSend() {
+  if (streaming.value) return
+  send(input.value)
+}
+
+function looksLikeContinueIntent(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  return /^(继续|接着(?:写|说|生成|分析)?|往下(?:写|说)?|继续(?:写|生成|说|分析|完成)?|再来|接着来|go\s*on|continue)([吧啊呀呢]?[.。!！…]*)$/i.test(
+    t,
+  )
+}
+
+/** 停止后兑现承诺类短句（来吧/好的），也走续写 enrich */
+function looksLikeResumeConfirm(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  return /^(来吧|好的|好|可以|行|要|要的|贴一下|改一版|完整版|完整类|ok|yes|y)([吧啊呀呢]?[.。!！…]*)$/i.test(
+    t,
+  )
+}
+
+function looksLikeResumeIntent(text) {
+  return looksLikeContinueIntent(text) || looksLikeResumeConfirm(text)
+}
+
+function stripStoppedNote(text) {
+  return String(text || '')
+    .replace(/\n*（已停止生成）\s*$/u, '')
+    .trim()
+}
+
+/** 取最近一条「已停止」助手气泡 + 其前第一条非续写短句的用户原任务 */
+function findStoppedResumeContext() {
+  const list = messages.value || []
+  for (let i = list.length - 2; i >= 0; i--) {
+    const m = list[i]
+    if (!m || m.role !== 'assistant') continue
+    const raw = String(m.content || '')
+    const stopped = Boolean(m.meta?.stopped) || /（已停止生成）/.test(raw)
+    // 跳过已完成的后续答复，继续往前找停止气泡（支持连续「继续」）
+    if (!stopped) continue
+
+    let task = ''
+    for (let j = i - 1; j >= 0; j--) {
+      if (list[j]?.role !== 'user') continue
+      const ut = String(list[j].content || '')
+      // 跳过「继续 / 来吧」等短句，避免第二次继续绑错原任务
+      if (looksLikeResumeIntent(ut)) continue
+      task = ut
+      break
+    }
+    const partial = stripStoppedNote(raw)
+    const trivial = partial.length < 40
+    return {
+      task,
+      partial,
+      index: i,
+      mode: trivial ? 'restart' : 'append',
+      trivial,
+    }
+  }
+  return null
+}
+
+/** 界面仍显示用户原话；续写/兑现短句且存在停止半截时附带指令 */
+function enrichMessageForAgent(userText, resumeCtx) {
+  const text = String(userText || '').trim()
+  const wantsResume = looksLikeResumeIntent(text)
+  const ctx = resumeCtx || (wantsResume ? findStoppedResumeContext() : null)
+  if (!ctx || !wantsResume) return text
+
+  const task = (ctx.task || '').slice(0, 8000)
+  const partial = (ctx.partial || '').slice(0, 12000)
+
+  if (ctx.mode === 'restart' || !partial) {
+    const parts = [
+      '【完整重答指令】用户要求继续，但上一轮在几乎未产出有效正文时就被停止。',
+      '请针对【用户原任务】从头给出完整答复。',
+      '硬约束：禁止声称「上文已覆盖 / 前面已说」任何内容；禁止从中间条目（如反例5）跳着写；必须完整覆盖用户要的分析/修复。',
+      '注意：上一轮停止气泡会保留在会话中，你本轮是「继续」之后的新答复，请完整作答。',
+    ]
+    if (task) parts.push(`【用户原任务】\n${task}`)
+    parts.push(`【用户本轮】\n${text}`)
+    return parts.join('\n\n')
+  }
+
+  const parts = [
+    '【续写指令】用户要求继续。上一轮停止气泡会保留；你本轮在「继续」之后新开一条答复。',
+    '请严格从【已生成片段】末尾接着写，只补片段中尚未出现的内容。',
+    '硬约束：禁止写「上文应已覆盖…」；片段里没写到的条目一律视为未写，必须补全；不要重复片段已有大段原文；不要自我介绍。',
+  ]
+  if (task) parts.push(`【用户原任务】\n${task}`)
+  parts.push(`【已生成片段（请续写，勿丢）】\n${partial}`)
+  parts.push(`【用户本轮】\n${text}`)
+  return parts.join('\n\n')
+}
+
+function pushAssistantMessage({
+  content,
+  processItems,
+  confirms,
+  durationText,
+  stopped = false,
+}) {
+  messages.value.push({
+    role: 'assistant',
+    content,
+    process: processItems || [],
+    confirms: confirms || [],
+    processCollapsed: true,
+    meta: {
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+      durationText,
+      stopped: Boolean(stopped),
+    },
+  })
+}
+
+async function stopStreaming() {
+  if (!streaming.value) return
+  const ctrl = streamAbort.value
+  streamAbort.value = null
+  // 先抬 requestId，丢弃后续迟到事件，再 abort
+  activeRequestId += 1
+  try {
+    ctrl?.abort()
+  } catch {
+    /* ignore */
+  }
+
+  const sec = Math.max(1, Math.round((Date.now() - (streamStartedAt.value || Date.now())) / 1000))
+  const durationText = streamDurationText.value || `${sec}s`
+  const processItems = (streamProcess.value || []).filter(
+    (i) => i.type === 'step' && i.id !== 'boot'
+  )
+  const confirms = (streamConfirms.value || []).map((c) => ({ ...c }))
+  let finalContent = (streamContent.value || '').trimEnd()
+  if (confirms.length) {
+    const stable = buildImportSummaryMarkdown(confirms[0].preview)
+    if (stable) finalContent = stable
+  }
+  const stoppedNote = '（已停止生成）'
+  if (finalContent) {
+    finalContent = `${finalContent}\n\n${stoppedNote}`
+  } else {
+    finalContent = stoppedNote
+  }
+  pushAssistantMessage({
+    content: finalContent,
+    processItems,
+    confirms,
+    durationText,
+    stopped: true,
+  })
+  streamContent.value = ''
+  streamProcess.value = []
+  streamConfirms.value = []
+  streamProcessCollapsed.value = false
+  streamDurationText.value = ''
+  streamAnswerPending.value = false
+  streaming.value = false
+  scrollToBottom()
+  await persistSession()
+  if (threadId.value) {
+    await attachPendingConfirms(threadId.value)
+    await loadWriteAudit(threadId.value)
+  }
+  nextTick(() => inputEl.value?.focus())
 }
 
 function scrollToBottom() {
@@ -464,13 +692,25 @@ function persistableMessages() {
   }))
 }
 
-async function persistSession() {
-  if (!threadId.value || messages.value.length === 0) return
+async function persistSession({ required = false } = {}) {
+  if (!threadId.value || messages.value.length === 0) {
+    return true
+  }
   try {
     await saveHistory(threadId.value, persistableMessages())
     notifyHistoryUpdated()
+    return true
   } catch (e) {
     console.warn('保存会话失败', e)
+    if (required) {
+      const tip = '会话保存失败，上下文可能不同步。请检查网络后重试发送。'
+      try {
+        window.alert(tip)
+      } catch {
+        /* ignore */
+      }
+    }
+    return false
   }
 }
 
@@ -481,6 +721,12 @@ function syncThreadQuery(id) {
 
 async function loadSession(id) {
   activeRequestId += 1
+  try {
+    streamAbort.value?.abort()
+  } catch {
+    /* ignore */
+  }
+  streamAbort.value = null
   loadingSession.value = true
   threadId.value = id
   streamContent.value = ''
@@ -509,7 +755,7 @@ async function loadSession(id) {
       return {
         role: m.role,
         content,
-        meta: m.meta,
+        meta: m.meta || {},
         process: m.process || [],
         confirms,
         ...(m.idePick ? { idePick: { ...m.idePick } } : {}),
@@ -591,8 +837,13 @@ function formatAuditTime(ts) {
 }
 
 function startNewChat() {
-  if (streaming.value) return
   activeRequestId += 1
+  try {
+    streamAbort.value?.abort()
+  } catch {
+    /* ignore */
+  }
+  streamAbort.value = null
   const id = createThreadId()
   threadId.value = id
   messages.value = []
@@ -601,6 +852,7 @@ function startNewChat() {
   streamConfirms.value = []
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
+  streamAnswerPending.value = false
   auditOpen.value = false
   auditItems.value = []
   attachedFiles.value = []
@@ -666,27 +918,157 @@ async function fetchIdeWorkspaces() {
   }
 }
 
+/** 强制清掉卡住的流，避免后续 startAssistantStream 被静默跳过 */
+function forceResetStreaming() {
+  try {
+    streamAbort.value?.abort()
+  } catch {
+    /* ignore */
+  }
+  activeRequestId += 1
+  streamAbort.value = null
+  streaming.value = false
+  streamContent.value = ''
+  streamProcess.value = []
+  streamConfirms.value = []
+  streamAnswerPending.value = false
+  streamDurationText.value = ''
+}
+
+function buildIdeReviewAgentMessage(content, selected) {
+  const base = String(content || '').trim() || '请审核已选本机工程并输出代码审核报告'
+  if (!selected) return base
+  return `${base}\n\n【本机工程已确认】请立刻审核工程：${selected}`
+}
+
+async function beginIdeReviewStream(msg, { selected, content, files }) {
+  // 正在跑就不要连点：并发会打坏 AsyncSqlite checkpointer，导致空报告
+  if (streaming.value && streamAbort.value) {
+    return false
+  }
+  if (msg?.idePick) {
+    msg.idePick = { ...msg.idePick, status: 'confirmed', selected: selected || msg.idePick.selected }
+  }
+  // 仅清理卡死状态；有进行中的请求才 abort
+  if (streamAbort.value) {
+    forceResetStreaming()
+    await nextTick()
+  } else {
+    streaming.value = false
+    streamContent.value = ''
+    streamProcess.value = []
+    streamConfirms.value = []
+    streamAnswerPending.value = false
+  }
+  // 先挂上 streaming UI，再 fetch
+  streaming.value = true
+  streamProcess.value = [{
+    id: 'boot',
+    type: 'step',
+    state: 'running',
+    title: selected ? `正在审核本机工程…` : '正在审核…',
+  }]
+  streamProcessCollapsed.value = false
+  streamStartedAt.value = Date.now()
+  scrollToBottom()
+  await nextTick()
+
+  const agentMessage = buildIdeReviewAgentMessage(content, selected)
+  const started = await startAssistantStream(agentMessage, files, selected || null, null, {
+    force: true,
+  })
+  if (!started) {
+    streaming.value = false
+    streamProcess.value = []
+    messages.value.push({
+      role: 'assistant',
+      content: '[错误] 未能发起代码审核请求。请刷新页面后新开对话，再说一次「审核代码」。',
+    })
+    await persistSession()
+    return false
+  }
+  return true
+}
+
 async function onIdePickResolved(msg, payload) {
   if (!msg?.idePick || !payload) return
   if (msg.idePick.status && msg.idePick.status !== 'pending') return
 
   const selected = payload.selected || msg.idePick.selected || ''
-  const content = msg.idePick.pendingContent || ''
+  let content = msg.idePick.pendingContent || ''
   const files = Array.isArray(msg.idePick.pendingFiles) ? [...msg.idePick.pendingFiles] : []
+
+  if (!content) {
+    const idx = messages.value.indexOf(msg)
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages.value[i]?.role === 'user') {
+        content = String(messages.value[i].content || '').trim()
+        break
+      }
+    }
+  }
+  if (!content) content = '请审核已选本机工程并输出代码审核报告'
 
   msg.idePick = {
     ...msg.idePick,
     status: payload.status,
     selected,
+    pendingContent: content,
   }
-  await persistSession()
+  void persistSession()
   scrollToBottom()
 
   if (payload.status !== 'confirmed') return
-  if (streaming.value) return
-  if (!content && !files.length) return
 
-  await startAssistantStream(content, files, selected || null)
+  try {
+    await beginIdeReviewStream(msg, { selected, content, files })
+  } catch (e) {
+    console.error('ide pick start stream failed', e)
+    streaming.value = false
+    messages.value.push({
+      role: 'assistant',
+      content: `[错误] 确认工程后未能开始审核：${e?.message || e}`,
+    })
+    void persistSession()
+  }
+}
+
+/** 已确认工程卡上的「重新开始审核」 */
+async function retryIdeReview(msg) {
+  if (!msg?.idePick) return
+  if (msg.idePick.status === 'cancelled') return
+  const selected = msg.idePick.selected || ''
+  if (!selected) {
+    messages.value.push({
+      role: 'assistant',
+      content: '[错误] 未找到工程路径，请新开对话后重新发送「审核代码」。',
+    })
+    return
+  }
+  let content = msg.idePick.pendingContent || ''
+  if (!content) {
+    const idx = messages.value.indexOf(msg)
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages.value[i]?.role === 'user') {
+        content = String(messages.value[i].content || '').trim()
+        break
+      }
+    }
+  }
+  if (!content) content = '请审核已选本机工程并输出代码审核报告'
+  msg.idePick = { ...msg.idePick, status: 'confirmed', pendingContent: content, selected }
+  const files = Array.isArray(msg.idePick.pendingFiles) ? [...msg.idePick.pendingFiles] : []
+  try {
+    await beginIdeReviewStream(msg, { selected, content, files })
+  } catch (e) {
+    console.error('ide review retry failed', e)
+    streaming.value = false
+    messages.value.push({
+      role: 'assistant',
+      content: `[错误] 重新开始审核失败：${e?.message || e}`,
+    })
+    void persistSession()
+  }
 }
 
 async function send(text) {
@@ -716,7 +1098,14 @@ async function send(text) {
   messages.value.push({ role: 'user', content: displayContent, files: filesSnapshot })
   attachedFiles.value = []
   scrollToBottom()
-  await persistSession()
+  const saved = await persistSession({ required: true })
+  if (!saved) {
+    // 回滚刚写入的 user，避免 UI 与服务端历史不一致还继续聊
+    messages.value.pop()
+    input.value = content
+    nextTick(() => autoResize())
+    return
+  }
 
   if (looksLikeCodeReview(content)) {
     const workspaces = await fetchIdeWorkspaces()
@@ -742,11 +1131,32 @@ async function send(text) {
     }
   }
 
-  await startAssistantStream(content, filesSnapshot, null)
+  const resumeCtx = looksLikeResumeIntent(content) ? findStoppedResumeContext() : null
+  await startAssistantStream(
+    enrichMessageForAgent(content, resumeCtx),
+    filesSnapshot,
+    null,
+    resumeCtx,
+  )
 }
 
-async function startAssistantStream(content, files, ideWorkspaceRoot) {
-  if (streaming.value) return
+async function startAssistantStream(
+  content,
+  files,
+  ideWorkspaceRoot,
+  resumeCtx = null,
+  opts = null,
+) {
+  const force = Boolean(opts && opts.force)
+  if (streaming.value && !force) return false
+  if (streaming.value && force) {
+    // 已有进行中的 fetch 才强杀；否则保留 beginIdeReviewStream 刚挂上的 boot UI
+    if (streamAbort.value) {
+      forceResetStreaming()
+    } else {
+      streaming.value = false
+    }
+  }
   if (!threadId.value) {
     threadId.value = createThreadId()
     syncThreadQuery(threadId.value)
@@ -754,13 +1164,24 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
 
   const requestId = ++activeRequestId
   const currentThread = threadId.value
+  const abortCtrl = new AbortController()
+  streamAbort.value = abortCtrl
 
   streaming.value = true
   streamContent.value = ''
   streamAnswerPending.value = false
   streamConfirms.value = []
   // 本地先挂一条「分析中」，后续真实步骤会替换掉
-  streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: '分析问题…' }]
+  streamProcess.value = [{
+    id: 'boot',
+    type: 'step',
+    state: 'running',
+    title: resumeCtx
+      ? '继续生成…'
+      : ideWorkspaceRoot
+        ? '正在审核本机工程…'
+        : '分析问题…',
+  }]
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
   streamStartedAt.value = Date.now()
@@ -768,6 +1189,7 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
 
   let stepRevealChain = Promise.resolve()
   let flushStepsNow = false
+  let streamGotError = false
   const STEP_GAP_MS = 150
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -838,7 +1260,7 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
     const extraPageContext = ideWorkspaceRoot
       ? { ide_workspace_root: ideWorkspaceRoot }
       : null
-    await streamMessage(
+    const result = await streamMessage(
       content,
       currentThread,
       async (event) => {
@@ -947,16 +1369,22 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
           if (stable) finalContent = stable
         }
         if (finalContent || processItems.length || confirms.length) {
-          messages.value.push({
-            role: 'assistant',
+          pushAssistantMessage({
             content: finalContent,
-            process: processItems,
+            processItems,
             confirms,
-            processCollapsed: true,
-            meta: {
-              time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-              durationText,
-            },
+            durationText,
+            stopped: false,
+          })
+        } else if (ideWorkspaceRoot && !streamGotError) {
+          // 审核流结束却无正文：必须给用户可见反馈，避免只剩工程确认卡
+          pushAssistantMessage({
+            content:
+              '[错误] 本轮未生成审核正文。请点「重新开始审核」再试一次。',
+            processItems: [],
+            confirms: [],
+            durationText,
+            stopped: false,
           })
         }
         streamContent.value = ''
@@ -966,6 +1394,7 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
         streamDurationText.value = ''
         streamAnswerPending.value = false
         streaming.value = false
+        streamAbort.value = null
         scrollToBottom()
         await persistSession()
         await attachPendingConfirms(currentThread)
@@ -973,15 +1402,16 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
       },
       async (err) => {
         if (requestId !== activeRequestId || threadId.value !== currentThread) return
+        streamGotError = true
         flushStepsNow = true
         await stepRevealChain
         const errText = typeof err === 'string' ? err : (err?.message || err)
-        messages.value.push({
-          role: 'assistant',
+        pushAssistantMessage({
           content: '[错误] 请求失败：' + errText,
-          process: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
+          processItems: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
           confirms: (streamConfirms.value || []).map((c) => ({ ...c })),
-          processCollapsed: true,
+          durationText: streamDurationText.value || '',
+          stopped: false,
         })
         streamContent.value = ''
         streamProcess.value = []
@@ -990,22 +1420,52 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
         streamDurationText.value = ''
         streamAnswerPending.value = false
         streaming.value = false
+        streamAbort.value = null
         scrollToBottom()
         await persistSession()
         await attachPendingConfirms(currentThread)
         await loadWriteAudit(currentThread)
       },
       filePaths,
-      extraPageContext
+      extraPageContext,
+      abortCtrl.signal,
     )
+    // abort 时 streamMessage 不抛错也不调 onDone，这里必须清掉 streaming，否则后续审核会被静默跳过
+    if (
+      result?.aborted &&
+      requestId === activeRequestId &&
+      threadId.value === currentThread &&
+      streaming.value
+    ) {
+      streamContent.value = ''
+      streamProcess.value = []
+      streamConfirms.value = []
+      streamProcessCollapsed.value = false
+      streamDurationText.value = ''
+      streamAnswerPending.value = false
+      streaming.value = false
+      streamAbort.value = null
+    }
+    return true
   } catch (err) {
-    if (requestId !== activeRequestId || threadId.value !== currentThread) return
-    messages.value.push({
-      role: 'assistant',
+    if (requestId !== activeRequestId || threadId.value !== currentThread) return false
+    if (err?.name === 'AbortError') {
+      streamContent.value = ''
+      streamProcess.value = []
+      streamConfirms.value = []
+      streamProcessCollapsed.value = false
+      streamDurationText.value = ''
+      streamAnswerPending.value = false
+      streaming.value = false
+      streamAbort.value = null
+      return false
+    }
+    pushAssistantMessage({
       content: '[错误] 连接服务器失败，请确认服务端已启动',
-      process: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
+      processItems: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
       confirms: (streamConfirms.value || []).map((c) => ({ ...c })),
-      processCollapsed: true,
+      durationText: streamDurationText.value || '',
+      stopped: false,
     })
     streamContent.value = ''
     streamProcess.value = []
@@ -1014,10 +1474,12 @@ async function startAssistantStream(content, files, ideWorkspaceRoot) {
     streamDurationText.value = ''
     streamAnswerPending.value = false
     streaming.value = false
+    streamAbort.value = null
     scrollToBottom()
     await persistSession()
     await attachPendingConfirms(currentThread)
     await loadWriteAudit(currentThread)
+    return false
   }
 }
 
@@ -1220,7 +1682,7 @@ function finalizeWriteMessage(content, tip, preview) {
   return base ? `${base}\n\n${tip}` : tip
 }
 
-function onConfirmResolved(msg, payload) {
+async function onConfirmResolved(msg, payload) {
   if (!msg) return
   const card = (msg.confirms || []).find((c) => c.action_id === payload.action_id)
   const preview = card?.preview || payload?.preview || null
@@ -1250,8 +1712,8 @@ function onConfirmResolved(msg, payload) {
       msg.content = tip
     }
   }
-  persistSession()
-  loadWriteAudit(threadId.value)
+  await persistSession()
+  void loadWriteAudit(threadId.value)
 }
 
 function onStreamConfirmResolved(payload) {
@@ -1286,7 +1748,7 @@ function onStreamConfirmResolved(payload) {
     const msg = messages.value[i]
     if (msg.role !== 'assistant') continue
     if (!(msg.confirms || []).some((c) => c.action_id === payload.action_id)) continue
-    onConfirmResolved(msg, payload)
+    void onConfirmResolved(msg, payload)
     return
   }
 }
@@ -1343,7 +1805,20 @@ function renderMarkdown(text) {
     return `<a class="file-link" href="/api/download/${encodeURIComponent(filename)}" download target="_blank">${match}</a>`
   })
 
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
+  html = html.replace(/```(\w*)\r?\n([\s\S]*?)```/g, (_, lang, code) => {
+    const label = (lang || '').trim()
+    const langHtml = label
+      ? `<span class="code-lang">${label}</span>`
+      : '<span class="code-lang"></span>'
+    return (
+      `<div class="code-block-wrap">` +
+      `<div class="code-block-bar">${langHtml}` +
+      `<button type="button" class="code-copy-btn" data-code-copy title="复制代码">复制</button>` +
+      `</div>` +
+      `<pre class="code-block"><code>${code}</code></pre>` +
+      `</div>`
+    )
+  })
   html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   html = html.replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>')
@@ -1428,22 +1903,24 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   height: 100%;
-  gap: 16px;
+  gap: 28px;
   padding: 24px;
   text-align: center;
 }
 
-.logo {
-  font-size: 36px;
-  font-weight: 600;
-  letter-spacing: -0.5px;
+.empty-title {
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -0.4px;
   color: var(--ui-text);
+  line-height: 1.25;
+  margin: 0;
 }
 
-.empty-desc {
+.empty-loading {
+  margin: 0;
   font-size: 15px;
   color: var(--ui-text-dim);
-  margin: 0;
 }
 
 .suggestions {
@@ -1452,7 +1929,6 @@ onMounted(async () => {
   gap: 8px;
   justify-content: center;
   max-width: 100%;
-  margin-top: 8px;
 }
 
 .suggest-btn {
@@ -1468,9 +1944,9 @@ onMounted(async () => {
 }
 
 .suggest-btn:hover {
-  background: var(--ui-panel);
-  border-color: var(--ui-accent);
-  color: var(--ui-accent);
+  background: rgba(145, 94, 246, 0.08);
+  border-color: #915ef6;
+  color: #915ef6;
 }
 
 /* Message bubbles */
@@ -1489,35 +1965,38 @@ onMounted(async () => {
   justify-content: flex-start;
 }
 
-.msg-avatar {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  margin-top: 2px;
-}
-
-.user-avatar .avatar-letter {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: oklch(0.6 0.18 25);
-  color: #fff;
-  font-size: 16px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .msg-content {
   display: flex;
   flex-direction: column;
-  max-width: calc(100% - 52px);
+  max-width: min(100%, 920px);
   align-items: flex-start;
+  position: relative;
+}
+
+.message.assistant .msg-content {
+  width: 100%;
 }
 
 .message.user .msg-content {
   align-items: flex-end;
+  max-width: min(100%, 720px);
+}
+
+/* 消息体顶部品牌行（对齐参考：头像 + 名称） */
+.msg-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  align-self: flex-start;
+}
+
+.msg-brand-name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ui-text);
+  letter-spacing: -0.2px;
+  line-height: 1;
 }
 
 .msg-body {
@@ -1609,17 +2088,66 @@ onMounted(async () => {
 }
 
 /* Markdown rendering */
-:deep(.code-block) {
-  background: #1e293b;
-  color: #e2e8f0;
-  padding: 12px 16px;
+:deep(.code-block-wrap) {
+  position: relative;
+  margin: 8px 0;
   border-radius: 8px;
+  overflow: hidden;
+  background: #1e293b;
+  border: 1px solid #334155;
+}
+
+:deep(.code-block-bar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 0 12px;
+  min-height: 32px;
+}
+
+:deep(.code-lang) {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+
+:deep(.code-copy-btn) {
+  flex-shrink: 0;
+  margin-left: auto;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.15);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+:deep(.code-copy-btn:hover) {
+  background: rgba(148, 163, 184, 0.28);
+  color: #f8fafc;
+}
+
+:deep(.code-copy-btn.is-copied) {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.18);
+}
+
+:deep(.code-block) {
+  background: transparent;
+  color: #e2e8f0;
+  padding: 8px 16px 12px;
+  border-radius: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
   max-width: 100%;
-  margin: 8px 0;
+  margin: 0;
 }
 
 :deep(.inline-code) {
@@ -1884,6 +2412,7 @@ onMounted(async () => {
 .prompt-input {
   flex: 1;
   min-height: 52px;
+  max-height: min(55vh, 560px);
   width: 100%;
   resize: none;
   border: none;
@@ -1894,16 +2423,13 @@ onMounted(async () => {
   color: var(--ui-text);
   outline: none;
   padding: 4px 0;
-  overflow-y: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  field-sizing: content;
 }
 
 .prompt-input::placeholder {
   color: var(--ui-text-dim);
-}
-
-.prompt-input:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 .prompt-actions {
@@ -1934,7 +2460,13 @@ onMounted(async () => {
   color: var(--ui-text);
 }
 
-.send-btn {
+.new-chat-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.send-btn,
+.stop-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1942,17 +2474,26 @@ onMounted(async () => {
   height: 28px;
   border: none;
   border-radius: 50%;
-  background: var(--ui-accent);
   color: #fff;
   cursor: pointer;
   transition: all 0.15s;
 }
 
-.send-btn:hover:not(:disabled) {
+.send-btn {
+  background: var(--ui-accent);
+}
+
+.stop-btn {
+  background: #64748b;
+}
+
+.send-btn:hover:not(:disabled),
+.stop-btn:hover {
   opacity: 0.9;
 }
 
-.send-btn:active:not(:disabled) {
+.send-btn:active:not(:disabled),
+.stop-btn:active {
   transform: scale(0.96);
 }
 

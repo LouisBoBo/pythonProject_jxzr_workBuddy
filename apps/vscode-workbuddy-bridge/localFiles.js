@@ -5,8 +5,134 @@ const fs = require("fs");
 const path = require("path");
 
 const MAX_FILE_BYTES = 80 * 1024;
-const MAX_TOTAL_BYTES = 240 * 1024;
-const MAX_FILES = 8;
+const MAX_TOTAL_BYTES = 320 * 1024;
+const MAX_FILES = 5;
+const BATCH_SIZE = 5;
+const MAX_REPO_FILES = 200;
+
+const CODE_SUFFIXES = new Set([
+  ".java",
+  ".cs",
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".vue",
+  ".py",
+  ".go",
+  ".kt",
+  ".kts",
+  ".rs",
+  ".php",
+  ".rb",
+  ".swift",
+  ".c",
+  ".cc",
+  ".cpp",
+  ".h",
+  ".hpp",
+  ".scala",
+  ".groovy",
+  ".sql",
+]);
+const SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "target",
+  "bin",
+  "obj",
+  "dist",
+  "build",
+  "vendor",
+  "__pycache__",
+  ".idea",
+  ".vs",
+  "packages",
+  "coverage",
+  ".next",
+  ".nuxt",
+  "unpackage",
+  "miniprogram_npm",
+  "uni_modules",
+  "wxcomponents",
+  "nativeplugins",
+  "uview-ui",
+  "uview-plus",
+  "colorui",
+  "tuniao-ui",
+  "static",
+  "assets",
+  "public",
+  "locale",
+  "locales",
+  "i18n",
+  "mock",
+  "mocks",
+  "fixtures",
+  "__tests__",
+  "e2e",
+]);
+const SKIP_DIRS_AT_SRC_OR_ROOT = new Set([
+  "test",
+  "tests",
+  "example",
+  "examples",
+  "docs",
+  "doc",
+]);
+const SKIP_BASENAMES = new Set([
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "composer.lock",
+  "Gemfile.lock",
+  "poetry.lock",
+  "Cargo.lock",
+  "package.json",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "requirements.txt",
+  "pyproject.toml",
+  "go.mod",
+  "go.sum",
+  "Cargo.toml",
+  "manifest.json",
+  "pages.json",
+  "Dockerfile",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "application.properties",
+  "application.yml",
+  "application.yaml",
+  "appsettings.json",
+  "vue.config.js",
+  "vite.config.js",
+  "vite.config.ts",
+  "webpack.config.js",
+  "babel.config.js",
+  "babel.config.cjs",
+  "jest.config.js",
+  "jest.config.ts",
+  "jsconfig.json",
+  "tsconfig.json",
+  "tsconfig.node.json",
+  "project.config.json",
+  "project.private.config.json",
+  "uni.promisify.adaptor.js",
+  "uni.scss",
+  "README.md",
+  "LICENSE",
+  "CHANGELOG.md",
+  ".eslintrc.js",
+  ".eslintrc.cjs",
+  ".prettierrc",
+  ".prettierrc.js",
+  "prettier.config.js",
+]);
+const SKIP_NAME_RE =
+  /\.(min|bundle)\.js$|\.d\.ts$|\.(test|spec)\.(js|jsx|ts|tsx)$|(^|\/)(mock|mocks|__mocks__)(\/|$)|(^|\/)(locale|locales|i18n)(\/|$)|(^|\/)(static|assets|public)(\/|$)|\.(css|scss|sass|less|styl)$|\.(md|map|lock)$|\.(json|yml|yaml|toml|properties|xml|gradle)$/i;
 
 const SENSITIVE_BASENAMES = new Set([
   ".env",
@@ -113,11 +239,133 @@ function readWorkspaceFiles(root, paths, opts = {}) {
   };
 }
 
+function shouldSkipDir(name, relDir) {
+  if (SKIP_DIRS.has(name)) return true;
+  if (SKIP_DIRS_AT_SRC_OR_ROOT.has(name)) {
+    const parent = String(relDir || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+|\/+$/g, "");
+    if (!parent || parent === "src" || parent.endsWith("/src")) return true;
+  }
+  return false;
+}
+
+function isFunctionalSourceRel(rel) {
+  const r = String(rel || "").replace(/\\/g, "/").trim();
+  if (!r) return false;
+  const base = path.basename(r);
+  if (SKIP_BASENAMES.has(base) || base.startsWith(".")) return false;
+  if (SKIP_NAME_RE.test(r)) return false;
+  if (isSensitiveRel(r)) return false;
+  const low = base.toLowerCase();
+  for (const suf of CODE_SUFFIXES) {
+    if (low.endsWith(suf)) return true;
+  }
+  return false;
+}
+
+function listWorkspaceSourceFiles(root, opts = {}) {
+  const maxFiles = opts.maxFiles || MAX_REPO_FILES;
+  const batchSize = Math.max(1, opts.batchSize || BATCH_SIZE);
+  const rootResolved = path.resolve(root);
+  if (!fs.existsSync(rootResolved) || !fs.statSync(rootResolved).isDirectory()) {
+    return {
+      status: "error",
+      message: `工程目录不存在: ${root}`,
+      files: [],
+      batches: [],
+      total: 0,
+      batch_size: batchSize,
+      batch_count: 0,
+    };
+  }
+
+  const seen = new Set();
+  const files = [];
+  let truncated = false;
+
+  const add = (rel) => {
+    if (!rel || seen.has(rel) || files.length >= maxFiles) return;
+    if (!isFunctionalSourceRel(rel)) return;
+    const abs = path.join(rootResolved, rel);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      seen.add(rel);
+      files.push(rel);
+    }
+  };
+
+  const walk = (absDir, relDir, depth) => {
+    if (files.length >= maxFiles || depth > 8) {
+      if (files.length >= maxFiles) truncated = true;
+      return;
+    }
+    let entries;
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => {
+      const af = a.isFile() ? 0 : 1;
+      const bf = b.isFile() ? 0 : 1;
+      if (af !== bf) return af - bf;
+      return a.name.localeCompare(b.name);
+    });
+    for (const ent of entries) {
+      if (files.length >= maxFiles) {
+        truncated = true;
+        return;
+      }
+      if (ent.name.startsWith(".")) continue;
+      if (ent.isDirectory()) {
+        if (shouldSkipDir(ent.name, relDir)) continue;
+        walk(
+          path.join(absDir, ent.name),
+          relDir ? `${relDir}/${ent.name}` : ent.name,
+          depth + 1
+        );
+        continue;
+      }
+      add(relDir ? `${relDir}/${ent.name}` : ent.name);
+    }
+  };
+
+  walk(rootResolved, "", 0);
+
+  const batches = [];
+  for (let i = 0; i < files.length; i += batchSize) {
+    batches.push(files.slice(i, i + batchSize));
+  }
+
+  return {
+    status: "ok",
+    workspace_root: rootResolved,
+    files,
+    total: files.length,
+    batch_size: batchSize,
+    batch_count: batches.length,
+    batches,
+    truncated,
+    provider: "vscode",
+    filter: "functional_source_only",
+    raw_summary:
+      `共 ${files.length} 个功能源码文件（已排除配置/锁文件/样式/文档等），` +
+      `分成 ${batches.length} 批（每批 ${batchSize} 个）` +
+      (truncated ? "；已达枚举上限" : ""),
+    next_step:
+      "按 batch 依次 request_ide_read_batch → 批纪要 → 终稿。禁止只审首批就结案。",
+  };
+}
+
 module.exports = {
   toWorkspaceRelative,
   readWorkspaceFiles,
+  listWorkspaceSourceFiles,
+  isFunctionalSourceRel,
   isSensitiveRel,
   MAX_FILE_BYTES,
   MAX_TOTAL_BYTES,
   MAX_FILES,
+  BATCH_SIZE,
+  MAX_REPO_FILES,
 };

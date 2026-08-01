@@ -21,6 +21,7 @@ if str(AGENT_PATH) not in sys.path:
     sys.path.insert(0, str(AGENT_PATH))
 
 from agents.agent import create_agent, build_model  # noqa: E402
+from checkpoint_store import ensure_thread_messages, get_acheckpointer  # noqa: E402
 from middleware.request_context import get_thread_id, get_user_id, get_username  # noqa: E402
 
 # 工具 → 中文短标题（过程区只显示这些，不 dump 原始内容）
@@ -63,9 +64,66 @@ _TOOL_LABELS = {
     "import_external_api_logs": "导入外部访问日志",
     "analyze_api_errors_from_logs": "分析接口错误",
     "request_ide_review": "本地代码审核",
-    "request_ide_read_files": "读取本机工程文件",
+    "request_ide_list_source_files": "筛选功能源码",
+    "request_ide_read_batch": "分批读取功能代码",
+    "request_ide_read_files": "按路径读取本机工程文件",
     "request_git_review": "Git/本地目录审核",
 }
+
+_IDE_BATCH_TOOLS = frozenset(
+    {
+        "request_ide_list_source_files",
+        "request_ide_read_batch",
+        "request_ide_read_files",
+    }
+)
+
+_IDE_REPORT_MARKERS = (
+    "## 🔍 代码审核报告",
+    "🔍 代码审核报告",
+    "## 代码审核报告",
+    "代码审核报告",
+)
+
+
+def _find_ide_report_start(buf: str) -> int:
+    best = -1
+    for m in _IDE_REPORT_MARKERS:
+        i = buf.find(m)
+        if i >= 0 and (best < 0 or i < best):
+            best = i
+    return best
+
+
+def _drop_leading_english_aside(buf: str) -> str:
+    """丢掉终稿前的英文旁白行，保留从中文/报告标题起的内容。"""
+    if not buf:
+        return buf
+    idx = _find_ide_report_start(buf)
+    if idx >= 0:
+        return buf[idx:]
+    lines = buf.splitlines(keepends=True)
+    kept: list[str] = []
+    started = False
+    for line in lines:
+        raw = line.strip()
+        if not started:
+            if not raw:
+                continue
+            # 纯 ASCII / 常见英文过渡句 → 丢弃
+            letters = [c for c in raw if c.isalpha()]
+            ascii_letters = [c for c in letters if ord(c) < 128]
+            if letters and len(ascii_letters) / max(1, len(letters)) > 0.85:
+                continue
+            if re.match(
+                r"^(Now |Let me |I have |Here is |I'll |I will |Compiling |Based on )",
+                raw,
+                re.I,
+            ):
+                continue
+            started = True
+        kept.append(line)
+    return "".join(kept) if kept else ""
 
 _LINE_PREFIX = re.compile(r"(?m)^\s*\d+\|")
 
@@ -259,6 +317,29 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                     preview_rows.append(str(row)[:100])
             return f"待确认：{summary}", preview_rows
 
+        if name == "request_ide_list_source_files":
+            total = data.get("total")
+            bc = data.get("batch_count")
+            filt = data.get("filter") or "functional_source_only"
+            trunc = "（已达枚举上限）" if data.get("truncated") else ""
+            summary = f"功能源码 {total} 个 / {bc} 批{trunc}"
+            preview = [str(data.get("raw_summary") or "")[:200]]
+            if filt:
+                preview.append("已排除配置与非核心文件")
+            return summary, [p for p in preview if p]
+
+        if name == "request_ide_read_batch":
+            bi = data.get("batch_index")
+            bc = data.get("batch_count")
+            nfiles = len(data.get("file_contents") or data.get("files") or [])
+            if bi is not None and bc:
+                summary = f"第 {int(bi) + 1}/{bc} 批 · 已读 {nfiles} 个文件"
+            else:
+                summary = f"本批已读 {nfiles} 个文件"
+            if data.get("done_after"):
+                summary += "（末批，即将汇总报告）"
+            return summary, list(data.get("files") or [])[:5]
+
         if "total" in data or "records" in data:
             entity = data.get("entity") or ""
             total = data.get("total")
@@ -432,6 +513,12 @@ def _tool_label(name: str, inp: Any = None) -> str:
         return "导入外部访问日志"
     if name == "analyze_api_errors_from_logs":
         return "分析接口错误"
+    if name == "request_ide_read_batch":
+        data = _parse_jsonish(inp) if inp is not None else {}
+        if isinstance(data, dict) and data.get("batch_index") is not None:
+            return f"{base} · 第 {int(data['batch_index']) + 1} 批"
+    if name == "request_ide_list_source_files":
+        return "筛选功能源码（排除配置/非核心）"
     return base
 
 
@@ -468,17 +555,45 @@ class AgentRunner:
             cls._instance = super().__new__(cls)
             cls._instance._agent = None
             cls._instance._model = None
+            cls._instance._agent_lock = None
+            cls._instance._stream_lock = None
         return cls._instance
+
+    def _get_agent_lock(self):
+        import asyncio
+
+        if self._agent_lock is None:
+            self._agent_lock = asyncio.Lock()
+        return self._agent_lock
+
+    def _get_stream_lock(self):
+        """同一进程内串行 astream：AsyncSqliteSaver 单连接，并发会直接空流/掐断。"""
+        import asyncio
+
+        if self._stream_lock is None:
+            self._stream_lock = asyncio.Lock()
+        return self._stream_lock
+
+    async def _ensure_agent(self):
+        """挂 AsyncSqliteSaver 后创建 Agent（流式必需）。"""
+        if self._agent is not None:
+            return self._agent
+        async with self._get_agent_lock():
+            if self._agent is not None:
+                return self._agent
+            cp = await get_acheckpointer()
+            self._model = build_model()
+            self._agent = create_agent(model=self._model, checkpointer=cp)
+            return self._agent
 
     @property
     def agent(self):
         if self._agent is None:
-            self._model = build_model()
-            self._agent = create_agent(model=self._model)
+            raise RuntimeError("Agent 未初始化：请先 await AgentRunner()._ensure_agent()")
         return self._agent
 
     def reset_agent(self) -> None:
-        """网络/DNS 异常后丢弃单例，下次请求重建客户端。"""
+        """网络/DNS 异常后丢弃单例，下次请求重建客户端（保留 checkpointer 连接）。"""
         self._agent = None
         self._model = None
 
@@ -508,6 +623,9 @@ class AgentRunner:
                 bits.append(f"plan_no={ctx['plan_no']}")
             if ctx.get("order_no"):
                 bits.append(f"order_no={ctx['order_no']}")
+            ide_root = str(ctx.get("ide_workspace_root") or "").strip()
+            if ide_root:
+                bits.append(f"ide_workspace_root={ide_root}")
             if bits:
                 prefix = (
                     "[平台上下文] 用户从 MES 页面打开助手，当前页："
@@ -555,24 +673,57 @@ class AgentRunner:
             "不要用 read_file。"
         )
 
-    def chat(self, message: str, thread_id: str = "default", file_paths: list[str] | None = None) -> str:
+    async def chat(
+        self, message: str, thread_id: str = "default", file_paths: list[str] | None = None
+    ) -> str:
         final_message = self._build_message(message, file_paths)
-        result = self.agent.invoke(
+        config = self._run_config(thread_id)
+        agent = await self._ensure_agent()
+        await ensure_thread_messages(agent, thread_id, run_config=config)
+        result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": final_message}]},
-            config=self._run_config(thread_id),
+            config=config,
         )
-        return result["messages"][-1].content
+        last = result["messages"][-1]
+        content = getattr(last, "content", last)
+        return content if isinstance(content, str) else _as_text(content)
 
     async def stream_chat(
         self,
         message: str,
         thread_id: str = "default",
         file_paths: list[str] | None = None,
+        *,
+        cancel_event: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """异步流式事件：status / step / token / confirm。"""
+        """异步流式事件：status / step / token / confirm。
+
+        cancel_event: 可选 asyncio.Event，set 后尽快结束 astream（客户端断开/停止）。
+        """
+        lock = self._get_stream_lock()
+        await lock.acquire()
+        try:
+            async for event in self._stream_chat_locked(
+                message, thread_id, file_paths, cancel_event=cancel_event
+            ):
+                yield event
+        finally:
+            lock.release()
+
+    async def _stream_chat_locked(
+        self,
+        message: str,
+        thread_id: str = "default",
+        file_paths: list[str] | None = None,
+        *,
+        cancel_event: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         import asyncio
 
         final_message = self._build_message(message, file_paths)
+        config = self._run_config(thread_id)
+        agent = await self._ensure_agent()
+        await ensure_thread_messages(agent, thread_id, run_config=config)
         yield {"type": "status", "text": "正在分析问题…"}
         await asyncio.sleep(0)
 
@@ -582,156 +733,250 @@ class AgentRunner:
         active_runs: set[str] = set()
         emitted_confirm_ids: set[str] = set()
         saw_write_tool = False
+        # 全仓分批期间：模型旁白不进输出区；末批后等到「代码审核报告」标题再放行（丢掉英文过渡句）
+        suppress_ide_report_tokens = False
+        ide_await_report_header = False
+        ide_report_buf = ""
 
-        async for event in self.agent.astream_events(
-            {"messages": [{"role": "user", "content": final_message}]},
-            config=self._run_config(thread_id),
-            version="v2",
-        ):
-            kind = event.get("event", "")
+        # 与昨天 ab15a1e 相同：直接 async for。
+        # 禁止对 __anext__ 使用 wait_for 超时——超时会 Cancel 底层读，
+        # 导致 on_chat_model_start 之后流被掐断、前端只看到空报告。
+        try:
+            async for event in agent.astream_events(
+                {"messages": [{"role": "user", "content": final_message}]},
+                config=config,
+                version="v2",
+            ):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
 
-            if kind == "on_tool_start":
-                saw_tool = True
-                generating_sent = False  # 新工具轮次，取消生成态
-                name = _tool_name(event)
-                if name in ("import_file_to_platform", "import_platform_data"):
-                    saw_write_tool = True
-                data = event.get("data") or {}
-                inp = data.get("input")
-                run_id = str(event.get("run_id") or uuid.uuid4())
-                active_runs.add(run_id)
-                yield {
-                    "type": "step",
-                    "id": run_id,
-                    "tool": name,
-                    "phase": "start",
-                    "state": "running",
-                    "title": _tool_label(name, inp),
-                    "args": _input_detail(name, inp),
-                    "detail": "",
-                    "preview": [],
-                }
-                await asyncio.sleep(0.02)
-                continue
+                kind = event.get("event", "")
 
-            if kind == "on_tool_end":
-                saw_tool = True
-                tool_ended = True
-                name = _tool_name(event)
-                if name in ("import_file_to_platform", "import_platform_data"):
-                    saw_write_tool = True
-                data = event.get("data") or {}
-                out = data.get("output")
-                detail_src = _unwrap_content(out)
-                ok = not _is_tool_failure(detail_src)
-                run_id = str(event.get("run_id") or "")
-                if run_id and run_id in active_runs:
-                    active_runs.discard(run_id)
-                else:
-                    active_runs.clear()
-                if not run_id:
-                    run_id = str(uuid.uuid4())
-                title = _tool_label(name, data.get("input"))
-                parsed = _parse_jsonish(detail_src)
-                if isinstance(parsed, dict) and parsed.get("entity"):
-                    title = _tool_label(name, {"entity": parsed.get("entity")})
-                summary, preview = _result_detail(name, detail_src)
-                confirm = _extract_write_confirm(detail_src)
-                confirms = []
-                if confirm and confirm.get("action_id"):
-                    confirms = [confirm]
-                elif name in (
-                    "import_file_to_platform",
-                    "import_platform_data",
-                ):
-                    confirms = _confirms_from_pending_store(thread_id, name)
-                step_state = "waiting" if confirms else ("done" if ok else "error")
-                yield {
-                    "type": "step",
-                    "id": run_id,
-                    "tool": name,
-                    "phase": "end",
-                    "state": step_state,
-                    "title": title,
-                    "args": _input_detail(name, data.get("input")) if data.get("input") else "",
-                    "detail": summary,
-                    "preview": preview,
-                    "ok": ok if not confirms else None,
-                }
-                emitted_any = False
-                for confirm in confirms:
-                    aid = str(confirm.get("action_id") or "")
-                    if not aid or aid in emitted_confirm_ids:
-                        continue
-                    emitted_confirm_ids.add(aid)
-                    emitted_any = True
-                    pv = confirm.get("preview") if isinstance(confirm.get("preview"), dict) else {}
+                if kind == "on_tool_start":
+                    saw_tool = True
+                    generating_sent = False  # 新工具轮次，取消生成态
+                    name = _tool_name(event)
+                    if name in ("import_file_to_platform", "import_platform_data"):
+                        saw_write_tool = True
+                    if name in _IDE_BATCH_TOOLS:
+                        suppress_ide_report_tokens = True
+                    data = event.get("data") or {}
+                    inp = data.get("input")
+                    run_id = str(event.get("run_id") or uuid.uuid4())
+                    active_runs.add(run_id)
                     yield {
-                        "type": "confirm",
-                        "action_id": aid,
-                        "tool": confirm.get("tool") or name,
-                        "thread_id": confirm.get("thread_id") or thread_id,
-                        "expires_at": confirm.get("expires_at"),
-                        "summary": confirm.get("summary") or summary,
-                        "preview": pv,
-                        "message": confirm.get("message") or "请确认是否写入平台",
+                        "type": "step",
+                        "id": run_id,
+                        "tool": name,
+                        "phase": "start",
+                        "state": "running",
+                        "title": _tool_label(name, inp),
+                        "args": _input_detail(name, inp),
+                        "detail": "",
+                        "preview": [],
                     }
-                if emitted_any:
-                    yield {"type": "status", "text": "等待你确认写入…", "phase": "waiting"}
-                # 工具间隙：提示仍在推进（可能还有下一轮工具），不要过早宣称「生成回答」
-                elif not active_runs:
-                    yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
-                await asyncio.sleep(0.02)
-                continue
+                    await asyncio.sleep(0.02)
+                    continue
 
-            if kind == "on_tool_error":
-                saw_tool = True
-                tool_ended = True
-                name = _tool_name(event)
-                data = event.get("data") or {}
-                err = data.get("error") or data.get("message") or "工具执行失败"
-                run_id = str(event.get("run_id") or "")
-                if run_id and run_id in active_runs:
-                    active_runs.discard(run_id)
-                else:
-                    active_runs.clear()
-                if not run_id:
-                    run_id = str(uuid.uuid4())
-                summary, preview = _result_detail(name, err)
+                if kind == "on_tool_end":
+                    saw_tool = True
+                    tool_ended = True
+                    name = _tool_name(event)
+                    if name in ("import_file_to_platform", "import_platform_data"):
+                        saw_write_tool = True
+                    data = event.get("data") or {}
+                    out = data.get("output")
+                    detail_src = _unwrap_content(out)
+                    ok = not _is_tool_failure(detail_src)
+                    run_id = str(event.get("run_id") or "")
+                    if run_id and run_id in active_runs:
+                        active_runs.discard(run_id)
+                    else:
+                        active_runs.clear()
+                    if not run_id:
+                        run_id = str(uuid.uuid4())
+                    title = _tool_label(name, data.get("input"))
+                    parsed = _parse_jsonish(detail_src)
+                    if isinstance(parsed, dict) and parsed.get("entity"):
+                        title = _tool_label(name, {"entity": parsed.get("entity")})
+                    summary, preview = _result_detail(name, detail_src)
+                    confirm = _extract_write_confirm(detail_src)
+                    confirms = []
+                    if confirm and confirm.get("action_id"):
+                        confirms = [confirm]
+                    elif name in (
+                        "import_file_to_platform",
+                        "import_platform_data",
+                    ):
+                        confirms = _confirms_from_pending_store(thread_id, name)
+                    step_state = "waiting" if confirms else ("done" if ok else "error")
+                    yield {
+                        "type": "step",
+                        "id": run_id,
+                        "tool": name,
+                        "phase": "end",
+                        "state": step_state,
+                        "title": title,
+                        "args": _input_detail(name, data.get("input")) if data.get("input") else "",
+                        "detail": summary,
+                        "preview": preview,
+                        "ok": ok if not confirms else None,
+                    }
+                    emitted_any = False
+                    for confirm in confirms:
+                        aid = str(confirm.get("action_id") or "")
+                        if not aid or aid in emitted_confirm_ids:
+                            continue
+                        emitted_confirm_ids.add(aid)
+                        emitted_any = True
+                        pv = confirm.get("preview") if isinstance(confirm.get("preview"), dict) else {}
+                        yield {
+                            "type": "confirm",
+                            "action_id": aid,
+                            "tool": confirm.get("tool") or name,
+                            "thread_id": confirm.get("thread_id") or thread_id,
+                            "expires_at": confirm.get("expires_at"),
+                            "summary": confirm.get("summary") or summary,
+                            "preview": pv,
+                            "message": confirm.get("message") or "请确认是否写入平台",
+                        }
+                    if emitted_any:
+                        yield {"type": "status", "text": "等待你确认写入…", "phase": "waiting"}
+                    elif name in _IDE_BATCH_TOOLS:
+                        parsed_batch = parsed if isinstance(parsed, dict) else {}
+                        if name == "request_ide_list_source_files":
+                            total = parsed_batch.get("total")
+                            bc = parsed_batch.get("batch_count")
+                            trunc = "（已达上限）" if parsed_batch.get("truncated") else ""
+                            yield {
+                                "type": "status",
+                                "text": f"已筛选功能源码 {total} 个，分 {bc} 批审核{trunc}…",
+                                "phase": "waiting",
+                            }
+                            suppress_ide_report_tokens = True
+                        elif name == "request_ide_read_batch":
+                            bi = parsed_batch.get("batch_index")
+                            bc = parsed_batch.get("batch_count")
+                            done = bool(parsed_batch.get("done_after"))
+                            if bi is not None and bc:
+                                yield {
+                                    "type": "status",
+                                    "text": f"正在审核功能代码：第 {int(bi) + 1}/{bc} 批…",
+                                    "phase": "waiting",
+                                }
+                            if done:
+                                suppress_ide_report_tokens = False
+                                ide_await_report_header = True
+                                ide_report_buf = ""
+                                yield {
+                                    "type": "status",
+                                    "text": "各批已完成，正在汇总完整审核报告…",
+                                    "phase": "generating",
+                                }
+                            else:
+                                suppress_ide_report_tokens = True
+                        else:
+                            suppress_ide_report_tokens = True
+                            if not active_runs:
+                                yield {"type": "status", "text": "继续分批读取功能代码…", "phase": "waiting"}
+                    # 工具间隙：提示仍在推进（可能还有下一轮工具），不要过早宣称「生成回答」
+                    elif not active_runs:
+                        yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
+                    await asyncio.sleep(0.02)
+                    continue
+
+                if kind == "on_tool_error":
+                    saw_tool = True
+                    tool_ended = True
+                    name = _tool_name(event)
+                    data = event.get("data") or {}
+                    err = data.get("error") or data.get("message") or "工具执行失败"
+                    run_id = str(event.get("run_id") or "")
+                    if run_id and run_id in active_runs:
+                        active_runs.discard(run_id)
+                    else:
+                        active_runs.clear()
+                    if not run_id:
+                        run_id = str(uuid.uuid4())
+                    summary, preview = _result_detail(name, err)
+                    yield {
+                        "type": "step",
+                        "id": run_id,
+                        "tool": name,
+                        "phase": "end",
+                        "state": "error",
+                        "title": _tool_label(name),
+                        "detail": summary or str(err),
+                        "preview": preview,
+                        "ok": False,
+                    }
+                    if not active_runs:
+                        yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
+                    await asyncio.sleep(0.02)
+                    continue
+
+                if kind == "on_chat_model_stream":
+                    chunk = (event.get("data") or {}).get("chunk")
+                    text = _chunk_text(chunk)
+                    if not text:
+                        continue
+
+                    # 首轮选工具时的模型输出丢弃；工具轮次之间也可能有空/碎片，仅在无活跃工具时收正文
+                    if active_runs:
+                        continue
+                    if saw_tool and not tool_ended:
+                        continue
+                    # 分批审核过程中的「第 N 批纪要」等旁白不进输出区
+                    if suppress_ide_report_tokens:
+                        continue
+                    # 终稿前丢掉英文过渡句，从「代码审核报告」起再输出
+                    if ide_await_report_header:
+                        ide_report_buf += text
+                        idx = _find_ide_report_start(ide_report_buf)
+                        if idx < 0:
+                            if len(ide_report_buf) < 2500:
+                                continue
+                            text = _drop_leading_english_aside(ide_report_buf)
+                            ide_report_buf = ""
+                            ide_await_report_header = False
+                            if not text:
+                                continue
+                        else:
+                            text = ide_report_buf[idx:]
+                            ide_report_buf = ""
+                            ide_await_report_header = False
+
+                    if not generating_sent:
+                        generating_sent = True
+                        yield {"type": "status", "text": "正在组织最终回答…", "phase": "generating"}
+
+                    yield {"type": "token", "text": text, "token": text}
+                    continue
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            raise
+        except Exception as e:
+            name = type(e).__name__
+            msg = str(e) or name
+            if "Recursion" in name or "recursion" in msg.lower():
                 yield {
-                    "type": "step",
-                    "id": run_id,
-                    "tool": name,
-                    "phase": "end",
-                    "state": "error",
-                    "title": _tool_label(name),
-                    "detail": summary or str(err),
-                    "preview": preview,
-                    "ok": False,
+                    "type": "token",
+                    "text": (
+                        "\n\n⚠️ 本轮步骤数已达上限，全仓分批审核中断。"
+                        "请回复「继续审核」从下一未完成批次接着审，或缩小工程范围后重试。"
+                    ),
+                    "token": (
+                        "\n\n⚠️ 本轮步骤数已达上限，全仓分批审核中断。"
+                        "请回复「继续审核」从下一未完成批次接着审，或缩小工程范围后重试。"
+                    ),
                 }
-                if not active_runs:
-                    yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
-                await asyncio.sleep(0.02)
-                continue
-
-            if kind == "on_chat_model_stream":
-                chunk = (event.get("data") or {}).get("chunk")
-                text = _chunk_text(chunk)
-                if not text:
-                    continue
-
-                # 首轮选工具时的模型输出丢弃；工具轮次之间也可能有空/碎片，仅在无活跃工具时收正文
-                if active_runs:
-                    continue
-                if saw_tool and not tool_ended:
-                    continue
-
-                if not generating_sent:
-                    generating_sent = True
-                    yield {"type": "status", "text": "正在组织最终回答…", "phase": "generating"}
-
-                yield {"type": "token", "text": text, "token": text}
-                continue
+            else:
+                yield {
+                    "type": "error",
+                    "text": f"审核过程异常：{msg[:300]}",
+                }
+            return
 
         # 流结束兜底：本轮调用了写工具但未成功推送 confirm 时，从 pending 回补全部
         if saw_write_tool and not emitted_confirm_ids:

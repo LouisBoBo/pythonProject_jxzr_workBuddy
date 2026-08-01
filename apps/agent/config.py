@@ -64,8 +64,16 @@ class Config:
     MAX_IMPORT_ROWS = int(os.getenv("MAX_IMPORT_ROWS", "10000"))
     EXPORT_DIR = os.getenv("EXPORT_DIR") or _default_export_dir()
     EXPORT_TO_DESKTOP = os.getenv("EXPORT_TO_DESKTOP", "true").lower() in ("true", "1", "yes")
-    # LangGraph 默认 recursion_limit=25；文档全量探活 + Skills 易触顶
-    AGENT_RECURSION_LIMIT = max(25, int(os.getenv("AGENT_RECURSION_LIMIT", "100")))
+    # LangGraph 默认 recursion_limit=25；全仓分批审核（每批工具+纪要）易上百步
+    AGENT_RECURSION_LIMIT = max(25, int(os.getenv("AGENT_RECURSION_LIMIT", "500")))
+
+    # --- 会话上下文（checkpointer + 历史回填）---
+    # 空 = DATA_DIR/agent_checkpoints.sqlite
+    AGENT_CHECKPOINT_PATH = os.getenv("AGENT_CHECKPOINT_PATH", "").strip()
+    # 进入模型的消息条数上限（含回填与裁剪）；0 = 不裁剪
+    CONTEXT_MAX_MESSAGES = max(0, int(os.getenv("CONTEXT_MAX_MESSAGES", "40")))
+    # 单条历史回填最大字符；0 = 不截断
+    CONTEXT_MAX_CHARS_PER_MSG = max(0, int(os.getenv("CONTEXT_MAX_CHARS_PER_MSG", "12000")))
 
     # --- IDE 代码审核（M0 POC，默认关闭，不影响现网工具集）---
     IDE_REVIEW_ENABLED = os.getenv("IDE_REVIEW_ENABLED", "").lower() in (

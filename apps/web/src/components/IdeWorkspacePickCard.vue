@@ -66,6 +66,11 @@
           <span class="ip-v mono">{{ selectedPath }}</span>
         </div>
       </div>
+      <div class="ip-actions">
+        <button type="button" class="ip-btn confirm" :disabled="busy" @click="onRetry">
+          {{ busy ? '处理中…' : '重新开始审核' }}
+        </button>
+      </div>
     </template>
 
     <template v-else>
@@ -89,7 +94,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['resolved'])
+const emit = defineEmits(['resolved', 'retry'])
 
 const busy = ref(false)
 const selected = ref('')
@@ -156,6 +161,19 @@ function onConfirm() {
     })
   } finally {
     busy.value = false
+  }
+}
+
+function onRetry() {
+  if (busy.value || props.card?.status !== 'confirmed') return
+  busy.value = true
+  try {
+    emit('retry')
+  } finally {
+    // 父级异步开流；稍延迟再解锁，避免连点
+    setTimeout(() => {
+      busy.value = false
+    }, 800)
   }
 }
 </script>

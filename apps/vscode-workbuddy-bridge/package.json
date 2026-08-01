@@ -2,7 +2,7 @@
   "name": "workbuddy-bridge",
   "displayName": "WorkBuddy Bridge",
   "description": "将当前 VS Code 工作区连接到 WorkBuddy；网页配对码一键登录",
-  "version": "0.4.4",
+  "version": "0.4.15",
   "publisher": "workbuddy",
   "engines": {
     "vscode": "^1.85.0"

@@ -296,6 +296,19 @@ def main() -> None:
         if len(path_rej) < 1:
             _fail("audit_path_rejected", "缺少路径拒绝审计")
         _ok("path_traversal_and_sensitive_denied")
+
+        from tools.ide_review.local_files import list_workspace_source_files
+
+        listed = list_workspace_source_files(ROOT, batch_size=5)
+        if listed.get("status") != "ok" or not (listed.get("batches") or []):
+            _fail("list_source_files", str(listed)[:400])
+        if listed.get("batch_size") != 5:
+            _fail("list_batch_size", str(listed.get("batch_size")))
+        if any(len(b) > 5 for b in listed["batches"]):
+            _fail("list_batch_overflow", str(listed["batches"][:3]))
+        _ok(
+            f"list_source_files total={listed.get('total')} batches={listed.get('batch_count')}"
+        )
     finally:
         stop.set()
         t.join(timeout=2)

@@ -7,7 +7,7 @@
 ## 流程
 
 1. 打开 Web（默认 http://127.0.0.1:5180）→ 未登录跳转 `/login`
-2. 前端调用本服务 `POST /api/auth/login`（账号 / 密码 / 可选企业编码）
+2. 前端调用本服务 `POST /api/auth/login`（账号 / 密码 / 企业编码，登录页下拉选择）
 3. API 转发到 ERP `/api/v1/auth/login`，拿到 `access_token`
 4. 前端本地保存 token + 用户名；后续对话 / 历史 / 上传带  
    `Authorization: Bearer <token>` 与 `X-User-Name: <username>`
@@ -19,7 +19,7 @@
 
 - 用户名：`admin`
 - 密码：`admin123`
-- 企业编码：可留空
+- 企业编码：可留空（登录页下拉仅展示企业名；未配置真实 `code` 时仍按空编码提交，与改前一致）
 
 ## 开关
 

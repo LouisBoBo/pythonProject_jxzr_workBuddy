@@ -82,6 +82,7 @@ curl http://127.0.0.1:8765/health
 | 前端 UI | `apps/web/src/*` | Vite 热更新 |
 
 更细的查询工具说明见 [`docs/平台查询工具维护笔记.md`](docs/平台查询工具维护笔记.md)。  
+**功能清单与测试用例（总入口，新增功能须同步更新）**见 [`docs/功能清单与测试用例.md`](docs/功能清单与测试用例.md)。  
 **Deep Agents Skills**（以后扩功能主方式）见 [`docs/DeepAgents-Skills使用指南.md`](docs/DeepAgents-Skills使用指南.md)。  
 **Middleware**（审计/硬拦截等横切逻辑）见 [`docs/DeepAgents-Middleware使用指南.md`](docs/DeepAgents-Middleware使用指南.md)。  
 **第一阶段开发复盘**见 [`docs/第一阶段开发复盘.md`](docs/第一阶段开发复盘.md)。  
@@ -90,7 +91,8 @@ curl http://127.0.0.1:8765/health
 **ERP 登录对接**见 [`docs/ERP登录对接说明.md`](docs/ERP登录对接说明.md)。  
 **M2 写操作确认（HITL）**见 [`docs/M2写操作确认交付说明.md`](docs/M2写操作确认交付说明.md)。  
 **第二阶段开发复盘**见 [`docs/第二阶段开发复盘.md`](docs/第二阶段开发复盘.md)。  
-**表结构→业务能力分析**见 [`docs/表结构业务能力分析说明.md`](docs/表结构业务能力分析说明.md)。
+**表结构→业务能力分析**见 [`docs/表结构业务能力分析说明.md`](docs/表结构业务能力分析说明.md)。  
+**IDE 代码审核（可选，`IDE_REVIEW_ENABLED=1`）**见 [`docs/IDE代码审核开发者接入手册.md`](docs/IDE代码审核开发者接入手册.md)；架构与验收见 [`docs/IDE代码审核MCP对接方案.md`](docs/IDE代码审核MCP对接方案.md)。
 
 ## 从旧 mes-client 迁移说明
 

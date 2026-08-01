@@ -11,16 +11,30 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { runMcpCodeReview } = require("./mcpClient");
-const { readWorkspaceFiles, toWorkspaceRelative } = require("./localFiles");
+const { readWorkspaceFiles, toWorkspaceRelative, listWorkspaceSourceFiles } = require("./localFiles");
 
 let bridgeId = "";
 let timer = null;
 let statusBar = null;
 let connected = false;
 let tickBusy = false;
+/** 长任务（MCP 审核）进行中时仍允许心跳，避免网页误判离线 */
+let taskRunning = false;
 let extContext = null;
 /** 最近一次心跳上报的工程根（内存白名单） */
 let lastAllowedRoots = [];
+
+function readPackageVersion() {
+  try {
+    const pkgPath = path.join(__dirname, "package.json");
+    const raw = fs.readFileSync(pkgPath, "utf8");
+    const ver = String(JSON.parse(raw).version || "").trim();
+    if (ver) return ver;
+  } catch {
+    /* ignore */
+  }
+  return "0.4.15";
+}
 
 function cfg() {
   const c = vscode.workspace.getConfiguration("workbuddy");
@@ -39,7 +53,7 @@ function cfg() {
     mcpTimeoutSec: Number(c.get("mcpTimeoutSec") || 12) || 12,
     allowFallbackRules: c.get("allowFallbackRules") !== false,
     autoConnect: c.get("autoConnect") !== false,
-    extensionVersion: "0.4.3",
+    extensionVersion: readPackageVersion(),
   };
 }
 
@@ -689,8 +703,7 @@ async function runReview(task) {
 function runReadFiles(task) {
   const resolved = resolveTaskWorkspace(task);
   const root = resolved.root;
-  const ready = resolved.ready;
-  if (!ready || !root) {
+  if (!root) {
     return {
       status: "no_workspace",
       file_contents: [],
@@ -702,11 +715,33 @@ function runReadFiles(task) {
     };
   }
   const paths = Array.isArray(task.paths) ? task.paths : [];
-  const packed = readWorkspaceFiles(root, paths);
+  const packed = readWorkspaceFiles(root, paths, { maxFiles: 5 });
   packed.hint =
-    "内容来自本机工作区。WorkBuddy 服务端 read_file 无法访问这些路径，请只用本结果。";
+    "内容来自本机工作区。本批审完后写纪要，再读下一批；全部批次完成后再出终稿。";
   packed.workspace_root = root;
+  packed.batch_hint = "batch_size=5";
   return packed;
+}
+
+function runListFiles(task) {
+  const resolved = resolveTaskWorkspace(task);
+  const root = resolved.root;
+  if (!root) {
+    return {
+      status: "no_workspace",
+      files: [],
+      batches: [],
+      total: 0,
+      batch_size: 5,
+      batch_count: 0,
+      errors: [resolved.error || "no_workspace"],
+      message: resolved.error || "未指定有效工程目录",
+      provider: "vscode",
+    };
+  }
+  const listed = listWorkspaceSourceFiles(root, { batchSize: 5 });
+  listed.workspace_root = root;
+  return listed;
 }
 
 async function tick() {
@@ -734,6 +769,7 @@ async function tick() {
         8000
       );
     } catch (e) {
+      // 勿因瞬时失败把 connected 置 false——API 重启后 tick 会停死，网页一直「离线」
       setStatus(`$(error) WorkBuddy: 心跳失败`, String(e.message || e));
       return;
     }
@@ -744,6 +780,9 @@ async function tick() {
         : `$(cloud) WorkBuddy: 未开工程 v${cfg().extensionVersion}`,
       ws.ready ? ws.root : "请打开文件夹后再发起审核"
     );
+
+    // 已有任务在跑：只保活心跳，不重复 poll（避免并行审同一队列）
+    if (taskRunning) return;
 
     try {
       const polled = await request(
@@ -758,21 +797,54 @@ async function tick() {
 
       const taskId = String(task.task_id || "");
       const intent = String(task.intent || "code_review");
+      const intentLabel =
+        intent === "list_files" ? "列文件" : intent === "read_files" ? "读取" : "审核";
       vscode.window.setStatusBarMessage(
-        `WorkBuddy: ${intent === "read_files" ? "读取" : "审核"} ${taskId.slice(0, 8)}…`,
+        `WorkBuddy: ${intentLabel} ${taskId.slice(0, 8)}…`,
         15000
       );
-      const result =
-        intent === "read_files" ? runReadFiles(task) : await runReview(task);
-      await request(
-        "POST",
-        `${api}/api/ide/bridge/result`,
-        token,
-        { task_id: taskId, ...result },
-        30000
-      );
+
+      // 先释放 tickBusy，让后续 interval 仍能心跳；任务本身串行
+      taskRunning = true;
+      tickBusy = false;
+      try {
+        let result;
+        if (intent === "list_files") result = runListFiles(task);
+        else if (intent === "read_files") result = runReadFiles(task);
+        else result = await runReview(task);
+        await request(
+          "POST",
+          `${api}/api/ide/bridge/result`,
+          token,
+          { task_id: taskId, ...result },
+          30000
+        );
+      } catch (e) {
+        console.error("[workbuddy] poll/review", e);
+        try {
+          await request(
+            "POST",
+            `${api}/api/ide/bridge/result`,
+            token,
+            {
+              task_id: taskId,
+              status: "error",
+              message: String(e && e.message ? e.message : e),
+              findings: [],
+              file_contents: [],
+              files: [],
+              diagnostics_count: { P0: 0, P1: 0, P2: 0 },
+            },
+            15000
+          );
+        } catch (e2) {
+          console.error("[workbuddy] result error fallback", e2);
+        }
+      } finally {
+        taskRunning = false;
+      }
     } catch (e) {
-      console.error("[workbuddy] poll/review", e);
+      console.error("[workbuddy] poll", e);
     }
   } finally {
     tickBusy = false;

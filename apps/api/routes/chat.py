@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
@@ -50,7 +50,7 @@ async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
     )
     try:
         runner = AgentRunner()
-        reply = runner.chat(req.message, thread_id, req.file_paths)
+        reply = await runner.chat(req.message, thread_id, req.file_paths)
         return ChatResponse(reply=reply, thread_id=thread_id)
     finally:
         reset_request_agent_context(ctx)
@@ -58,7 +58,11 @@ async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
+async def chat_stream(
+    req: ChatRequest,
+    request: Request,
+    auth: tuple = Depends(require_auth),
+):
     """流式对话：SSE 推送 status / step / token / confirm / done / error。"""
     import asyncio
 
@@ -76,10 +80,19 @@ async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
             username=user.username,
             page_context=req.page_context,
         )
+        cancel_event = asyncio.Event()
         try:
             # 先发一条带填充的 SSE 注释，冲掉代理/内核初始缓冲
             yield ": " + (" " * 2048) + "\n\n"
-            async for event in runner.stream_chat(req.message, thread_id, req.file_paths):
+            async for event in runner.stream_chat(
+                req.message,
+                thread_id,
+                req.file_paths,
+                cancel_event=cancel_event,
+            ):
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    break
                 if not isinstance(event, dict):
                     event = {"type": "token", "text": str(event), "token": str(event)}
                 payload = json.dumps(event, ensure_ascii=False)
@@ -91,8 +104,12 @@ async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
                     await asyncio.sleep(0.04)
                 else:
                     await asyncio.sleep(0)
-            yield f"data: {json.dumps({'type': 'done', 'done': True, 'thread_id': thread_id}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)
+            if not cancel_event.is_set() and not await request.is_disconnected():
+                yield f"data: {json.dumps({'type': 'done', 'done': True, 'thread_id': thread_id}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            raise
         except Exception as e:
             import logging
             import traceback
@@ -140,6 +157,7 @@ async def chat_stream(req: ChatRequest, auth: tuple = Depends(require_auth)):
             err = json.dumps({"type": "error", "error": err_msg, "message": err_msg}, ensure_ascii=False)
             yield f"data: {err}\n\n"
         finally:
+            cancel_event.set()
             reset_request_agent_context(ctx)
             reset_request_erp_token(tok)
 

@@ -23,6 +23,8 @@ data/schema/*
 data/api_calls/*
 data/api_catalog/*
 data/ide_bridge/*
+data/agent_checkpoints.sqlite
+data/agent_checkpoints.sqlite-*
 !data/uploads/.gitkeep
 !data/converted/.gitkeep
 !data/exports/.gitkeep

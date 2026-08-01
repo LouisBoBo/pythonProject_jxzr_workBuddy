@@ -136,55 +136,79 @@ def _build_backend() -> FilesystemBackend:
     return FilesystemBackend(root_dir=str(AGENT_ROOT), virtual_mode=True)
 
 
-_IDE_REVIEW_PROMPT = """
-【本机 IDE / 代码审核 — 硬约束】
-- 禁止 read_file/grep/glob 读本机绝对路径。
-- 已选工程或「审核代码」：禁止再追问，立刻 request_ide_review。
-- file_contents 不足则 request_ide_read_files；并按 gate-90 补拉依赖/配置
-  （pom.xml、package.json、requirements.txt、application*.yml/properties、appsettings.json、go.mod 等存在者）。
-- Bridge 离线 → request_git_review；selected-not-open ≠ 离线。
-- 方法论：Viprasol（/skills/code-review/references/viprasol-skill.md）+
-  公司门禁（/skills/code-review/references/workbuddy-gate-90.md）：
-  必扫依赖/配置/日志脱敏；鉴权缺失与数据损坏竞态可上调 P0；
-  P0/P1 必须含可粘贴修复 + 验证（复现与通过标准）；总览条数=正文条数。
-- 禁止自造检查清单替代上述两份 reference。
-- 【语言】用户可见全文必须中文（含报告前过渡句、处理过程旁白）。
-  禁止输出英文句子，例如 "Now I have all files…" / "Let me compile the report"。
-  可保留：代码、路径、CVE/CWE、命令、专有名词缩写。
-  正确示例：「源码已齐，开始汇总审核报告。」
+_PASTE_CODE_ANALYZE_PROMPT = """
+【粘贴代码分析 — 对话读码，不是正式审核】
+- 仅当用户自己粘贴了源码（markdown 代码围栏）且只是问这段有什么问题时：走 Skill「paste-code-analyze」。
+- 【多轮】先判断意图再答：
+  · 续写且带【已生成片段】：严格从片段末尾接着写；禁止「上文应已覆盖」；片段未出现的条目必须补全；最终=片段+续写。
+  · 续写但带【完整重答指令】/几乎无正文：对【用户原任务】从头完整回答，禁止跳号、禁止假设已写过。
+  · 补充原任务：合并补充后再答。
+  · 新问题：按新问题答，勿强行续写旧半截。
+  · 兑现「来吧/要完整版」：立刻交付完整代码。
+- 写/改代码是正常对话能力。
+- 仅当「消息里已有用户粘贴源码块、且用户只是问这段有什么问题」时：
+  **禁止**调 request_ide_review / request_ide_read_files / request_git_review；
+  **禁止**输出「代码审核报告」壳。
+- 若用户要审本机/已选工程（见【本机工程已确认】或 page_context.ide_workspace_root），
+  **必须**走 ide-code-review / request_ide_review，本段粘贴禁令不适用。全文中文。
+"""
 
-【终稿】
+_IDE_REVIEW_PROMPT = """
+【本机 IDE / 全仓代码审核 — 硬约束】
+- 禁止 read_file/grep/glob 读本机绝对路径。
+- 用户已选工程或说「审核代码」：禁止再追问。
+- **正确流程**：
+  1) request_ide_list_source_files → 记下 total / batch_count（已自动只要功能源码）
+  2) i=0..batch_count-1：request_ide_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
+  3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」
+- 【输出纪律】分批过程中禁止向用户输出任何正文（含「共 N 个文件」「第 N 批纪要」）；
+  进度由系统过程区展示。输出区只允许终稿报告。
+- 终稿必须以「## 🔍 代码审核报告」作为输出区第一行；
+  **禁止**任何英文过渡句（如 Now I have… / Let me compile… / Here is the report…）。
+  正确：直接从报告标题写起。
+- 审核范围=业务/功能代码。不要审配置/锁文件/样式/文档/uni_modules/locale/static 等。
+- 禁止只审 1～2 批就结案。
+- Bridge 离线且同机不可读 → request_git_review。
+- 方法论：Viprasol + gate-90。用户可见全文中文。
+
+【终稿】（全部批次完成后）
 ## 🔍 代码审核报告
-工作区 / 审核范围(含未覆盖) / 引擎(Bridge+Viprasol+gate-90) / 结论 / 重点
-### 📊 问题总览（数量自洽）
-### 🔴 P0（触发+修复代码+验证）
-### 🟠 P1（同上）
-### 🟡 P2
-### ✅ 质量较好的部分
+工作区 / 审核范围(N 文件 M 批) / 引擎 / 结论
+### 📊 问题总览（合并各批）
+### 🔴 P0 / 🟠 P1 / 🟡 P2
 ### 🎯 优先修复建议
-### 🔎 验证清单（可选）
 """
 
 
-def create_agent(model=None):
+def create_agent(model=None, checkpointer=None):
     """创建 Deep Agent 实例（含 Skills + 自定义 Middleware）。
 
     Args:
         model: LLM 实例，不传则根据配置自动构建
+        checkpointer: LangGraph checkpointer。
+            API 流式必须传 AsyncSqliteSaver；不传则用内存 InMemorySaver（CLI/单测）。
     """
     if model is None:
         model = build_model()
+    if checkpointer is None:
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        checkpointer = InMemorySaver()
 
     tools = list(TOOLS)
-    system_prompt = build_system_prompt()
-    # 仅特性开关打开时追加；模块级 TOOLS 保持不变，默认现网行为一致
+    # 先钉死互斥总路由，再分别挂两条车道说明（互不交叉）
+    system_prompt = build_system_prompt() + _PASTE_CODE_ANALYZE_PROMPT
     if Config.IDE_REVIEW_ENABLED:
         from tools.ide_review import (
             request_git_review,
+            request_ide_list_source_files,
+            request_ide_read_batch,
             request_ide_read_files,
             request_ide_review,
         )
 
+        tools.append(request_ide_list_source_files)
+        tools.append(request_ide_read_batch)
         tools.append(request_ide_review)
         tools.append(request_ide_read_files)
         tools.append(request_git_review)
@@ -197,6 +221,8 @@ def create_agent(model=None):
         backend=_build_backend(),
         skills=SKILL_SOURCES,
         middleware=build_custom_middleware(),
+        # 按 thread_id 持久化多轮消息；否则每轮只见本句用户输入
+        checkpointer=checkpointer,
         # 危险写操作已由 MesWriteConfirmMiddleware + REQUIRE_WRITE_CONFIRM 管控（默认开启）
         # 勿在此重复开 interrupt_on，除非另行接入 LangGraph resume 审批流。
     )

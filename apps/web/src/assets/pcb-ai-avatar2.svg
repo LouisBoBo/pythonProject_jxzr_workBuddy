@@ -1,0 +1,286 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%" role="img">
+  <title>PCB AI Avatar - Detailed Green</title>
+  <desc>Detailed PCB board avatar with AI chip, traces, pads and scan line in dark green</desc>
+
+  <defs>
+    <style>
+      @font-face { font-family: 'System'; src: local('-apple-system'), local('BlinkMacSystemFont'), local('Segoe UI'); }
+      @keyframes rotate-ring { 100% { transform: rotate(360deg); } }
+      @keyframes scan-move { 0% { x: 48; opacity: 0; } 10% { opacity: 0.6; } 90% { opacity: 0.6; } 100% { x: 340; opacity: 0; } }
+      @keyframes pulse-glow { 0%,100% { opacity: 0.15; } 50% { opacity: 0.35; } }
+      @keyframes pulse-pad { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+      @keyframes flow-trace { 100% { stroke-dashoffset: -28; } }
+    </style>
+    <!-- 电流发光 -->
+    <filter id="currentGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="currentGlowSoft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Board -->
+  <circle cx="200" cy="200" r="196" fill="#162E1F"/>
+  <circle cx="200" cy="200" r="196" fill="none" stroke="#2D5A3D" stroke-width="2"/>
+
+  <!-- Outer rotating ring：电流感发光 -->
+  <g style="transform-origin: 200px 200px; animation: rotate-ring 10s linear infinite;">
+    <!-- 外晕 -->
+    <circle
+      cx="200" cy="200" r="188"
+      fill="none"
+      stroke="#7FFFB0"
+      stroke-width="14"
+      stroke-dasharray="70 40 50 500"
+      stroke-linecap="round"
+      opacity="0.35"
+      filter="url(#currentGlowSoft)"
+    />
+    <!-- 主电流 -->
+    <circle
+      cx="200" cy="200" r="188"
+      fill="none"
+      stroke="#B8FFD4"
+      stroke-width="7"
+      stroke-dasharray="70 40 50 500"
+      stroke-linecap="round"
+      opacity="0.95"
+      filter="url(#currentGlow)"
+    />
+    <!-- 芯线高光 -->
+    <circle
+      cx="200" cy="200" r="188"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="2.5"
+      stroke-dasharray="40 70 30 520"
+      stroke-linecap="round"
+      opacity="0.9"
+    />
+    <!-- 内圈辅电流 -->
+    <circle
+      cx="200" cy="200" r="182"
+      fill="none"
+      stroke="#7FFFB0"
+      stroke-width="4"
+      stroke-dasharray="28 36 48 420"
+      stroke-linecap="round"
+      opacity="0.75"
+      filter="url(#currentGlow)"
+    />
+  </g>
+
+  <!-- Background glow rings behind chip -->
+  <circle cx="200" cy="200" r="70" fill="none" stroke="#4A9E5E" stroke-width="2" opacity="0.12">
+    <animate attributeName="opacity" values="0.1;0.3;0.1" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="200" cy="200" r="95" fill="none" stroke="#4A9E5E" stroke-width="2" opacity="0.08">
+    <animate attributeName="opacity" values="0.08;0.22;0.08" dur="3s" begin="0.5s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="200" cy="200" r="120" fill="none" stroke="#4A9E5E" stroke-width="2" opacity="0.05">
+    <animate attributeName="opacity" values="0.05;0.15;0.05" dur="3s" begin="1s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- Scanning line -->
+  <line x1="48" y1="200" x2="352" y2="200" stroke="#4A9E5E" stroke-width="10" opacity="0.08" stroke-linecap="round"/>
+  <line x1="48" y1="200" x2="352" y2="200" stroke="#7FFFB0" stroke-width="2.5" opacity="0.4" stroke-linecap="round"/>
+  <rect x="48" y="192" width="16" height="16" rx="2" fill="#7FFFB0" opacity="0" style="animation: scan-move 3.5s ease-in-out infinite;"/>
+
+  <!-- Components (corner chips) -->
+  <g opacity="0.7">
+    <rect x="72" y="72" width="28" height="16" rx="2" fill="#0F2417" stroke="#4A9E5E" stroke-width="1.5"/>
+    <line x1="86" y1="88" x2="86" y2="96" stroke="#4A9E5E" stroke-width="2"/>
+    <line x1="72" y1="80" x2="64" y2="80" stroke="#4A9E5E" stroke-width="2"/>
+  </g>
+  <g opacity="0.7">
+    <rect x="300" y="72" width="28" height="16" rx="2" fill="#0F2417" stroke="#4A9E5E" stroke-width="1.5"/>
+    <line x1="314" y1="88" x2="314" y2="96" stroke="#4A9E5E" stroke-width="2"/>
+    <line x1="328" y1="80" x2="336" y2="80" stroke="#4A9E5E" stroke-width="2"/>
+  </g>
+  <g opacity="0.7">
+    <rect x="72" y="312" width="28" height="16" rx="2" fill="#0F2417" stroke="#4A9E5E" stroke-width="1.5"/>
+    <line x1="86" y1="312" x2="86" y2="304" stroke="#4A9E5E" stroke-width="2"/>
+    <line x1="72" y1="320" x2="64" y2="320" stroke="#4A9E5E" stroke-width="2"/>
+  </g>
+  <g opacity="0.7">
+    <rect x="300" y="312" width="28" height="16" rx="2" fill="#0F2417" stroke="#4A9E5E" stroke-width="1.5"/>
+    <line x1="314" y1="312" x2="314" y2="304" stroke="#4A9E5E" stroke-width="2"/>
+    <line x1="328" y1="320" x2="336" y2="320" stroke="#4A9E5E" stroke-width="2"/>
+  </g>
+
+  <!-- Small vias -->
+  <circle cx="110" cy="110" r="3" fill="#2D5A3D"/>
+  <circle cx="290" cy="110" r="3" fill="#2D5A3D"/>
+  <circle cx="110" cy="290" r="3" fill="#2D5A3D"/>
+  <circle cx="290" cy="290" r="3" fill="#2D5A3D"/>
+  <circle cx="200" cy="85" r="2.5" fill="#2D5A3D"/>
+  <circle cx="200" cy="315" r="2.5" fill="#2D5A3D"/>
+  <circle cx="85" cy="200" r="2.5" fill="#2D5A3D"/>
+  <circle cx="315" cy="200" r="2.5" fill="#2D5A3D"/>
+
+  <!-- Trace base layer (dark) -->
+  <g stroke="#0F2417" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Top -->
+    <path d="M 175 67 L 175 150"/>
+    <path d="M 225 67 L 225 150"/>
+    <!-- Bottom -->
+    <path d="M 175 333 L 175 250"/>
+    <path d="M 225 333 L 225 250"/>
+    <!-- Left -->
+    <path d="M 67 175 L 150 175"/>
+    <path d="M 67 225 L 150 225"/>
+    <!-- Right -->
+    <path d="M 333 175 L 250 175"/>
+    <path d="M 333 225 L 250 225"/>
+  </g>
+
+  <!-- Trace main layer -->
+  <g stroke="#4A9E5E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Top -->
+    <path d="M 175 67 L 175 150"/>
+    <path d="M 225 67 L 225 150"/>
+    <!-- Bottom -->
+    <path d="M 175 333 L 175 250"/>
+    <path d="M 225 333 L 225 250"/>
+    <!-- Left -->
+    <path d="M 67 175 L 150 175"/>
+    <path d="M 67 225 L 150 225"/>
+    <!-- Right -->
+    <path d="M 333 175 L 250 175"/>
+    <path d="M 333 225 L 250 225"/>
+  </g>
+
+  <!-- Trace dashed data segments -->
+  <g stroke="#7FFFB0" stroke-width="5" stroke-linecap="round" fill="none" stroke-dasharray="6 8">
+    <path d="M 175 110 L 175 140">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 225 110 L 225 140">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0.15s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 175 290 L 175 260">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0.3s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 225 290 L 225 260">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0.45s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 110 175 L 140 175">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0.6s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 110 225 L 140 225">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0.75s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 290 175 L 260 175">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="0.9s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 290 225 L 260 225">
+      <animate attributeName="stroke-dashoffset" from="0" to="-28" dur="1.2s" begin="1.05s" repeatCount="indefinite"/>
+    </path>
+  </g>
+
+  <!-- Corner pads -->
+  <g>
+    <circle cx="175" cy="55" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="175" cy="55" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="0s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="225" cy="55" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="225" cy="55" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="0.25s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="175" cy="345" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="175" cy="345" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="225" cy="345" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="225" cy="345" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="0.75s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="55" cy="175" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="55" cy="175" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="1s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="55" cy="225" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="55" cy="225" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="1.25s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="345" cy="175" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="345" cy="175" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="1.5s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  <g>
+    <circle cx="345" cy="225" r="13" fill="none" stroke="#C9A827" stroke-width="4"/>
+    <circle cx="345" cy="225" r="5" fill="#C9A827" opacity="0.7">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="1.75s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- Center chip -->
+  <rect x="150" y="150" width="100" height="100" rx="10" fill="#0F2417" stroke="#4A9E5E" stroke-width="4"/>
+  <rect x="155" y="155" width="90" height="6" rx="3" fill="#4A9E5E" opacity="0.3"/>
+
+  <!-- AI text（垂直水平居中于芯片） -->
+  <text
+    x="200"
+    y="200"
+    text-anchor="middle"
+    dominant-baseline="central"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    font-size="88"
+    font-weight="600"
+    fill="#7FFFB0"
+  >AI</text>
+
+  <!-- Chip pin dots -->
+  <g fill="#4A9E5E">
+    <circle cx="165" cy="148" r="2.5"/>
+    <circle cx="182" cy="148" r="2.5"/>
+    <circle cx="200" cy="148" r="2.5"/>
+    <circle cx="218" cy="148" r="2.5"/>
+    <circle cx="235" cy="148" r="2.5"/>
+    <circle cx="165" cy="252" r="2.5"/>
+    <circle cx="182" cy="252" r="2.5"/>
+    <circle cx="200" cy="252" r="2.5"/>
+    <circle cx="218" cy="252" r="2.5"/>
+    <circle cx="235" cy="252" r="2.5"/>
+    <circle cx="148" cy="165" r="2.5"/>
+    <circle cx="148" cy="182" r="2.5"/>
+    <circle cx="148" cy="200" r="2.5"/>
+    <circle cx="148" cy="218" r="2.5"/>
+    <circle cx="148" cy="235" r="2.5"/>
+    <circle cx="252" cy="165" r="2.5"/>
+    <circle cx="252" cy="182" r="2.5"/>
+    <circle cx="252" cy="200" r="2.5"/>
+    <circle cx="252" cy="218" r="2.5"/>
+    <circle cx="252" cy="235" r="2.5"/>
+  </g>
+
+  <!-- Center core glow -->
+  <circle cx="200" cy="200" r="18" fill="#7FFFB0" opacity="0.08">
+    <animate attributeName="r" values="18;28;18" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.08;0.25;0.08" dur="2.4s" repeatCount="indefinite"/>
+  </circle>
+</svg>

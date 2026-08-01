@@ -9,15 +9,23 @@ import json
 from typing import Annotated, Any
 
 from middleware.request_context import get_page_context, get_thread_id, get_user_id
-from tools.ide_review.bridge_store import submit_read_files_task, submit_review_task
+from tools.ide_review.bridge_store import (
+    submit_list_files_task,
+    submit_read_files_task,
+    submit_review_task,
+)
 from tools.ide_review.enrich import enrich_bridge_result
 
 _IDE_PATH_HINT = (
     "禁止对用户本机绝对路径调用服务端 read_file/grep。"
-    "本机代码请用 request_ide_review / request_ide_read_files；"
+    "全仓审核：request_ide_list_source_files → 按 batches 每批 5 个 "
+    "request_ide_read_files → 批纪要 → 终稿。"
     "Bridge 离线时用 request_git_review(local_path=… 或 repo_url=…)。"
-    "路径优先用工作区相对路径（如 src/main/java/.../Foo.java）。"
 )
+
+# 每批固定 5 个文件（产品约定）
+_READ_FILES_MAX_PATHS = 5
+_BATCH_SIZE = 5
 
 
 def _page_ide_workspace_root() -> str:
@@ -72,6 +80,7 @@ def request_ide_review(
       （问题总览 → P0/P1/P2 → 优先修复建议）；禁止让用户贴代码；禁止自造检查清单。
     - findings 为空：不等于代码无问题；以 file_contents 为主审依据。
     - 切勿再用 read_file 去读返回的 workspace_root 绝对路径。
+    - 已拿到非空 file_contents 后禁止再批量 request_ide_read_files 扫全仓；立刻写报告。
     """
     user_id = get_user_id()
     root = (workspace_root or "").strip() or _page_ide_workspace_root()
@@ -90,6 +99,11 @@ def request_ide_review(
         result["findings_truncated"] = True
         result["findings_total"] = len(findings)
     contents = result.get("file_contents") or []
+    if contents:
+        result["next_step"] = (
+            "此为单次抽样审核。若用户要审「整个工程/全仓」，"
+            "请改走 request_ide_list_source_files → 按 batches 分批读审 → 终稿。"
+        )
     if not contents:
         result["upgrade_hint"] = (
             "file_contents 仍为空：请升级 VS Code 扩展到 v0.4.2+（Reload Window），"
@@ -106,46 +120,197 @@ def request_ide_review(
 def request_ide_read_files(
     paths: Annotated[
         list[str],
-        "必须：工作区相对路径，或位于目标 VS Code 工程内的绝对路径",
+        "本批路径，最多 5 个；全仓请优先用 request_ide_read_batch(batch_index)",
     ],
-    workspace_root: Annotated[str, "可选：工程根路径（同 request_ide_review）"] = "",
+    workspace_root: Annotated[str, "可选：工程根路径"] = "",
 ) -> dict[str, Any]:
-    """读取用户本机 VS Code 工作区中的文件内容（经 Bridge）。
-
-    当需要查看/引用本机工程源码时，必须用本工具，而不是 read_file。
-    """
-    user_id = get_user_id()
-    # 兼容模型传入单个字符串
-    if isinstance(paths, str):
-        path_list = [paths]
-    else:
-        path_list = list(paths or [])
-    root = (workspace_root or "").strip() or _page_ide_workspace_root()
-    result = submit_read_files_task(
-        user_id,
-        paths=path_list,
-        thread_id=get_thread_id(),
-        workspace_root=root or None,
+    """按路径列表读取（≤5）。全仓循环请用 request_ide_read_batch。"""
+    return _read_paths(
+        list(paths) if not isinstance(paths, str) else [paths],
+        workspace_root=workspace_root,
+        batch_index=None,
     )
-    result = enrich_bridge_result(dict(result))
-    # read_files 若仍空，用 paths 直接同机补读
-    if not (result.get("file_contents") or []):
+
+
+def request_ide_read_batch(
+    batch_index: Annotated[int, "从 0 开始的批次号（list 之后使用）"],
+    workspace_root: Annotated[str, "可选；默认用 list 时的工程根"] = "",
+) -> dict[str, Any]:
+    """按批次号读取下一组最多 5 个文件（全仓分批主路径，避免把全部路径塞进上下文）。"""
+    from tools.ide_review.batch_plan import get_batch_paths
+
+    info = get_batch_paths(get_thread_id(), int(batch_index))
+    if info.get("status") != "ok":
+        return {
+            **info,
+            "file_contents": [],
+            "files": [],
+            "path_hint": _IDE_PATH_HINT,
+        }
+    root = (workspace_root or "").strip() or str(info.get("workspace_root") or "")
+    out = _read_paths(
+        list(info.get("paths") or []),
+        workspace_root=root,
+        batch_index=int(batch_index),
+        batch_count=int(info.get("batch_count") or 0),
+        next_batch_index=info.get("next_batch_index"),
+        done_after=bool(info.get("done_after")),
+    )
+    return out
+
+
+def _read_paths(
+    path_list: list[str],
+    *,
+    workspace_root: str = "",
+    batch_index: int | None = None,
+    batch_count: int = 0,
+    next_batch_index: int | None = None,
+    done_after: bool = False,
+) -> dict[str, Any]:
+    user_id = get_user_id()
+    paths = [str(p).strip() for p in (path_list or []) if str(p).strip()]
+    truncated = False
+    if len(paths) > _READ_FILES_MAX_PATHS:
+        paths = paths[:_READ_FILES_MAX_PATHS]
+        truncated = True
+    root = (workspace_root or "").strip() or _page_ide_workspace_root()
+
+    result: dict[str, Any] = {}
+    # 同机直读：避免 Bridge 认领后丢失导致空等卡死
+    if root:
         from pathlib import Path
 
-        from tools.ide_review.bridge_store import get_status
         from tools.ide_review.local_files import read_workspace_files
 
-        st = get_status(user_id)
-        fill_root = root or str(st.get("workspace_root") or "").strip()
-        if fill_root and Path(fill_root).is_dir():
-            packed = read_workspace_files(Path(fill_root), path_list)
+        if Path(root).is_dir():
+            packed = read_workspace_files(Path(root), paths)
             if packed.get("file_contents"):
-                result = dict(result)
-                result.update(packed)
-                result["local_fill"] = "ok"
+                result = dict(packed)
+                result["local_fill"] = "prefer_same_host"
+
+    if not (result.get("file_contents") or []):
+        bridge = submit_read_files_task(
+            user_id,
+            paths=paths,
+            thread_id=get_thread_id(),
+            workspace_root=root or None,
+            timeout_sec=45.0,
+        )
+        result = enrich_bridge_result(dict(bridge or {}))
+        if not (result.get("file_contents") or []) and root:
+            from pathlib import Path
+
+            from tools.ide_review.local_files import read_workspace_files
+
+            if Path(root).is_dir():
+                packed = read_workspace_files(Path(root), paths)
+                if packed.get("file_contents"):
+                    result = dict(result)
+                    result.update(packed)
+                    result["local_fill"] = "ok"
+
     result = dict(result)
     result["path_hint"] = _IDE_PATH_HINT
-    return _trim_file_contents(result)
+    if truncated:
+        result["paths_truncated"] = True
+        result["paths_limit"] = _READ_FILES_MAX_PATHS
+    if batch_index is not None:
+        result["batch_index"] = batch_index
+        result["batch_count"] = batch_count
+        result["next_batch_index"] = next_batch_index
+        result["done_after"] = done_after
+        if done_after:
+            result["next_step"] = (
+                f"第 {batch_index + 1}/{batch_count} 批（最后一批）已读完。"
+                "合并此前各批纪要，立刻输出完整「🔍 代码审核报告」。"
+            )
+        else:
+            result["next_step"] = (
+                f"写「第 {batch_index + 1}/{batch_count} 批审核纪要」（只留 P0/P1/P2，勿贴全文），"
+                f"然后立刻 request_ide_read_batch(batch_index={next_batch_index})。"
+            )
+    else:
+        result["next_step"] = (
+            "写本批纪要后继续；全仓请用 request_ide_read_batch 按序号推进。"
+        )
+    return _trim_file_contents(result, max_chars=100_000)
+
+
+def request_ide_list_source_files(
+    workspace_root: Annotated[
+        str,
+        "可选：本机工程根；默认用 page_context.ide_workspace_root",
+    ] = "",
+) -> dict[str, Any]:
+    """枚举工程可审源文件并建立分批计划（每批 5 个）。
+
+    返回摘要（总数/批次数），不把全部路径塞进模型上下文。
+    随后用 request_ide_read_batch(0), read_batch(1), … 循环直至 done。
+    """
+    from pathlib import Path
+
+    from tools.ide_review.batch_plan import save_repo_plan
+    from tools.ide_review.bridge_store import get_status
+    from tools.ide_review.local_files import list_workspace_source_files
+
+    user_id = get_user_id()
+    root = (workspace_root or "").strip() or _page_ide_workspace_root()
+    listed: dict[str, Any] = {}
+
+    if root and Path(root).is_dir():
+        listed = list_workspace_source_files(Path(root), batch_size=_BATCH_SIZE)
+        listed["local_fill"] = "prefer_same_host"
+    else:
+        bridge = submit_list_files_task(
+            user_id,
+            thread_id=get_thread_id(),
+            workspace_root=root or None,
+            timeout_sec=45.0,
+        )
+        listed = dict(bridge or {})
+        if listed.get("status") != "ok" or not (listed.get("files") or listed.get("batches")):
+            st = get_status(user_id)
+            fill_root = root or str(st.get("workspace_root") or "").strip()
+            if fill_root and Path(fill_root).is_dir():
+                listed = list_workspace_source_files(Path(fill_root), batch_size=_BATCH_SIZE)
+                listed["local_fill"] = "ok"
+                root = fill_root
+
+    files = list(listed.get("files") or [])
+    if not files and listed.get("batches"):
+        for b in listed["batches"]:
+            files.extend(list(b or []))
+    root_final = root or str(listed.get("workspace_root") or "")
+    meta = save_repo_plan(
+        get_thread_id(),
+        workspace_root=root_final,
+        files=files,
+        batch_size=int(listed.get("batch_size") or _BATCH_SIZE),
+    )
+    return {
+        "status": "ok" if meta["total"] else "error",
+        "workspace_root": root_final,
+        "total": meta["total"],
+        "batch_size": meta["batch_size"],
+        "batch_count": meta["batch_count"],
+        "truncated": bool(listed.get("truncated")),
+        "provider": listed.get("provider") or "local",
+        "raw_summary": (
+            f"共 {meta['total']} 个功能源码文件（已排除配置/锁文件/样式/文档等），"
+            f"分 {meta['batch_count']} 批（每批 {meta['batch_size']}）。"
+            "路径已在服务端缓存。"
+        ),
+        "filter": "functional_source_only",
+        "first_batch_preview": (files[: meta["batch_size"]] if files else []),
+        "path_hint": _IDE_PATH_HINT,
+        "next_step": (
+            "立刻 request_ide_read_batch(batch_index=0)；每批写短纪要后递增；"
+            "全部完成后再输出完整终稿。只审功能代码，勿要求补审配置文件。"
+            if meta["batch_count"]
+            else "未枚举到功能源码，请确认工程路径。"
+        ),
+    }
 
 
 def request_git_review(

@@ -46,14 +46,10 @@ export function sendMessage(message, threadId = 'default', filePaths = [], pageC
  * 流式对话。
  * onEvent(data) 可 async；status / step 每条后让出一帧，保证处理过程逐步上屏。
  *
- * 开发环境直连 API，绕过 Vite 代理对 SSE 的缓冲。
+ * 一律走同源 `/api`（开发态由 Vite 代理到 :8765，已关缓冲），
+ * 避免直连 :8765 时 localhost/127.0.0.1 Origin 不一致导致 CORS 静默失败。
  */
 function streamEndpoint() {
-  if (typeof window !== 'undefined' && import.meta.env.DEV) {
-    const host = window.location.hostname || '127.0.0.1'
-    const base = import.meta.env.VITE_API_BASE || `http://${host}:8765`
-    return `${base.replace(/\/$/, '')}/api/chat/stream`
-  }
   return '/api/chat/stream'
 }
 
@@ -75,6 +71,7 @@ export function streamMessage(
   onError,
   filePaths = [],
   extraPageContext = null,
+  signal = null,
 ) {
   const handleEvent = typeof onEvent === 'function' ? onEvent : async () => {}
   const pageContext = {
@@ -90,6 +87,7 @@ export function streamMessage(
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
+    signal: signal || undefined,
   }).then(async (response) => {
     if (response.status === 401) {
       clearSession()
@@ -109,53 +107,73 @@ export function streamMessage(
     const decoder = new TextDecoder()
     let buffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const parts = buffer.split('\n\n')
-      buffer = parts.pop() || ''
-
-      for (const part of parts) {
-        const lines = part.split('\n')
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
+    try {
+      while (true) {
+        if (signal?.aborted) {
           try {
-            const data = JSON.parse(line.slice(6))
-            const type = data.type || (
-              data.done ? 'done'
-                : data.error ? 'error'
-                  : data.token != null ? 'token'
-                    : null
-            )
+            await reader.cancel()
+          } catch {
+            /* ignore */
+          }
+          break
+        }
+        const { done, value } = await reader.read()
+        if (done) break
 
-            if (type === 'done' || data.done) {
-              await handleEvent({ ...data, type: 'done' })
-              if (typeof onDone === 'function') await onDone(data.thread_id)
-            } else if (type === 'error' || data.error) {
-              const msg = data.message || data.error || '未知错误'
-              await handleEvent({ ...data, type: 'error', message: msg })
-              if (typeof onError === 'function') await onError(msg)
-            } else if (type === 'token' || data.token != null) {
-              const text = data.text != null ? data.text : data.token
-              await handleEvent({ type: 'token', text, token: text })
-            } else if (type === 'status' || type === 'step' || type === 'confirm') {
-              await handleEvent(data)
-              await paintFrame()
-              if (type === 'step' || type === 'confirm') {
-                await new Promise((r) => setTimeout(r, 40))
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || ''
+
+        for (const part of parts) {
+          const lines = part.split('\n')
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const data = JSON.parse(line.slice(6))
+              const type = data.type || (
+                data.done ? 'done'
+                  : data.error ? 'error'
+                    : data.token != null ? 'token'
+                      : null
+              )
+
+              if (type === 'done' || data.done) {
+                await handleEvent({ ...data, type: 'done' })
+                if (typeof onDone === 'function') await onDone(data.thread_id)
+              } else if (type === 'error' || data.error) {
+                const msg = data.message || data.error || '未知错误'
+                await handleEvent({ ...data, type: 'error', message: msg })
+                if (typeof onError === 'function') await onError(msg)
+              } else if (type === 'token' || data.token != null) {
+                const text = data.text != null ? data.text : data.token
+                await handleEvent({ type: 'token', text, token: text })
+              } else if (type === 'status' || type === 'step' || type === 'confirm') {
+                await handleEvent(data)
+                await paintFrame()
+                if (type === 'step' || type === 'confirm') {
+                  await new Promise((r) => setTimeout(r, 40))
+                }
+              } else {
+                await handleEvent(data)
               }
-            } else {
-              await handleEvent(data)
+            } catch (e) {
+              // ignore parse errors
             }
-          } catch (e) {
-            // ignore parse errors
           }
         }
       }
+    } catch (err) {
+      if (err?.name === 'AbortError' || signal?.aborted) {
+        return { aborted: true }
+      }
+      throw err
     }
+    if (signal?.aborted) return { aborted: true }
+    return { aborted: false }
   }).catch((err) => {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      return { aborted: true }
+    }
     if (typeof onError === 'function') {
       const msg =
         typeof err === 'string'
@@ -164,7 +182,7 @@ export function streamMessage(
       // 浏览器直连 API 失败时常见 Failed to fetch
       if (/failed to fetch|networkerror|load failed/i.test(msg)) {
         return onError(
-          `${msg}（连不上 API :8765，请确认已启动 ./scripts/dev.sh，或检查 Vite 是否指向正确地址）`
+          `${msg}（连不上 API，请确认已启动 ./scripts/dev.sh）`
         )
       }
       return onError(msg)

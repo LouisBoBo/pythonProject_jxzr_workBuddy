@@ -166,7 +166,7 @@ def analyze_schema_capabilities(
         "summary=总览；domain=按业务域列出代表表",
     ] = "summary",
 ) -> dict[str, Any]:
-    """根据表结构文档快速分析平台业务能力（模块/能力地图）。
+    """根据表结构文档快速分析 MES 系统业务能力（模块/能力地图）。
 
     适用：「根据表结构分析业务能力」「中软 MES 有哪些模块」「品质/仓储能力」等。
     不连接数据库，不修改 entities.json，不影响现有查/导/导入确认功能。

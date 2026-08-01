@@ -343,7 +343,7 @@ async function copyPairCode() {
 function startIdeBridgePolling() {
   stopIdeBridgePolling()
   refreshIdeBridgeStatus()
-  ideBridgeTimer = window.setInterval(refreshIdeBridgeStatus, 15000)
+  ideBridgeTimer = window.setInterval(refreshIdeBridgeStatus, 5000)
 }
 
 function stopIdeBridgePolling() {

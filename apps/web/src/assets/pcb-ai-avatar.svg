@@ -1,0 +1,164 @@
+<svg viewBox="0 0 680 680" width="680" height="680" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>PCB AI 头像</title>
+<desc>阻焊绿基板 + 铜箔走线 + 焊盘过孔 + 芯片封装</desc>
+
+<!-- 圆形裁切用底板：阻焊绿 -->
+<circle cx="340" cy="340" r="280" fill="#0b5c3a"/>
+<!-- 阻焊纹理（淡网格，像板面丝印/覆铜区边界） -->
+<g stroke="#094d30" stroke-width="2" opacity="0.45">
+  <path d="M80 180 H600 M80 260 H600 M80 340 H600 M80 420 H600 M80 500 H600"/>
+  <path d="M180 80 V600 M260 80 V600 M340 80 V600 M420 80 V600 M500 80 V600"/>
+</g>
+
+<!-- 外圈：板边铜环 -->
+<circle cx="340" cy="340" r="268" fill="none" stroke="#c9a35b" stroke-width="10" opacity="0.85"/>
+<circle cx="340" cy="340" r="280" fill="none" stroke="#8a7028" stroke-width="4" opacity="0.7"/>
+
+<!-- 四角安装孔/定位孔 -->
+<g fill="#062a1a" stroke="#c9a35b" stroke-width="6">
+  <circle cx="150" cy="150" r="22"/>
+  <circle cx="530" cy="150" r="22"/>
+  <circle cx="150" cy="530" r="22"/>
+  <circle cx="530" cy="530" r="22"/>
+</g>
+<g fill="#1a1a1a">
+  <circle cx="150" cy="150" r="9"/>
+  <circle cx="530" cy="150" r="9"/>
+  <circle cx="150" cy="530" r="9"/>
+  <circle cx="530" cy="530" r="9"/>
+</g>
+
+<!-- 主铜箔走线（折线，像真实 PCB routing） -->
+<g fill="none" stroke="#d4a84b" stroke-width="14" stroke-linecap="square" stroke-linejoin="miter">
+  <!-- 左上到芯片 -->
+  <path d="M150 150 L150 220 L220 220 L220 270"/>
+  <!-- 右上 -->
+  <path d="M530 150 L530 220 L460 220 L460 270"/>
+  <!-- 左下 -->
+  <path d="M150 530 L150 460 L220 460 L220 410"/>
+  <!-- 右下 -->
+  <path d="M530 530 L530 460 L460 460 L460 410"/>
+  <!-- 横向总线 -->
+  <path d="M100 340 L220 340"/>
+  <path d="M460 340 L580 340"/>
+  <path d="M340 100 L340 220"/>
+  <path d="M340 460 L340 580"/>
+</g>
+
+<!-- 信号流动（亮铜高光） -->
+<g fill="none" stroke="#ffe08a" stroke-width="6" stroke-linecap="round" opacity="0.95">
+  <path d="M150 150 L150 220 L220 220 L220 270" stroke-dasharray="36 120">
+    <animate attributeName="stroke-dashoffset" from="0" to="-156" dur="1.5s" repeatCount="indefinite"/>
+  </path>
+  <path d="M530 150 L530 220 L460 220 L460 270" stroke-dasharray="36 120">
+    <animate attributeName="stroke-dashoffset" from="0" to="-156" dur="1.7s" repeatCount="indefinite" begin="0.2s"/>
+  </path>
+  <path d="M150 530 L150 460 L220 460 L220 410" stroke-dasharray="36 120">
+    <animate attributeName="stroke-dashoffset" from="0" to="-156" dur="1.6s" repeatCount="indefinite" begin="0.4s"/>
+  </path>
+  <path d="M530 530 L530 460 L460 460 L460 410" stroke-dasharray="36 120">
+    <animate attributeName="stroke-dashoffset" from="0" to="-156" dur="1.8s" repeatCount="indefinite" begin="0.6s"/>
+  </path>
+  <path d="M100 340 L220 340" stroke-dasharray="28 80">
+    <animate attributeName="stroke-dashoffset" from="0" to="-108" dur="1.2s" repeatCount="indefinite" begin="0.1s"/>
+  </path>
+  <path d="M460 340 L580 340" stroke-dasharray="28 80">
+    <animate attributeName="stroke-dashoffset" from="0" to="-108" dur="1.2s" repeatCount="indefinite" begin="0.5s"/>
+  </path>
+</g>
+
+<!-- 过孔 / 焊盘阵列（接到芯片引脚） -->
+<g>
+  <!-- 上排 pad -->
+  <g fill="#c9a35b" stroke="#8a7028" stroke-width="2">
+    <circle cx="280" cy="220" r="12"/><circle cx="310" cy="220" r="12"/>
+    <circle cx="340" cy="220" r="12"/><circle cx="370" cy="220" r="12"/>
+    <circle cx="400" cy="220" r="12"/>
+  </g>
+  <g fill="#1a1a1a">
+    <circle cx="280" cy="220" r="4"/><circle cx="310" cy="220" r="4"/>
+    <circle cx="340" cy="220" r="4"/><circle cx="370" cy="220" r="4"/>
+    <circle cx="400" cy="220" r="4"/>
+  </g>
+  <!-- 下排 -->
+  <g fill="#c9a35b" stroke="#8a7028" stroke-width="2">
+    <circle cx="280" cy="460" r="12"/><circle cx="310" cy="460" r="12"/>
+    <circle cx="340" cy="460" r="12"/><circle cx="370" cy="460" r="12"/>
+    <circle cx="400" cy="460" r="12"/>
+  </g>
+  <g fill="#1a1a1a">
+    <circle cx="280" cy="460" r="4"/><circle cx="310" cy="460" r="4"/>
+    <circle cx="340" cy="460" r="4"/><circle cx="370" cy="460" r="4"/>
+    <circle cx="400" cy="460" r="4"/>
+  </g>
+  <!-- 左排 -->
+  <g fill="#c9a35b" stroke="#8a7028" stroke-width="2">
+    <circle cx="220" cy="280" r="12"/><circle cx="220" cy="310" r="12"/>
+    <circle cx="220" cy="340" r="12"/><circle cx="220" cy="370" r="12"/>
+    <circle cx="220" cy="400" r="12"/>
+  </g>
+  <g fill="#1a1a1a">
+    <circle cx="220" cy="280" r="4"/><circle cx="220" cy="310" r="4"/>
+    <circle cx="220" cy="340" r="4"/><circle cx="220" cy="370" r="4"/>
+    <circle cx="220" cy="400" r="4"/>
+  </g>
+  <!-- 右排 -->
+  <g fill="#c9a35b" stroke="#8a7028" stroke-width="2">
+    <circle cx="460" cy="280" r="12"/><circle cx="460" cy="310" r="12"/>
+    <circle cx="460" cy="340" r="12"/><circle cx="460" cy="370" r="12"/>
+    <circle cx="460" cy="400" r="12"/>
+  </g>
+  <g fill="#1a1a1a">
+    <circle cx="460" cy="280" r="4"/><circle cx="460" cy="310" r="4"/>
+    <circle cx="460" cy="340" r="4"/><circle cx="460" cy="370" r="4"/>
+    <circle cx="460" cy="400" r="4"/>
+  </g>
+</g>
+
+<!-- 引脚到芯片本体的短铜箔 -->
+<g stroke="#d4a84b" stroke-width="8" stroke-linecap="butt">
+  <line x1="280" y1="220" x2="280" y2="240"/>
+  <line x1="310" y1="220" x2="310" y2="240"/>
+  <line x1="340" y1="220" x2="340" y2="240"/>
+  <line x1="370" y1="220" x2="370" y2="240"/>
+  <line x1="400" y1="220" x2="400" y2="240"/>
+  <line x1="280" y1="460" x2="280" y2="440"/>
+  <line x1="310" y1="460" x2="310" y2="440"/>
+  <line x1="340" y1="460" x2="340" y2="440"/>
+  <line x1="370" y1="460" x2="370" y2="440"/>
+  <line x1="400" y1="460" x2="400" y2="440"/>
+  <line x1="220" y1="280" x2="240" y2="280"/>
+  <line x1="220" y1="310" x2="240" y2="310"/>
+  <line x1="220" y1="340" x2="240" y2="340"/>
+  <line x1="220" y1="370" x2="240" y2="370"/>
+  <line x1="220" y1="400" x2="240" y2="400"/>
+  <line x1="460" y1="280" x2="440" y2="280"/>
+  <line x1="460" y1="310" x2="440" y2="310"/>
+  <line x1="460" y1="340" x2="440" y2="340"/>
+  <line x1="460" y1="370" x2="440" y2="370"/>
+  <line x1="460" y1="400" x2="440" y2="400"/>
+</g>
+
+<!-- QFP/IC 封装本体（放大，保证小尺寸下 AI 可读） -->
+<rect x="240" y="240" width="200" height="200" rx="14" fill="#1c1c1c" stroke="#3a3a3a" stroke-width="5"/>
+<!-- Pin1 标记 -->
+<circle cx="268" cy="268" r="10" fill="#4a4a4a"/>
+<!-- 丝印 AI：字号加倍，居中主导视觉 -->
+<text
+  x="340"
+  y="340"
+  text-anchor="middle"
+  dominant-baseline="central"
+  font-family="ui-sans-serif, system-ui, sans-serif"
+  font-size="96"
+  font-weight="800"
+  fill="#ffffff"
+  letter-spacing="4"
+>AI</text>
+
+<!-- 外环扫描：像飞针/测试路径，速度快一点 -->
+<circle cx="340" cy="340" r="252" fill="none" stroke="#ffe08a" stroke-width="8" stroke-dasharray="90 1480" stroke-linecap="round" opacity="0.9">
+  <animateTransform attributeName="transform" type="rotate" from="0 340 340" to="360 340 340" dur="6s" repeatCount="indefinite"/>
+</circle>
+
+</svg>

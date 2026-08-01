@@ -1,9 +1,10 @@
 """
-人话能力地图：只用表结构文档说明「平台业务能力」。
+人话能力地图：只用表结构文档说明「MES 系统业务能力」。
 
 范围（务必遵守）：
 - 本模块描述的是中软 MES 数据字典所反映的业务能力
-- 查工单 / 查排产 / 导入导出 属于助手侧「模拟演示」，不并入、不改写平台能力
+- 查工单 / 查排产 / 导入导出 属于助手侧「模拟演示」，不并入、不改写 MES 能力
+- 用户问「平台/系统能干什么」指 ZR WorkBuddy，不要用本模块的结论去回答
 
 只读本地 capability_map.json + 表结构索引。不连数据库。
 """
@@ -19,8 +20,9 @@ from tools.schema_tool.mes_schema_parser import build_index
 _MAP_PATH = Path(__file__).resolve().parent / "capability_map.json"
 
 _BOUNDARY = (
-    "本结果只反映「表结构文档中的平台业务能力」。"
-    "查工单/排产、导入导出是助手模拟演示，不代表平台真实已开放能力，也不应写进平台能力结论。"
+    "本结果只反映「表结构文档中的 MES 系统业务能力」。"
+    "查工单/排产、导入导出是助手模拟演示，不代表 MES 真实已开放能力，也不应写进 MES 能力结论。"
+    "若用户问的是「平台/系统」（WorkBuddy），请介绍助手产品能力，不要用本结果冒充。"
 )
 
 
@@ -70,7 +72,7 @@ def _enrich_capability(cap: dict[str, Any], table_meta: dict[str, dict[str, Any]
 
     if reps:
         status = "schema_backed"
-        status_label = "表结构可佐证（平台业务能力）"
+        status_label = "表结构可佐证（MES 业务能力）"
     elif missing_tables and (cap.get("representative_tables") or []):
         status = "schema_partial"
         status_label = "配置了代表表但字典中部分未找到"
@@ -96,9 +98,10 @@ def _enrich_capability(cap: dict[str, Any], table_meta: dict[str, dict[str, Any]
 
 
 def list_platform_capabilities() -> dict[str, Any]:
-    """用人话列出平台业务能力地图（仅表结构视角）。
+    """用人话列出 MES 系统业务能力地图（仅表结构视角）。
 
-    适用：「平台能干什么」「有哪些业务模块」「根据表结构给功能总览」。
+    适用：「MES系统能干什么」「MES 有哪些业务模块」「根据表结构给功能总览」。
+    不要用本工具回答「平台/系统能干什么」（那是 WorkBuddy 产品介绍）。
     不要用本工具回答「帮我查工单/排产」——那是模拟演示查询。
     """
     reload_capability_map()
@@ -144,7 +147,8 @@ def list_platform_capabilities() -> dict[str, Any]:
         "glossary_count": len(raw.get("glossary") or []),
         "demo_note": (
             "另：助手里「查工单/查排产/导入导出」是模拟演示功能，"
-            "与本平台能力地图无关，请勿在「平台能干什么」的结论里当成真实平台能力。"
+            "与本 MES 能力地图无关，请勿在「MES系统能干什么」的结论里当成真实 MES 全量能力。"
+            "用户问「平台/系统」时请介绍 ZR WorkBuddy，不要用本结果回答。"
         ),
         "note": _BOUNDARY + " 详情用 describe_platform_capability；场景路径用 get_scenario_table_pack。",
     }
@@ -170,13 +174,14 @@ def describe_platform_capability(
         return {
             "id": None,
             "name": "生产计划（非表结构能力条目）",
-            "one_liner": "中软 MES 表结构摸底不以「排产/排程」为独立平台能力模块",
+            "one_liner": "中软 MES 表结构摸底不以「排产/排程」为独立 MES 能力模块",
             "status": "not_in_schema_map",
             "status_label": "不在本表结构能力地图中",
             "glossary": gloss.get("glossary") or [],
             "note": (
-                "若问「平台表结构里有哪些能力」：请看 list_platform_capabilities。"
-                "若要「查排产数据」：那是助手模拟演示（production-plans），不是平台能力结论。"
+                "若问「MES 表结构里有哪些能力」：请看 list_platform_capabilities。"
+                "若要「查排产数据」：那是助手模拟演示（production-plans），不是 MES 能力结论。"
+                "若问「平台/系统能干什么」：介绍 ZR WorkBuddy，不要用本结果回答。"
             ),
             "scope_note": _BOUNDARY,
         }
