@@ -81,7 +81,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { login } from '../api.js'
 import { setSession } from '../auth.js'
 
@@ -97,7 +97,6 @@ const ENTERPRISES = [
 ]
 
 const router = useRouter()
-const route = useRoute()
 
 const enterpriseKey = ref('jxzr')
 const entOpen = ref(false)
@@ -148,8 +147,8 @@ async function onSubmit() {
       enterprise_code: data.enterprise_code || enterprise_code,
       expires_at: data.expires_at,
     })
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-    router.replace(redirect || '/')
+    // 登录后固定进入新会话，避免 redirect 带回旧 thread 打开历史对话
+    router.replace({ path: '/', query: { thread: `session-${Date.now()}` } })
   } catch (e) {
     const msg =
       e?.response?.data?.detail ||

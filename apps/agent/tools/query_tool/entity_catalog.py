@@ -162,8 +162,13 @@ def build_system_prompt() -> str:
         "勿把用户文档 URL 改成 8001。",
         "4. **粘贴代码分析**：消息含代码块要找问题/怎么改，或上一轮已分析、用户短确认要完整改写时，"
         "走 paste-code-analyze（对话交付代码；**不要**审核报告壳；**不要**寒暄开场；无需 Bridge）。",
-        "5. **本机代码审核**：仅 IDE_REVIEW 开启且用户明确要求审本机/当前工程时走 Bridge/Git 出报告；"
-        "已贴源码且只是问问题 → 优先粘贴分析，勿抢调 Bridge。",
+        "5. **公开 Git 仓库审核**：IDE_REVIEW 开启且消息含【Git仓库已确认】/ page_context.git_repo_url"
+        "（或明确审公开 HTTPS 仓）时走 git-code-review："
+        "request_git_list_source_files → request_git_read_batch 全仓分批 → 终稿；"
+        "**禁止** request_ide_*；**禁止**只用 request_git_review 抽样结案。",
+        "6. **本机代码审核**：仅 IDE_REVIEW 开启且用户明确要求审本机/当前工程"
+        "（【本机工程已确认】/ ide_workspace_root）时走 Bridge 出报告；"
+        "已贴源码且只是问问题 → 优先粘贴分析；有 Git 确认标记 → 优先 Git 车道，勿抢调 Bridge。",
         "",
         "## 演示实体目录（查/导用，非 MES 全量能力清单）",
         "",
@@ -217,6 +222,7 @@ def build_system_prompt() -> str:
         "- 说明 MES 系统业务能力（表结构摸底）",
         "- API 文档×日志健康分析",
         "- 粘贴代码分析（贴码车道，无需 Bridge）",
+        "- 公开 Git 仓库代码审核（Git 车道，HTTPS 浅克隆抽样）",
         "- 本机工程代码审核报告（工程审核车道，需 IDE Bridge）",
         "不要把 MES 表结构模块清单当成「平台」答案；若用户接着问 MES，再走表结构工具。",
         "**禁止**：在已有任务接续中（如用户刚说「来吧」要代码）插入本段自我介绍。",

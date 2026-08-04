@@ -399,6 +399,10 @@ def list_workspace_source_files(
 
     walk(root, "", 0)
 
+    # 带目录前缀的路径优先（过程卡与 IDE 图二一致，展示完整相对路径），
+    # 根目录散落文件靠后。
+    files.sort(key=lambda p: (0 if "/" in p else 1, p.replace("\\", "/").lower()))
+
     batches = [files[i : i + bs] for i in range(0, len(files), bs)] if files else []
     return {
         "status": "ok",

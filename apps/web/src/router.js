@@ -19,7 +19,7 @@ const router = createRouter({
 router.beforeEach((to) => {
   if (to.meta.public) {
     if (to.name === 'login' && isLoggedIn()) {
-      return { path: '/' }
+      return { path: '/', query: { thread: `session-${Date.now()}` } }
     }
     return true
   }

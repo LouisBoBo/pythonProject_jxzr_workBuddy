@@ -87,6 +87,7 @@ curl http://127.0.0.1:8765/health
 **Middleware**（审计/硬拦截等横切逻辑）见 [`docs/DeepAgents-Middleware使用指南.md`](docs/DeepAgents-Middleware使用指南.md)。  
 **第一阶段开发复盘**见 [`docs/第一阶段开发复盘.md`](docs/第一阶段开发复盘.md)。  
 **第二阶段产品方向（已锁定）**见 [`docs/第二阶段产品方向.md`](docs/第二阶段产品方向.md)。  
+**PCB 效率平台规划 vs 架构匹配度**见 [`docs/PCB效率平台规划与架构匹配度评估.md`](docs/PCB效率平台规划与架构匹配度评估.md)。  
 **第二阶段开发计划（M1～M4）**见 [`docs/第二阶段开发计划.md`](docs/第二阶段开发计划.md)。  
 **ERP 登录对接**见 [`docs/ERP登录对接说明.md`](docs/ERP登录对接说明.md)。  
 **M2 写操作确认（HITL）**见 [`docs/M2写操作确认交付说明.md`](docs/M2写操作确认交付说明.md)。  

@@ -147,17 +147,70 @@ _PASTE_CODE_ANALYZE_PROMPT = """
   · 兑现「来吧/要完整版」：立刻交付完整代码。
 - 写/改代码是正常对话能力。
 - 仅当「消息里已有用户粘贴源码块、且用户只是问这段有什么问题」时：
-  **禁止**调 request_ide_review / request_ide_read_files / request_git_review；
+  **禁止**调 request_ide_review / request_ide_read_files / request_git_review /
+  request_git_list_source_files / request_git_read_batch；
   **禁止**输出「代码审核报告」壳。
 - 若用户要审本机/已选工程（见【本机工程已确认】或 page_context.ide_workspace_root），
-  **必须**走 ide-code-review / request_ide_review，本段粘贴禁令不适用。全文中文。
+  **必须**走 ide-code-review / request_ide_review，本段粘贴禁令不适用。
+- 若用户要审公开 Git 仓（见【Git仓库已确认】或 page_context.git_repo_url），
+  **必须**走 git-code-review（list→read_batch），本段粘贴禁令不适用。全文中文。
+"""
+
+_REVIEW_FINDING_ITEM = """
+每条问题（P0/P1/P2）必须按下列四段写满，缺一不可；文件路径用完整相对路径：
+#### Px-n: 简短标题
+- **文件**：`path/to/File.ext`（行号若可知）
+- **问题描述**：错在哪、为何危险、触发条件（禁止只写文件名）
+- **问题代码**：
+```语言
+（从 file_contents 原样摘录的问题片段，含足够上下文）
+```
+- **修复建议**：怎么改、注意点（可验证）
+- **修复代码**：
+```语言
+（可直接粘贴替换的修复示例，禁止空话）
+```
+"""
+
+_GIT_REVIEW_PROMPT = """
+【公开 Git 仓库审核 — 硬约束】
+- 触发：【Git仓库已确认】或 page_context.git_repo_url（公开 https:// 地址）。
+- **必须**走 Skill「git-code-review」，流程对齐本机 IDE 全仓审：
+  1) request_git_list_source_files → 记下 total / batch_count
+  2) i=0..batch_count-1：request_git_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
+  3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」
+- **禁止**只用 request_git_review 抽样几份文件就结案（那是降级抽样，不是全仓）。
+- **禁止** request_ide_review / request_ide_list_source_files / request_ide_read_batch / request_ide_read_files。
+- **禁止** SSH（git@ / ssh://）、URL 内嵌 Token；一期仅公开 HTTPS。
+- 【输出纪律】分批过程中禁止向用户输出任何正文；进度由系统过程区展示。输出区只允许终稿。
+- 终稿第一行必须是「## 🔍 代码审核报告」；禁止英文过渡句。
+- 审核范围=全部功能/业务源码（工具已排除配置/锁文件/样式/文档）。禁止只审 1～2 批就结案。
+- 方法论：Viprasol + gate-90。全文中文。
+""" + _REVIEW_FINDING_ITEM + """
+【终稿】（全部批次完成后）
+## 🔍 代码审核报告
+仓库 / 审核范围(N 文件 M 批) / 引擎 / 结论
+### 📊 问题总览（合并各批；条数必须与正文一致）
+| 级别 | 数量 | 摘要 |
+| P0 | … | … |
+| P1 | … | … |
+| P2 | … | … |
+### 🔴 P0
+（按上列四段逐条展开）
+### 🟠 P1
+（同上）
+### 🟡 P2
+（同上；P2 也须有问题代码+修复代码，可更短）
+### 🎯 优先修复建议
+（按 P0→P1 列出落地顺序）
 """
 
 _IDE_REVIEW_PROMPT = """
 【本机 IDE / 全仓代码审核 — 硬约束】
 - 禁止 read_file/grep/glob 读本机绝对路径。
-- 用户已选工程或说「审核代码」：禁止再追问。
-- **正确流程**：
+- 用户已选工程或说「审核代码」（且无 Git 仓库确认）：禁止再追问。
+- 若消息含【Git仓库已确认】或 page_context.git_repo_url：本段不适用，走 git-code-review。
+- **正确流程**（仅本机工程）：
   1) request_ide_list_source_files → 记下 total / batch_count（已自动只要功能源码）
   2) i=0..batch_count-1：request_ide_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
   3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」
@@ -168,15 +221,25 @@ _IDE_REVIEW_PROMPT = """
   正确：直接从报告标题写起。
 - 审核范围=业务/功能代码。不要审配置/锁文件/样式/文档/uni_modules/locale/static 等。
 - 禁止只审 1～2 批就结案。
-- Bridge 离线且同机不可读 → request_git_review。
+- Bridge 离线且同机不可读、且用户给的是本机路径 → request_git_review(local_path=…)。
 - 方法论：Viprasol + gate-90。用户可见全文中文。
-
+""" + _REVIEW_FINDING_ITEM + """
 【终稿】（全部批次完成后）
 ## 🔍 代码审核报告
 工作区 / 审核范围(N 文件 M 批) / 引擎 / 结论
-### 📊 问题总览（合并各批）
-### 🔴 P0 / 🟠 P1 / 🟡 P2
+### 📊 问题总览（合并各批；条数必须与正文一致）
+| 级别 | 数量 | 摘要 |
+| P0 | … | … |
+| P1 | … | … |
+| P2 | … | … |
+### 🔴 P0
+（按上列四段逐条展开）
+### 🟠 P1
+（同上）
+### 🟡 P2
+（同上；P2 也须有问题代码+修复代码，可更短）
 ### 🎯 优先修复建议
+（按 P0→P1 列出落地顺序）
 """
 
 
@@ -196,10 +259,12 @@ def create_agent(model=None, checkpointer=None):
         checkpointer = InMemorySaver()
 
     tools = list(TOOLS)
-    # 先钉死互斥总路由，再分别挂两条车道说明（互不交叉）
+    # 先钉死互斥总路由，再分别挂贴码 / Git / IDE 三条车道说明（互不交叉）
     system_prompt = build_system_prompt() + _PASTE_CODE_ANALYZE_PROMPT
     if Config.IDE_REVIEW_ENABLED:
         from tools.ide_review import (
+            request_git_list_source_files,
+            request_git_read_batch,
             request_git_review,
             request_ide_list_source_files,
             request_ide_read_batch,
@@ -211,8 +276,10 @@ def create_agent(model=None, checkpointer=None):
         tools.append(request_ide_read_batch)
         tools.append(request_ide_review)
         tools.append(request_ide_read_files)
+        tools.append(request_git_list_source_files)
+        tools.append(request_git_read_batch)
         tools.append(request_git_review)
-        system_prompt = system_prompt + _IDE_REVIEW_PROMPT
+        system_prompt = system_prompt + _GIT_REVIEW_PROMPT + _IDE_REVIEW_PROMPT
 
     return create_deep_agent(
         model=model,

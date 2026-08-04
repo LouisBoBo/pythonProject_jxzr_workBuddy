@@ -141,7 +141,12 @@ export function streamMessage(
                 await handleEvent({ ...data, type: 'done' })
                 if (typeof onDone === 'function') await onDone(data.thread_id)
               } else if (type === 'error' || data.error) {
-                const msg = data.message || data.error || '未知错误'
+                const msg =
+                  data.message ||
+                  data.error ||
+                  data.text ||
+                  (typeof data.error === 'string' ? data.error : '') ||
+                  '未知错误'
                 await handleEvent({ ...data, type: 'error', message: msg })
                 if (typeof onError === 'function') await onError(msg)
               } else if (type === 'token' || data.token != null) {

@@ -67,7 +67,10 @@ _TOOL_LABELS = {
     "request_ide_list_source_files": "筛选功能源码",
     "request_ide_read_batch": "分批读取功能代码",
     "request_ide_read_files": "按路径读取本机工程文件",
-    "request_git_review": "Git/本地目录审核",
+    # 与本机 IDE 过程卡文案对齐，便于 Git 全仓审观感一致
+    "request_git_list_source_files": "筛选功能源码",
+    "request_git_read_batch": "分批读取功能代码",
+    "request_git_review": "Git/本地抽样审核",
 }
 
 _IDE_BATCH_TOOLS = frozenset(
@@ -75,6 +78,8 @@ _IDE_BATCH_TOOLS = frozenset(
         "request_ide_list_source_files",
         "request_ide_read_batch",
         "request_ide_read_files",
+        "request_git_list_source_files",
+        "request_git_read_batch",
     }
 )
 
@@ -268,6 +273,53 @@ def _input_detail(name: str, inp: Any) -> str:
         for k in ("entity", "target_entity", "file_path", "output_format"):
             if data.get(k):
                 lines.append(f"{k}：{data[k]}")
+    elif name in (
+        "request_ide_read_batch",
+        "request_git_read_batch",
+        "request_ide_list_source_files",
+        "request_git_list_source_files",
+    ):
+        if data.get("batch_index") is not None:
+            lines.append(f"batch_index：{data['batch_index']}")
+        # 与 IDE 图二严格一致：第二行固定为 workspace_root（本机/克隆根绝对路径）
+        root = str(data.get("workspace_root") or "").strip()
+        if not root and name.startswith("request_git"):
+            try:
+                from middleware.request_context import get_thread_id
+                from tools.ide_review.git_review import get_git_workspace_root
+
+                root = get_git_workspace_root(get_thread_id())
+            except Exception:
+                root = ""
+        if not root and name.startswith("request_ide"):
+            try:
+                from middleware.request_context import get_page_context
+
+                ctx = get_page_context() or {}
+                root = str(ctx.get("ide_workspace_root") or "").strip()
+            except Exception:
+                root = ""
+        # 勿把 https URL 当成 workspace_root 展示
+        if root.startswith("http://") or root.startswith("https://"):
+            root = ""
+            if name.startswith("request_git"):
+                try:
+                    from middleware.request_context import get_thread_id
+                    from tools.ide_review.git_review import get_git_workspace_root
+
+                    root = get_git_workspace_root(get_thread_id())
+                except Exception:
+                    root = ""
+        if root:
+            lines.append(f"workspace_root：{root}")
+        for k, v in list(data.items())[:6]:
+            if k in ("batch_index", "workspace_root", "repo_url") or v is None or v == "":
+                continue
+            sv = v if not isinstance(v, (dict, list)) else json.dumps(v, ensure_ascii=False)
+            sv = str(sv)
+            if len(sv) > 120:
+                sv = sv[:120] + "…"
+            lines.append(f"{k}：{sv}")
     else:
         for k, v in list(data.items())[:6]:
             if v is None or v == "":
@@ -291,6 +343,20 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
     if isinstance(data, dict):
         if data.get("error"):
             return f"失败：{data.get('error')}", [str(data.get("hint") or data.get("next") or "")[:200]] if (data.get("hint") or data.get("next")) else []
+
+        st = str(data.get("status") or "").strip().lower()
+        if st in {
+            "error",
+            "timeout",
+            "offline",
+            "no_workspace",
+            "denied",
+            "failed",
+        }:
+            msg = str(
+                data.get("message") or data.get("raw_summary") or st
+            ).strip() or "工具失败"
+            return f"失败：{msg[:280]}", []
 
         if data.get("_rerouted_from"):
             imported = data.get("imported")
@@ -317,7 +383,7 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                     preview_rows.append(str(row)[:100])
             return f"待确认：{summary}", preview_rows
 
-        if name == "request_ide_list_source_files":
+        if name in ("request_ide_list_source_files", "request_git_list_source_files"):
             total = data.get("total")
             bc = data.get("batch_count")
             filt = data.get("filter") or "functional_source_only"
@@ -328,17 +394,29 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                 preview.append("已排除配置与非核心文件")
             return summary, [p for p in preview if p]
 
-        if name == "request_ide_read_batch":
+        if name in ("request_ide_read_batch", "request_git_read_batch"):
             bi = data.get("batch_index")
             bc = data.get("batch_count")
-            nfiles = len(data.get("file_contents") or data.get("files") or [])
+            # 优先用完整相对路径列表（含目录前缀）；勿只用 basename
+            files = [
+                str(p).replace("\\", "/").strip()
+                for p in (data.get("files") or [])
+                if str(p).strip()
+            ]
+            if not files:
+                files = [
+                    str(x.get("path") or "").replace("\\", "/").strip()
+                    for x in (data.get("file_contents") or [])
+                    if isinstance(x, dict) and str(x.get("path") or "").strip()
+                ]
+            nfiles = len(files) or len(data.get("file_contents") or [])
             if bi is not None and bc:
                 summary = f"第 {int(bi) + 1}/{bc} 批 · 已读 {nfiles} 个文件"
             else:
                 summary = f"本批已读 {nfiles} 个文件"
             if data.get("done_after"):
                 summary += "（末批，即将汇总报告）"
-            return summary, list(data.get("files") or [])[:5]
+            return summary, files[:8]
 
         if "total" in data or "records" in data:
             entity = data.get("entity") or ""
@@ -428,6 +506,17 @@ def _is_tool_failure(detail_src: Any) -> bool:
             return False
         if data.get("error"):
             return True
+        # IDE/Git 工具以 status + message 表达失败（无 error 字段）
+        st = str(data.get("status") or "").strip().lower()
+        if st in {
+            "error",
+            "timeout",
+            "offline",
+            "no_workspace",
+            "denied",
+            "failed",
+        }:
+            return True
     if isinstance(data, str):
         s = data.strip()
         if s.startswith("实体守卫") or s.startswith("[错误]"):
@@ -513,11 +602,11 @@ def _tool_label(name: str, inp: Any = None) -> str:
         return "导入外部访问日志"
     if name == "analyze_api_errors_from_logs":
         return "分析接口错误"
-    if name == "request_ide_read_batch":
+    if name in ("request_ide_read_batch", "request_git_read_batch"):
         data = _parse_jsonish(inp) if inp is not None else {}
         if isinstance(data, dict) and data.get("batch_index") is not None:
             return f"{base} · 第 {int(data['batch_index']) + 1} 批"
-    if name == "request_ide_list_source_files":
+    if name in ("request_ide_list_source_files", "request_git_list_source_files"):
         return "筛选功能源码（排除配置/非核心）"
     return base
 
@@ -549,6 +638,8 @@ class AgentRunner:
     """单例 Agent 运行器，避免每次请求重新创建 Deep Agent。"""
 
     _instance = None
+    # 工具集变更时 bump，避免热更新后仍复用旧 Agent（缺 request_git_*_batch）
+    _TOOLS_SIG = "ide+git-batch-v3-report-format"
 
     def __new__(cls):
         if cls._instance is None:
@@ -557,6 +648,7 @@ class AgentRunner:
             cls._instance._model = None
             cls._instance._agent_lock = None
             cls._instance._stream_lock = None
+            cls._instance._agent_sig = None
         return cls._instance
 
     def _get_agent_lock(self):
@@ -576,14 +668,15 @@ class AgentRunner:
 
     async def _ensure_agent(self):
         """挂 AsyncSqliteSaver 后创建 Agent（流式必需）。"""
-        if self._agent is not None:
+        if self._agent is not None and getattr(self, "_agent_sig", None) == self._TOOLS_SIG:
             return self._agent
         async with self._get_agent_lock():
-            if self._agent is not None:
+            if self._agent is not None and getattr(self, "_agent_sig", None) == self._TOOLS_SIG:
                 return self._agent
             cp = await get_acheckpointer()
             self._model = build_model()
             self._agent = create_agent(model=self._model, checkpointer=cp)
+            self._agent_sig = self._TOOLS_SIG
             return self._agent
 
     @property
@@ -596,6 +689,7 @@ class AgentRunner:
         """网络/DNS 异常后丢弃单例，下次请求重建客户端（保留 checkpointer 连接）。"""
         self._agent = None
         self._model = None
+        self._agent_sig = None
 
     def _run_config(self, thread_id: str) -> dict[str, Any]:
         from config import Config
@@ -626,6 +720,12 @@ class AgentRunner:
             ide_root = str(ctx.get("ide_workspace_root") or "").strip()
             if ide_root:
                 bits.append(f"ide_workspace_root={ide_root}")
+            git_url = str(ctx.get("git_repo_url") or "").strip()
+            if git_url:
+                bits.append(f"git_repo_url={git_url}")
+            git_ref = str(ctx.get("git_ref") or "").strip()
+            if git_ref:
+                bits.append(f"git_ref={git_ref}")
             if bits:
                 prefix = (
                     "[平台上下文] 用户从 MES 页面打开助手，当前页："
@@ -636,6 +736,27 @@ class AgentRunner:
             prefix = ""
 
         body = message
+        # 公开 Git 全仓：强制 list→batch，避免模型仍走抽样 request_git_review 或误调 IDE
+        try:
+            from middleware.request_context import get_page_context as _gpc
+
+            _ctx = _gpc() or {}
+            _git = str(_ctx.get("git_repo_url") or "").strip()
+        except Exception:
+            _git = ""
+        if _git or "【Git仓库已确认】" in (message or ""):
+            force_git = (
+                "\n\n【系统强制路由·公开 Git 全仓审核】\n"
+                f"仓库：{_git or '见消息【Git仓库已确认】'}\n"
+                "必须严格按序：\n"
+                "1) request_git_list_source_files\n"
+                "2) request_git_read_batch(batch_index=0)…直至 done_after=true\n"
+                "3) 仅此时输出「## 🔍 代码审核报告」\n"
+                "禁止：request_git_review 抽样结案；禁止 request_ide_*；"
+                "禁止中途输出报告或英文过渡句。\n"
+            )
+            body = f"{body}{force_git}"
+
         if not file_paths:
             return prefix + body
         file_note = "\n".join([f"[附件路径]: {p}" for p in file_paths])
@@ -758,13 +879,20 @@ class AgentRunner:
                     name = _tool_name(event)
                     if name in ("import_file_to_platform", "import_platform_data"):
                         saw_write_tool = True
-                    if name in _IDE_BATCH_TOOLS:
+                    if name in _IDE_BATCH_TOOLS or name == "request_git_review":
                         suppress_ide_report_tokens = True
                     data = event.get("data") or {}
                     inp = data.get("input")
                     run_id = str(event.get("run_id") or uuid.uuid4())
                     active_runs.add(run_id)
-                    yield {
+                    inp_obj = _parse_jsonish(inp) if inp is not None else {}
+                    batch_idx = None
+                    if isinstance(inp_obj, dict) and inp_obj.get("batch_index") is not None:
+                        try:
+                            batch_idx = int(inp_obj["batch_index"])
+                        except (TypeError, ValueError):
+                            batch_idx = None
+                    step_ev = {
                         "type": "step",
                         "id": run_id,
                         "tool": name,
@@ -775,6 +903,9 @@ class AgentRunner:
                         "detail": "",
                         "preview": [],
                     }
+                    if batch_idx is not None:
+                        step_ev["batch_index"] = batch_idx
+                    yield step_ev
                     await asyncio.sleep(0.02)
                     continue
 
@@ -810,7 +941,19 @@ class AgentRunner:
                     ):
                         confirms = _confirms_from_pending_store(thread_id, name)
                     step_state = "waiting" if confirms else ("done" if ok else "error")
-                    yield {
+                    batch_idx = None
+                    inp_obj = _parse_jsonish(data.get("input")) if data.get("input") is not None else {}
+                    if isinstance(inp_obj, dict) and inp_obj.get("batch_index") is not None:
+                        try:
+                            batch_idx = int(inp_obj["batch_index"])
+                        except (TypeError, ValueError):
+                            batch_idx = None
+                    if batch_idx is None and isinstance(parsed, dict) and parsed.get("batch_index") is not None:
+                        try:
+                            batch_idx = int(parsed["batch_index"])
+                        except (TypeError, ValueError):
+                            batch_idx = None
+                    end_ev = {
                         "type": "step",
                         "id": run_id,
                         "tool": name,
@@ -822,6 +965,9 @@ class AgentRunner:
                         "preview": preview,
                         "ok": ok if not confirms else None,
                     }
+                    if batch_idx is not None:
+                        end_ev["batch_index"] = batch_idx
+                    yield end_ev
                     emitted_any = False
                     for confirm in confirms:
                         aid = str(confirm.get("action_id") or "")
@@ -844,17 +990,47 @@ class AgentRunner:
                         yield {"type": "status", "text": "等待你确认写入…", "phase": "waiting"}
                     elif name in _IDE_BATCH_TOOLS:
                         parsed_batch = parsed if isinstance(parsed, dict) else {}
-                        if name == "request_ide_list_source_files":
+                        if not ok:
+                            suppress_ide_report_tokens = False
+                            ide_await_report_header = False
+                            fail_msg = (
+                                str(
+                                    parsed_batch.get("message")
+                                    or parsed_batch.get("error")
+                                    or "取码失败"
+                                ).strip()
+                                or "取码失败"
+                            )
+                            yield {
+                                "type": "status",
+                                "text": f"审核取码失败：{fail_msg[:180]}",
+                                "phase": "waiting",
+                            }
+                        elif name in (
+                            "request_ide_list_source_files",
+                            "request_git_list_source_files",
+                        ):
                             total = parsed_batch.get("total")
                             bc = parsed_batch.get("batch_count")
                             trunc = "（已达上限）" if parsed_batch.get("truncated") else ""
+                            kind_label = (
+                                "公开 Git 仓"
+                                if name == "request_git_list_source_files"
+                                else "本机工程"
+                            )
                             yield {
                                 "type": "status",
-                                "text": f"已筛选功能源码 {total} 个，分 {bc} 批审核{trunc}…",
+                                "text": (
+                                    f"已筛选{kind_label}功能源码 {total} 个，"
+                                    f"分 {bc} 批审核{trunc}…"
+                                ),
                                 "phase": "waiting",
                             }
                             suppress_ide_report_tokens = True
-                        elif name == "request_ide_read_batch":
+                        elif name in (
+                            "request_ide_read_batch",
+                            "request_git_read_batch",
+                        ):
                             bi = parsed_batch.get("batch_index")
                             bc = parsed_batch.get("batch_count")
                             done = bool(parsed_batch.get("done_after"))
@@ -878,7 +1054,32 @@ class AgentRunner:
                         else:
                             suppress_ide_report_tokens = True
                             if not active_runs:
-                                yield {"type": "status", "text": "继续分批读取功能代码…", "phase": "waiting"}
+                                yield {
+                                    "type": "status",
+                                    "text": "继续分批读取功能代码…",
+                                    "phase": "waiting",
+                                }
+                    elif name == "request_git_review":
+                        parsed_git = parsed if isinstance(parsed, dict) else {}
+                        n_files = len(
+                            parsed_git.get("files") or parsed_git.get("file_contents") or []
+                        )
+                        mode = parsed_git.get("mode") or "git"
+                        if ok:
+                            yield {
+                                "type": "status",
+                                "text": (
+                                    f"已拉取公开仓库源码（{mode}，抽样 {n_files} 个文件），"
+                                    "正在汇总审核报告…"
+                                ),
+                                "phase": "generating",
+                            }
+                            suppress_ide_report_tokens = False
+                            ide_await_report_header = True
+                            ide_report_buf = ""
+                        else:
+                            suppress_ide_report_tokens = False
+                            ide_await_report_header = False
                     # 工具间隙：提示仍在推进（可能还有下一轮工具），不要过早宣称「生成回答」
                     elif not active_runs:
                         yield {"type": "status", "text": "继续分析与整理…", "phase": "waiting"}
@@ -972,9 +1173,12 @@ class AgentRunner:
                     ),
                 }
             else:
+                err_text = f"审核过程异常：{msg[:300]}"
                 yield {
                     "type": "error",
-                    "text": f"审核过程异常：{msg[:300]}",
+                    "text": err_text,
+                    "message": err_text,
+                    "error": err_text,
                 }
             return
 

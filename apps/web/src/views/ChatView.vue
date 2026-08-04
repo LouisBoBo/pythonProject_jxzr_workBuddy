@@ -40,7 +40,13 @@
             @resolved="(payload) => onIdePickResolved(msg, payload)"
             @retry="() => retryIdeReview(msg)"
           />
-          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length || msg.idePick">
+          <GitRepoPickCard
+            v-if="msg.gitPick"
+            :card="msg.gitPick"
+            @resolved="(payload) => onGitPickResolved(msg, payload)"
+            @retry="() => retryGitReview(msg)"
+          />
+          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length || msg.idePick || msg.gitPick">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -213,6 +219,7 @@ import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingW
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 import IdeWorkspacePickCard from '../components/IdeWorkspacePickCard.vue'
+import GitRepoPickCard from '../components/GitRepoPickCard.vue'
 import AiAvatarIcon from '../components/AiAvatarIcon.vue'
 import { getUsername, getUserId } from '../auth.js'
 
@@ -689,6 +696,7 @@ function persistableMessages() {
     ...(m.process?.length ? { process: m.process } : {}),
     ...(m.confirms?.length ? { confirms: m.confirms } : {}),
     ...(m.idePick ? { idePick: m.idePick } : {}),
+    ...(m.gitPick ? { gitPick: m.gitPick } : {}),
   }))
 }
 
@@ -759,6 +767,7 @@ async function loadSession(id) {
         process: m.process || [],
         confirms,
         ...(m.idePick ? { idePick: { ...m.idePick } } : {}),
+        ...(m.gitPick ? { gitPick: { ...m.gitPick } } : {}),
         processCollapsed: true,
       }
     })
@@ -895,8 +904,41 @@ function looksLikeCodeReview(text) {
   )
 }
 
+/** 消息里已有粘贴源码围栏：走贴码车道，不弹 Git/IDE 选卡 */
+function hasPastedSourceFence(text) {
+  return /```[\w.-]*\n[\s\S]{40,}?```/.test(String(text || ''))
+}
+
+/** 从自然语言中抽出干净的公开 HTTPS 仓库地址（去掉尾部中文/标点） */
+function extractGitRepoUrl(text) {
+  const t = String(text || '')
+  // 仅匹配 URL 安全字符，避免「.git仓库代码」一类粘连
+  const hostRe =
+    /https:\/\/(?:github\.com|gitlab\.com|gitee\.com|bitbucket\.org)\/[A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+(?:\.git)?/i
+  const genericRe = /https:\/\/[A-Za-z0-9.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.git\b/i
+  const m = t.match(hostRe) || t.match(genericRe)
+  if (!m) return ''
+  let url = String(m[0]).replace(/\/+$/, '')
+  const gitIdx = url.toLowerCase().indexOf('.git')
+  if (gitIdx >= 0) url = url.slice(0, gitIdx + 4)
+  return url
+}
+
+function looksLikeGitRepoReview(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  if (extractGitRepoUrl(t)) return true
+  return /(?:审|审核|审查|检查).{0,16}(?:git|Git|远程)?\s*仓库|(?:git|Git)\s*仓库.{0,12}(?:审|审核|审查)|review\s+(?:this\s+)?(?:git\s+)?repo|审核\s*https:\/\//i.test(
+    t
+  )
+}
+
 function hasPendingIdePick() {
   return messages.value.some((m) => m.idePick && m.idePick.status === 'pending')
+}
+
+function hasPendingGitPick() {
+  return messages.value.some((m) => m.gitPick && m.gitPick.status === 'pending')
 }
 
 async function fetchIdeWorkspaces() {
@@ -1071,11 +1113,154 @@ async function retryIdeReview(msg) {
   }
 }
 
+function buildGitReviewAgentMessage(content, repoUrl, ref) {
+  const base = String(content || '').trim() || '请审核已确认的公开 Git 仓库并输出代码审核报告'
+  if (!repoUrl) return base
+  const refPart = ref ? `（分支/ref：${ref}）` : ''
+  return `${base}\n\n【Git仓库已确认】请立刻审核仓库：${repoUrl}${refPart}`
+}
+
+async function beginGitReviewStream(msg, { repoUrl, ref, content, files }) {
+  if (streaming.value && streamAbort.value) {
+    return false
+  }
+  if (msg?.gitPick) {
+    msg.gitPick = {
+      ...msg.gitPick,
+      status: 'confirmed',
+      repoUrl: repoUrl || msg.gitPick.repoUrl,
+      ref: ref || msg.gitPick.ref || '',
+    }
+  }
+  if (streamAbort.value) {
+    forceResetStreaming()
+    await nextTick()
+  } else {
+    streaming.value = false
+    streamContent.value = ''
+    streamProcess.value = []
+    streamConfirms.value = []
+    streamAnswerPending.value = false
+  }
+  streaming.value = true
+  streamProcess.value = [{
+    id: 'boot',
+    type: 'step',
+    state: 'running',
+    title: repoUrl ? '正在审核公开 Git 仓库…' : '正在审核…',
+  }]
+  streamProcessCollapsed.value = false
+  streamStartedAt.value = Date.now()
+  scrollToBottom()
+  await nextTick()
+
+  const agentMessage = buildGitReviewAgentMessage(content, repoUrl, ref)
+  const started = await startAssistantStream(agentMessage, files, null, null, {
+    force: true,
+    gitRepoUrl: repoUrl || '',
+    gitRef: ref || '',
+  })
+  if (!started) {
+    streaming.value = false
+    streamProcess.value = []
+    messages.value.push({
+      role: 'assistant',
+      content: '[错误] 未能发起 Git 仓库审核请求。请刷新页面后新开对话，再贴一次仓库地址。',
+    })
+    await persistSession()
+    return false
+  }
+  return true
+}
+
+async function onGitPickResolved(msg, payload) {
+  if (!msg?.gitPick || !payload) return
+  if (msg.gitPick.status && msg.gitPick.status !== 'pending') return
+
+  const repoUrl = payload.repoUrl || msg.gitPick.repoUrl || ''
+  const ref = payload.ref || msg.gitPick.ref || ''
+  let content = msg.gitPick.pendingContent || ''
+  const files = Array.isArray(msg.gitPick.pendingFiles) ? [...msg.gitPick.pendingFiles] : []
+
+  if (!content) {
+    const idx = messages.value.indexOf(msg)
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages.value[i]?.role === 'user') {
+        content = String(messages.value[i].content || '').trim()
+        break
+      }
+    }
+  }
+  if (!content) content = '请审核已确认的公开 Git 仓库并输出代码审核报告'
+
+  msg.gitPick = {
+    ...msg.gitPick,
+    status: payload.status,
+    repoUrl,
+    ref,
+    pendingContent: content,
+  }
+  void persistSession()
+  scrollToBottom()
+
+  if (payload.status !== 'confirmed') return
+
+  try {
+    await beginGitReviewStream(msg, { repoUrl, ref, content, files })
+  } catch (e) {
+    console.error('git pick start stream failed', e)
+    streaming.value = false
+    messages.value.push({
+      role: 'assistant',
+      content: `[错误] 确认仓库后未能开始审核：${e?.message || e}`,
+    })
+    void persistSession()
+  }
+}
+
+async function retryGitReview(msg) {
+  if (!msg?.gitPick) return
+  if (msg.gitPick.status === 'cancelled') return
+  const repoUrl = msg.gitPick.repoUrl || ''
+  if (!repoUrl) {
+    messages.value.push({
+      role: 'assistant',
+      content: '[错误] 未找到仓库地址，请新开对话后重新发送仓库 URL。',
+    })
+    return
+  }
+  const ref = msg.gitPick.ref || ''
+  let content = msg.gitPick.pendingContent || ''
+  if (!content) {
+    const idx = messages.value.indexOf(msg)
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages.value[i]?.role === 'user') {
+        content = String(messages.value[i].content || '').trim()
+        break
+      }
+    }
+  }
+  if (!content) content = '请审核已确认的公开 Git 仓库并输出代码审核报告'
+  msg.gitPick = { ...msg.gitPick, status: 'confirmed', pendingContent: content, repoUrl, ref }
+  const files = Array.isArray(msg.gitPick.pendingFiles) ? [...msg.gitPick.pendingFiles] : []
+  try {
+    await beginGitReviewStream(msg, { repoUrl, ref, content, files })
+  } catch (e) {
+    console.error('git review retry failed', e)
+    streaming.value = false
+    messages.value.push({
+      role: 'assistant',
+      content: `[错误] 重新开始 Git 审核失败：${e?.message || e}`,
+    })
+    void persistSession()
+  }
+}
+
 async function send(text) {
   const content = text || input.value.trim()
   const files = attachedFiles.value
   if ((!content && files.length === 0) || streaming.value) return
-  if (hasPendingIdePick()) return
+  if (hasPendingIdePick() || hasPendingGitPick()) return
 
   if (!threadId.value) {
     threadId.value = createThreadId()
@@ -1107,7 +1292,29 @@ async function send(text) {
     return
   }
 
-  if (looksLikeCodeReview(content)) {
+  // 贴码优先：有源码围栏则直连 Agent，不弹 Git/IDE 选卡
+  if (!hasPastedSourceFence(content) && looksLikeGitRepoReview(content)) {
+    const repoUrl = extractGitRepoUrl(content)
+    messages.value.push({
+      role: 'assistant',
+      content: '',
+      gitPick: {
+        id: `git-pick-${Date.now()}`,
+        status: 'pending',
+        repoUrl,
+        ref: '',
+        pendingContent: content,
+        pendingFiles: filesSnapshot,
+      },
+      process: [],
+      processCollapsed: true,
+    })
+    await persistSession()
+    scrollToBottom()
+    return
+  }
+
+  if (!hasPastedSourceFence(content) && looksLikeCodeReview(content)) {
     const workspaces = await fetchIdeWorkspaces()
     if (workspaces.length) {
       const selected = workspaces.find((w) => w.current)?.path || workspaces[0].path
@@ -1172,6 +1379,9 @@ async function startAssistantStream(
   streamAnswerPending.value = false
   streamConfirms.value = []
   // 本地先挂一条「分析中」，后续真实步骤会替换掉
+  const gitRepoUrl = String((opts && opts.gitRepoUrl) || '').trim()
+  const gitRef = String((opts && opts.gitRef) || '').trim()
+
   streamProcess.value = [{
     id: 'boot',
     type: 'step',
@@ -1180,7 +1390,9 @@ async function startAssistantStream(
       ? '继续生成…'
       : ideWorkspaceRoot
         ? '正在审核本机工程…'
-        : '分析问题…',
+        : gitRepoUrl
+          ? '正在审核公开 Git 仓库…'
+          : '分析问题…',
   }]
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
@@ -1197,21 +1409,34 @@ async function startAssistantStream(
   const applyStep = (event) => {
     const id = event.id || `tool-${event.tool || event.title}`
     const steps = streamProcess.value.filter((i) => i.type === 'step' && i.id !== 'boot')
-    const idx = steps.findIndex(
-      (i) => i.id === id || (event.tool && i.tool === event.tool && i.state === 'running')
-    )
+    const isEnd =
+      event.phase === 'end' ||
+      event.state === 'done' ||
+      event.state === 'error' ||
+      event.state === 'waiting'
+    // 严格按 run_id 对齐；禁止 start 用「同工具 running」互吞（否则分批 9/10 会乱序）
+    let idx = steps.findIndex((i) => i.id === id)
+    if (idx < 0 && isEnd && event.tool) {
+      idx = steps.findIndex((i) => i.tool === event.tool && i.state === 'running')
+    }
     const prev = idx >= 0 ? steps[idx] : null
+    // end 若兜底命中了 running 卡，保留原 id，避免与后续 start 的 run_id 错位
+    const stableId = prev && isEnd && prev.id ? prev.id : id
     const item = {
-      id,
+      id: stableId,
       type: 'step',
       tool: event.tool,
       phase: event.phase,
       state: event.state || (event.phase === 'end' ? (event.ok === false ? 'error' : 'done') : 'running'),
-      title: event.title,
+      title: event.title || prev?.title || '',
       args: event.args || prev?.args || '',
       detail: event.detail || prev?.detail || '',
       preview: Array.isArray(event.preview) ? event.preview : (prev?.preview || []),
       ok: event.ok,
+      batch_index:
+        event.batch_index != null
+          ? event.batch_index
+          : prev?.batch_index,
     }
     if (idx >= 0) steps[idx] = { ...steps[idx], ...item }
     else steps.push(item)
@@ -1219,8 +1444,10 @@ async function startAssistantStream(
   }
 
   const enqueueStep = (event) => {
-    // start：错峰露出；end：立刻更新同一条，不再额外等待
-    const gap = event.phase === 'start' || event.state === 'running' ? STEP_GAP_MS : 0
+    // start：错峰露出；分批读写工具不加延迟，避免同工具多 start 交错
+    const isBatchTool = /read_batch|list_source_files/i.test(String(event.tool || ''))
+    const gap =
+      !isBatchTool && (event.phase === 'start' || event.state === 'running') ? STEP_GAP_MS : 0
     stepRevealChain = stepRevealChain.then(async () => {
       if (requestId !== activeRequestId || threadId.value !== currentThread) return
       applyStep(event)
@@ -1257,9 +1484,13 @@ async function startAssistantStream(
 
   try {
     const filePaths = files.map(f => f.path).filter(Boolean)
-    const extraPageContext = ideWorkspaceRoot
-      ? { ide_workspace_root: ideWorkspaceRoot }
-      : null
+    let extraPageContext = null
+    if (ideWorkspaceRoot) {
+      extraPageContext = { ide_workspace_root: ideWorkspaceRoot }
+    } else if (gitRepoUrl) {
+      extraPageContext = { git_repo_url: gitRepoUrl }
+      if (gitRef) extraPageContext.git_ref = gitRef
+    }
     const result = await streamMessage(
       content,
       currentThread,
@@ -1376,8 +1607,8 @@ async function startAssistantStream(
             durationText,
             stopped: false,
           })
-        } else if (ideWorkspaceRoot && !streamGotError) {
-          // 审核流结束却无正文：必须给用户可见反馈，避免只剩工程确认卡
+        } else if ((ideWorkspaceRoot || gitRepoUrl) && !streamGotError) {
+          // 审核流结束却无正文：必须给用户可见反馈，避免只剩确认卡
           pushAssistantMessage({
             content:
               '[错误] 本轮未生成审核正文。请点「重新开始审核」再试一次。',

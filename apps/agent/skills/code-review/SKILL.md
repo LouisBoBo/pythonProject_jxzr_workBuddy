@@ -21,9 +21,10 @@ vendor_url: https://github.com/Viprasol-Tech/code-review-skill
 
 1. **读取并严格执行** `references/viprasol-skill.md`。
 2. **再读取并严格执行** `references/workbuddy-gate-90.md`（必扫面、严重度锋利、修复可粘贴、验证方法）。
-3. Critical/High（及映射后的 P0/P1）必须含：触发条件、修复代码、**验证步骤**；Nit 不得抬成阻塞项。
+3. Critical/High（及映射后的 P0/P1）必须含：触发条件、**问题代码**、**修复建议**、**修复代码**、**验证步骤**；P2 也须四段（可更短）；Nit 不得抬成阻塞项。
 4. 问题总览数量必须与正文条目数一致。
 5. **用户可见输出一律中文**（含过渡句）；禁止英文旁白。代码/路径/CVE/CWE/命令可保留原文。
+6. 每条正文统一四段式：问题描述 → 问题代码 → 修复建议 → 修复代码（完整相对路径）。
 
 ## WorkBuddy 输出映射（公司内部中文报告）
 

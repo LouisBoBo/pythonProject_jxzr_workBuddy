@@ -5,15 +5,12 @@
   <div v-else :class="['app-shell', { 'is-embed': embedMode }]">
     <aside v-if="!embedMode" class="sidebar">
       <div class="sidebar-brand">
-        <div class="brand-icon">
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="8" fill="#4f46e5"/>
-            <path d="M7 10h14M7 14h10M7 18h12" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-          </svg>
+        <div class="brand-icon" aria-hidden="true">
+          <img src="/zr-logo.svg" alt="" class="brand-logo" />
         </div>
         <div class="brand-text">
-          <span class="brand-name">MES Agent</span>
-          <span class="brand-tag">PCB 智能运维</span>
+          <span class="brand-name">ZR WorkBuddy</span>
+          <span class="brand-tag">你的工作搭档</span>
         </div>
       </div>
 
@@ -114,7 +111,7 @@
     <main class="main-content">
       <div v-if="embedMode" class="embed-bar">
         <div class="embed-bar-left">
-          <span class="embed-brand">MES Agent</span>
+          <span class="embed-brand">ZR WorkBuddy</span>
           <span v-if="contextLabel" class="embed-ctx">{{ contextLabel }}</span>
         </div>
         <div class="embed-bar-right">
@@ -413,6 +410,27 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+}
+
+.sidebar-brand .brand-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #1B5E3B;
+  border: 1px solid #2E8B57;
+  box-sizing: border-box;
+}
+
+.sidebar-brand .brand-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .brand-text {

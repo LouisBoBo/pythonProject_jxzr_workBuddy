@@ -225,8 +225,11 @@ def main() -> None:
             pass
         _ok("pairing_create_redeem_once")
 
-        # Git/本地目录降级审核
-        from tools.ide_review.git_review import run_git_or_local_review
+        # Git/本地目录审核 + 公开 HTTPS 校验
+        from tools.ide_review.git_review import (
+            run_git_or_local_review,
+            validate_public_https_repo_url,
+        )
 
         grev = run_git_or_local_review(
             local_path=str(ROOT),
@@ -238,6 +241,33 @@ def main() -> None:
         if not (grev.get("file_contents") or []):
             _fail("git_review_contents", str(grev)[:400])
         _ok(f"git_local_review findings={len(grev.get('findings') or [])}")
+
+        try:
+            validate_public_https_repo_url("git@github.com:org/repo.git")
+            _fail("git_https_reject_ssh", "应拒绝 SSH")
+        except ValueError as e:
+            if "HTTPS" not in str(e) and "SSH" not in str(e):
+                _fail("git_https_reject_ssh_msg", str(e)[:200])
+        try:
+            validate_public_https_repo_url("ssh://git@host/repo.git")
+            _fail("git_https_reject_ssh_url", "应拒绝 ssh://")
+        except ValueError:
+            pass
+        try:
+            validate_public_https_repo_url("https://user:token@github.com/org/repo.git")
+            _fail("git_https_reject_embed_cred", "应拒绝 URL 内嵌凭证")
+        except ValueError:
+            pass
+        ok_url = validate_public_https_repo_url("https://github.com/org/repo.git")
+        if not ok_url.startswith("https://"):
+            _fail("git_https_accept", ok_url)
+        # 自然语言粘连中文时应被规范化掉
+        cleaned = validate_public_https_repo_url(
+            "https://github.com/LouisBoBo/pythonProject_zhongluo.git仓库代码"
+        )
+        if cleaned != "https://github.com/LouisBoBo/pythonProject_zhongluo.git":
+            _fail("git_https_strip_cjk", cleaned)
+        _ok("git_public_https_url_validation")
 
         # —— 企业级：跨用户结果隔离 ——
         tid = bridge_store.enqueue_task(
@@ -309,6 +339,66 @@ def main() -> None:
         _ok(
             f"list_source_files total={listed.get('total')} batches={listed.get('batch_count')}"
         )
+
+        # —— Git 全仓 list→batch（本机目录，不打公网 clone）——
+        from tools.ide_review.batch_plan import get_batch_paths, save_repo_plan
+        from tools.ide_review.git_review import (
+            ensure_git_workspace,
+            get_git_workspace_root,
+            release_git_workspace,
+        )
+
+        smoke_tid = "smoke-git-batch-local"
+        release_git_workspace(smoke_tid)
+        ws = ensure_git_workspace(smoke_tid, local_path=str(ROOT))
+        if not ws.get("workspace_root") or ws.get("mode") != "local_path":
+            _fail("git_ensure_local_ws", str(ws)[:400])
+        if get_git_workspace_root(smoke_tid) != str(ws["workspace_root"]):
+            _fail("git_ws_cache", get_git_workspace_root(smoke_tid))
+        listed2 = list_workspace_source_files(Path(ws["workspace_root"]), batch_size=5)
+        plan = save_repo_plan(
+            smoke_tid,
+            workspace_root=str(ws["workspace_root"]),
+            files=list(listed2.get("files") or []),
+            batch_size=5,
+        )
+        if plan.get("batch_count", 0) < 1:
+            _fail("git_batch_plan", str(plan)[:400])
+        b0 = get_batch_paths(smoke_tid, 0)
+        if b0.get("status") != "ok" or not (b0.get("paths") or []):
+            _fail("git_batch0", str(b0)[:400])
+        last_i = int(plan["batch_count"]) - 1
+        blast = get_batch_paths(smoke_tid, last_i)
+        if not blast.get("done_after"):
+            _fail("git_batch_done_after", str(blast)[:400])
+        # 末批后工作区应仍可用（不立刻 release）
+        if not get_git_workspace_root(smoke_tid):
+            _fail("git_ws_kept_after_last_batch", "workspace gone")
+        release_git_workspace(smoke_tid)
+        if get_git_workspace_root(smoke_tid):
+            _fail("git_ws_release", "should be empty")
+        _ok(
+            f"git_list_batch_local total={plan.get('total')} batches={plan.get('batch_count')}"
+        )
+
+        # —— 工具失败判定：status=error 且无 error 字段 ——
+        from agent_wrapper import _is_tool_failure, _result_detail  # noqa: E402
+
+        err_payload = {
+            "status": "error",
+            "provider": "git_review",
+            "message": "克隆公开仓库超时（>300s）",
+            "total": 0,
+            "batch_count": 0,
+        }
+        if not _is_tool_failure(err_payload):
+            _fail("tool_failure_status_error", "应判失败")
+        if _is_tool_failure({"status": "ok", "total": 3, "batch_count": 1}):
+            _fail("tool_failure_status_ok", "不应判失败")
+        sum_err, _ = _result_detail("request_git_list_source_files", err_payload)
+        if not str(sum_err).startswith("失败："):
+            _fail("result_detail_error_msg", sum_err)
+        _ok("tool_failure_status_message")
     finally:
         stop.set()
         t.join(timeout=2)

@@ -5,6 +5,8 @@
 """
 from tools.ide_review.review import DEFAULT_REVIEW_PATHS, run_ide_review
 from tools.ide_review.tool import (
+    request_git_list_source_files,
+    request_git_read_batch,
     request_git_review,
     request_ide_list_source_files,
     request_ide_read_batch,
@@ -20,4 +22,6 @@ __all__ = [
     "request_ide_read_batch",
     "request_ide_read_files",
     "request_git_review",
+    "request_git_list_source_files",
+    "request_git_read_batch",
 ]

@@ -18,9 +18,9 @@ from tools.ide_review.enrich import enrich_bridge_result
 
 _IDE_PATH_HINT = (
     "禁止对用户本机绝对路径调用服务端 read_file/grep。"
-    "全仓审核：request_ide_list_source_files → 按 batches 每批 5 个 "
-    "request_ide_read_files → 批纪要 → 终稿。"
-    "Bridge 离线时用 request_git_review(local_path=… 或 repo_url=…)。"
+    "本机全仓：request_ide_list_source_files → request_ide_read_batch。"
+    "公开 Git 全仓：request_git_list_source_files → request_git_read_batch。"
+    "仅抽样/离线本机目录：request_git_review(local_path=… 或 repo_url=…)。"
 )
 
 # 每批固定 5 个文件（产品约定）
@@ -31,6 +31,16 @@ _BATCH_SIZE = 5
 def _page_ide_workspace_root() -> str:
     ctx = get_page_context() or {}
     return str(ctx.get("ide_workspace_root") or "").strip()
+
+
+def _page_git_repo_url() -> str:
+    ctx = get_page_context() or {}
+    return str(ctx.get("git_repo_url") or "").strip()
+
+
+def _page_git_ref() -> str:
+    ctx = get_page_context() or {}
+    return str(ctx.get("git_ref") or "").strip()
 
 
 def _trim_file_contents(result: dict[str, Any], *, max_chars: int = 120_000) -> dict[str, Any]:
@@ -224,10 +234,11 @@ def _read_paths(
             result["next_step"] = (
                 f"第 {batch_index + 1}/{batch_count} 批（最后一批）已读完。"
                 "合并此前各批纪要，立刻输出完整「🔍 代码审核报告」。"
+                "每条问题必须含：问题描述、问题代码、修复建议、修复代码（完整相对路径）。"
             )
         else:
             result["next_step"] = (
-                f"写「第 {batch_index + 1}/{batch_count} 批审核纪要」（只留 P0/P1/P2，勿贴全文），"
+                f"写「第 {batch_index + 1}/{batch_count} 批审核纪要」（含问题代码摘录，勿贴全文），"
                 f"然后立刻 request_ide_read_batch(batch_index={next_batch_index})。"
             )
     else:
@@ -320,7 +331,8 @@ def request_git_review(
     ] = "",
     repo_url: Annotated[
         str,
-        "Git 仓库 URL（https/ssh）；将浅克隆后审核；与 local_path 二选一",
+        "公开 HTTPS Git 仓库 URL（https://…）；浅克隆后抽样审核；与 local_path 二选一。"
+        "不支持 SSH / 私有仓 Token。全仓请用 request_git_list_source_files",
     ] = "",
     ref: Annotated[str, "可选分支名或 tag"] = "",
     paths: Annotated[
@@ -329,10 +341,11 @@ def request_git_review(
     ] = None,
     prompt: Annotated[str, "审核关注点"] = "",
 ) -> dict[str, Any]:
-    """不依赖 VS Code Bridge：审本机目录或 Git 仓（只读）。
+    """一次性抽样审核（兼容路径）。公开 Git 全仓必须改用分批工具。
 
-    Bridge 在线时仍优先 request_ide_review。离线或审远端分支时用本工具。
-    返回 findings + file_contents，须按固定代码审核报告模板输出。
+    有【Git仓库已确认】/ page_context.git_repo_url 时：
+    优先 request_git_list_source_files → request_git_read_batch（禁止 request_ide_*）。
+    本工具仅用于明确只要抽样、或 Bridge 离线审本机 local_path。
     """
     from tools.ide_review.git_review import run_git_or_local_review
 
@@ -360,7 +373,188 @@ def request_git_review(
         result["findings"] = findings[:40]
         result["findings_truncated"] = True
         result["findings_total"] = len(findings)
+    if result.get("status") == "ok":
+        result["upgrade_hint"] = (
+            "公开 Git 全仓核心代码：请改用 request_git_list_source_files → "
+            "request_git_read_batch(0..N-1) → 合并终稿，勿仅用本工具结案。"
+        )
     return _trim_file_contents(result)
+
+
+def request_git_list_source_files(
+    repo_url: Annotated[
+        str,
+        "公开 HTTPS 仓库地址；默认取 page_context.git_repo_url",
+    ] = "",
+    ref: Annotated[str, "可选分支/tag；默认 page_context.git_ref"] = "",
+    local_path: Annotated[
+        str,
+        "可选：同机本地目录（离线降级）；与 repo_url 二选一",
+    ] = "",
+) -> dict[str, Any]:
+    """克隆/打开公开 Git 仓（按会话缓存），枚举全部功能源码并建立分批计划（每批 5）。
+
+    返回摘要（总数/批次数）；随后 request_git_read_batch(0)..(N-1)，全部完成后再写终稿。
+    禁止对本流程调用 request_ide_*。
+    """
+    from pathlib import Path
+
+    from tools.ide_review.batch_plan import save_repo_plan
+    from tools.ide_review.git_review import ensure_git_workspace
+    from tools.ide_review.local_files import list_workspace_source_files
+
+    tid = get_thread_id()
+    url = (repo_url or "").strip() or _page_git_repo_url()
+    ref_n = (ref or "").strip() or _page_git_ref()
+    local = (local_path or "").strip()
+    try:
+        ws = ensure_git_workspace(
+            tid, local_path=local, repo_url=url, ref=ref_n
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        return {
+            "status": "error",
+            "provider": "git_review",
+            "message": str(e),
+            "total": 0,
+            "batch_count": 0,
+            "path_hint": _IDE_PATH_HINT,
+        }
+
+    root = str(ws.get("workspace_root") or "")
+    listed = list_workspace_source_files(Path(root), batch_size=_BATCH_SIZE)
+    files = list(listed.get("files") or [])
+    meta = save_repo_plan(
+        tid,
+        workspace_root=root,
+        files=files,
+        batch_size=int(listed.get("batch_size") or _BATCH_SIZE),
+    )
+    return {
+        "status": "ok" if meta["total"] else "error",
+        "provider": "git_review",
+        "mode": ws.get("mode"),
+        "repo_url": ws.get("repo_url") or url,
+        "ref": ws.get("ref") or ref_n or "default",
+        "workspace_root": root,
+        "reused_clone": bool(ws.get("reused")),
+        "total": meta["total"],
+        "batch_size": meta["batch_size"],
+        "batch_count": meta["batch_count"],
+        "truncated": bool(listed.get("truncated")),
+        "filter": "functional_source_only",
+        "first_batch_preview": (files[: meta["batch_size"]] if files else []),
+        "raw_summary": (
+            f"公开 Git 仓共 {meta['total']} 个功能源码文件"
+            f"{'（已达枚举上限）' if listed.get('truncated') else ''}，"
+            f"分 {meta['batch_count']} 批（每批 {meta['batch_size']}）。路径已缓存。"
+        ),
+        "path_hint": _IDE_PATH_HINT,
+        "next_step": (
+            "立刻 request_git_read_batch(batch_index=0)；每批静默记下问题后递增；"
+            "禁止中途输出报告；全部批次完成后再输出完整「🔍 代码审核报告」。"
+            if meta["batch_count"]
+            else "未枚举到功能源码，请确认仓库含 .py/.js/.java 等业务代码。"
+        ),
+    }
+
+
+def request_git_read_batch(
+    batch_index: Annotated[int, "批次序号，从 0 开始"] = 0,
+) -> dict[str, Any]:
+    """按 request_git_list_source_files 建立的计划，读取第 batch_index 批（每批最多 5 文件）。
+
+    过程中禁止向用户输出正文；done_after=true 时合并各批写终稿。
+    clone 缓存按会话 TTL 回收（末批不立刻删，便于报告失败后重试/补读）。
+    """
+    from pathlib import Path
+
+    from tools.ide_review.batch_plan import get_batch_paths
+    from tools.ide_review.enrich import augment_findings_from_contents
+    from tools.ide_review.git_review import get_git_workspace_root
+    from tools.ide_review.local_files import read_workspace_files
+
+    tid = get_thread_id()
+    info = get_batch_paths(tid, int(batch_index))
+    if info.get("status") != "ok":
+        msg = str(info.get("message") or "没有分批计划")
+        if "request_ide_list" in msg:
+            msg = "没有分批计划，请先调用 request_git_list_source_files"
+        return {
+            "status": "error",
+            "provider": "git_review",
+            "message": msg,
+            "file_contents": [],
+            "findings": [],
+            "path_hint": _IDE_PATH_HINT,
+        }
+
+    root = str(info.get("workspace_root") or "").strip() or get_git_workspace_root(tid)
+    paths = list(info.get("paths") or [])
+    if not root or not Path(root).is_dir():
+        return {
+            "status": "error",
+            "provider": "git_review",
+            "message": "Git 工作区已失效，请重新 request_git_list_source_files",
+            "file_contents": [],
+            "findings": [],
+            "path_hint": _IDE_PATH_HINT,
+        }
+
+    packed = read_workspace_files(Path(root), paths)
+    # 过程卡与 IDE 图二对齐：workspace_root=克隆根绝对路径；files=仓内完整相对路径
+    rel_files = [str(p).replace("\\", "/").strip() for p in paths if str(p).strip()]
+    # 若 read 归一化后有路径，仍以计划路径为准（保证含目录前缀）
+    if packed.get("files"):
+        # 合并：保持计划顺序，补全已读相对路径
+        got = {
+            str(p).replace("\\", "/").strip()
+            for p in (packed.get("files") or [])
+            if str(p).strip()
+        }
+        rel_files = [p for p in rel_files if p in got] or [
+            str(p).replace("\\", "/").strip()
+            for p in (packed.get("files") or [])
+            if str(p).strip()
+        ]
+    result: dict[str, Any] = {
+        "status": "ok",
+        "provider": "git_review",
+        "findings": [],
+        "file_contents": packed.get("file_contents") or [],
+        "files": rel_files,
+        "errors": packed.get("errors") or [],
+        "batch_index": int(info.get("batch_index") or batch_index),
+        "batch_count": int(info.get("batch_count") or 0),
+        "next_batch_index": info.get("next_batch_index"),
+        "done_after": bool(info.get("done_after")),
+        "total": info.get("total"),
+        "workspace_root": root,
+        "repo_url": _page_git_repo_url() or "",
+        "raw_summary": (
+            f"Git 第 {int(info.get('batch_index') or 0) + 1}/"
+            f"{info.get('batch_count')} 批，"
+            f"{len(rel_files)} 个文件"
+        ),
+        "path_hint": _IDE_PATH_HINT,
+    }
+    result = augment_findings_from_contents(result)
+    bi = int(result["batch_index"])
+    bc = int(result["batch_count"] or 0)
+    if result.get("done_after"):
+        result["next_step"] = (
+            f"第 {bi + 1}/{bc} 批（最后一批）已读完。"
+            "合并此前各批问题，立刻输出完整「🔍 代码审核报告」。"
+            "每条问题必须含：问题描述、问题代码、修复建议、修复代码（完整相对路径）。"
+        )
+        # 不在此释放 clone：报告生成/短确认续审可能仍需工作区；由 TTL 回收
+    else:
+        nxt = result.get("next_batch_index")
+        result["next_step"] = (
+            f"第 {bi + 1}/{bc} 批已读完：静默记下 P0/P1/P2（含问题代码摘录），"
+            f"立刻 request_git_read_batch(batch_index={nxt})；禁止输出终稿。"
+        )
+    return _trim_file_contents(result, max_chars=100_000)
 
 
 def format_review_for_cli(result: dict[str, Any]) -> str:

@@ -3,9 +3,15 @@ name: ide-code-review
 description: >-
   审核本机工程功能源码：list → read_batch → 仅终稿进对话输出区。
   过程旁白禁止输出；配置/uni_modules 等已自动排除。
+  若消息含【Git仓库已确认】/ git_repo_url，改走 git-code-review，禁止本 Skill。
 ---
 
 # 本机 IDE 代码审核
+
+## 何时禁止
+
+- 消息含 `【Git仓库已确认】` 或 `page_context.git_repo_url` → 走 `git-code-review`
+- 用户只是粘贴源码围栏问这段问题 → 走 `paste-code-analyze`
 
 ## 输出纪律（硬）
 
@@ -23,3 +29,22 @@ description: >-
 1. `request_ide_list_source_files`
 2. `request_ide_read_batch(0..N-1)` 连续调用（脑内记 findings，勿贴正文）
 3. 终稿报告（合并各批）
+
+## 每条问题四段式（硬，缺一不可）
+
+```
+#### Px-n: 简短标题
+- **文件**：`完整相对路径`
+- **问题描述**：错在哪 / 为何危险 / 触发条件
+- **问题代码**：
+```语言
+（file_contents 中的原文片段）
+```
+- **修复建议**：怎么改、如何验证
+- **修复代码**：
+```语言
+（可粘贴替换的修复示例）
+```
+```
+
+禁止只列文件名+一句话；禁止无代码块的空话修复。P0/P1/P2 均须四段（P2 可更短但仍须贴代码）。

@@ -3,18 +3,18 @@ name: paste-code-analyze
 description: >-
   用户在对话里粘贴了源码并要找问题/怎么改，或短句确认「来吧」交付改好代码。
   对话式读码，不是工程级代码审核报告；绝不调 IDE Bridge。
-  若消息含【本机工程已确认】或 ide_workspace_root，本 Skill 禁止启用。
+  若消息含【本机工程已确认】/ ide_workspace_root 或【Git仓库已确认】/ git_repo_url，本 Skill 禁止启用。
 ---
 
 # 粘贴代码分析（对话读码）
 
 > **定位**：帮用户看懂这段代码哪里有问题、怎么改；承诺过的完整改写必须兑现。  
-> **不是**：工程级代码审核报告；与「选工程审核」完全无关。
+> **不是**：工程级代码审核报告；与「选工程审核 / Git 仓审核」完全无关。
 
 ## 启用条件（硬）
 
 - 用户粘贴了源码围栏并问这段怎么改 / 有什么问题，**或**短句确认要完整改好版
-- **禁止启用**：【本机工程已确认】、`<ide_review_result>`、`ide_workspace_root`、工程级「审核代码」选仓流程
+- **禁止启用**：【本机工程已确认】、`ide_workspace_root`、【Git仓库已确认】、`git_repo_url`、工程级选仓流程
 
 ## 多轮接续
 
@@ -28,7 +28,7 @@ description: >-
 ## 禁止
 
 - 「🔍 代码审核报告」壳、Approve、P0 总览、验证清单模板
-- 调 `request_ide_review` / `request_ide_read_files` / `request_git_review`
+- 调 `request_ide_*` / `request_git_review` / `request_git_list_source_files` / `request_git_read_batch`
 - 与工程审核流程混用
 
 ## 输出

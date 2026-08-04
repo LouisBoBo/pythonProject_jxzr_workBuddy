@@ -42,6 +42,18 @@ make smoke-embed-identity  # MES/嵌入主路径回归（可在 IDE 开关关闭
 
 演示结束建议将 `IDE_REVIEW_ENABLED=0` 并重启，避免非试点环境误开。
 
+## 附录：公开 Git 仓库审核（独立车道）
+
+与 VS Code Bridge **互斥**：消息含公开 `https://` 仓库地址（或「审 Git 仓库」）时，网页弹出 **Git 仓库确认卡**，即使 Bridge 在线也不走本机工程卡。
+
+1. `.env` 保持 `IDE_REVIEW_ENABLED=1`，重启 API。
+2. 对话示例：`请审核 https://github.com/org/public-repo`
+3. 确认 URL（可选填分支）→ 服务端 shallow clone 并缓存 → **枚举功能源码并分批读取（每批 5）** → 全部完成后输出「🔍 代码审核报告」。
+4. **一期限制**：仅公开 HTTPS；不支持 SSH、URL 内嵌 Token、私有仓。与本机 IDE 全仓审同流程，禁止只抽样几份文件结案。
+5. 贴代码分析、本机 IDE 选工程流程不受影响（前端优先级：贴码围栏 → Git 卡 → IDE 卡）。
+
+相关：Skill `git-code-review`，工具 `request_git_list_source_files` / `request_git_read_batch`（`request_git_review` 仅抽样降级），组件 `GitRepoPickCard.vue`。
+
 ## 验收对应
 
-详见 [`IDE代码审核MCP对接方案.md`](./IDE代码审核MCP对接方案.md) §13。
+详见 [`IDE代码审核MCP对接方案.md`](./IDE代码审核MCP对接方案.md) §13；功能清单 F-CODE-06 / TC-CODE-04。

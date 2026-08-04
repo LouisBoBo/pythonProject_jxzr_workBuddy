@@ -28,6 +28,7 @@ ZR WorkBuddy 的**本质能力**之一：作为 PCB 制造企业里的工作搭�
 | 查当前工单/排产数据 | `query-mes-data` |
 | MES 表结构/业务模块摸底 | `analyze-mes-schema` |
 | 本机工程代码审核（选工程） | `ide-code-review` |
+| 公开 Git 仓库审核（HTTPS） | `git-code-review` |
 | 粘贴代码分析 / 「来吧」改码 | `paste-code-analyze` |
 
 短确认（来吧/好的/继续）若上一轮是写码/读码任务：**禁止**用本 Skill 输出「你好！我是 ZR WorkBuddy…」开场。

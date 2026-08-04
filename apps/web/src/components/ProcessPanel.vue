@@ -71,13 +71,37 @@ watch(
   }
 )
 
-const visibleItems = computed(() =>
-  (props.items || []).filter(
+const visibleItems = computed(() => {
+  const raw = (props.items || []).filter(
     (i) =>
       i.type === 'step' ||
       (i.type === 'status' && (i.phase === 'generating' || i.phase === 'waiting'))
   )
-)
+  // 分批读码步骤按 batch_index 升序（图二：第1批在上、其后递增）；其它项保持相对位置
+  const batchNo = (item) => {
+    if (item?.batch_index != null && item.batch_index !== '') {
+      const n = Number(item.batch_index)
+      return Number.isFinite(n) ? n : null
+    }
+    const args = String(item?.args || '')
+    const mArgs = args.match(/batch_index\s*[:：]\s*(\d+)/i)
+    if (mArgs) return Number(mArgs[1])
+    const title = String(item?.title || '')
+    const mTitle = title.match(/第\s*(\d+)\s*批/)
+    if (mTitle) return Number(mTitle[1]) - 1
+    return null
+  }
+  const indexed = raw.map((item, i) => ({ item, i, b: batchNo(item) }))
+  indexed.sort((a, b) => {
+    const aBatch = a.item?.tool && /read_batch|list_source_files/i.test(String(a.item.tool || ''))
+    const bBatch = b.item?.tool && /read_batch|list_source_files/i.test(String(b.item.tool || ''))
+    if (aBatch && bBatch && a.b != null && b.b != null && a.item.tool === b.item.tool) {
+      if (a.b !== b.b) return a.b - b.b
+    }
+    return a.i - b.i
+  })
+  return indexed.map((x) => x.item)
+})
 
 const hasRunning = computed(() =>
   visibleItems.value.some(
