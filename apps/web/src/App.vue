@@ -95,10 +95,25 @@
             </div>
             <button type="button" class="ide-pair-copy" @click="copyPairCode">复制配对码</button>
           </div>
-        </div>        <router-link to="/files" class="footer-link" active-class="active">
+        </div>
+        <div
+          v-if="cursorDevPanelVisible"
+          class="cursor-dev-panel"
+          :title="cursorDevHint"
+        >
+          <div
+            class="cursor-dev-status"
+            :class="{ ready: cursorDevReady, warn: cursorDevWarn }"
+          >
+            <span class="cursor-dev-dot" />
+            <span>写码车道：{{ cursorDevLabel }}</span>
+          </div>
+        </div>
+        <router-link to="/files" class="footer-link" active-class="active">
           <el-icon :size="16"><FolderOpened /></el-icon>
           <span>文件管理</span>
-        </router-link>        <div class="user-row">
+        </router-link>
+        <div class="user-row">
           <div class="user-meta">
             <span class="user-name">{{ displayName }}</span>
             <span class="user-sub">ERP 已登录</span>
@@ -129,7 +144,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { FolderOpened } from '@element-plus/icons-vue'
-import { getHistoryList, deleteHistory, fetchIdeBridgeStatus, createIdeBridgePairing } from './api.js'
+import { getHistoryList, deleteHistory, fetchIdeBridgeStatus, createIdeBridgePairing, fetchCursorDevStatus } from './api.js'
 import { clearSession, getDisplayName, getUsername } from './auth.js'
 import { isEmbedMode, pageContextLabel, getPageContext, setEmbedMode, clearPageContext } from './embed.js'
 
@@ -153,6 +168,12 @@ const idePairCode = ref('')
 const idePairExpiresIn = ref(0)
 let ideBridgeTimer = null
 let idePairCountdown = null
+
+const cursorDevPanelVisible = ref(false)
+const cursorDevReady = ref(false)
+const cursorDevWarn = ref(false)
+const cursorDevLabel = ref('未开启')
+const cursorDevHint = ref('')
 
 /** 仅未连接时显示配对（已在线/未开工程都不需要再配对） */
 const idePairUiVisible = computed(
@@ -340,7 +361,36 @@ async function copyPairCode() {
 function startIdeBridgePolling() {
   stopIdeBridgePolling()
   refreshIdeBridgeStatus()
+  refreshCursorDevStatus()
   ideBridgeTimer = window.setInterval(refreshIdeBridgeStatus, 5000)
+}
+
+async function refreshCursorDevStatus() {
+  if (isLoginRoute.value) return
+  try {
+    const resp = await fetchCursorDevStatus()
+    const data = resp?.data || {}
+    cursorDevPanelVisible.value = Boolean(data.enabled)
+    if (!data.enabled) {
+      cursorDevReady.value = false
+      cursorDevWarn.value = false
+      cursorDevLabel.value = '未开启'
+      cursorDevHint.value = ''
+      return
+    }
+    const ready = Boolean(data.readiness?.ready ?? data.available)
+    cursorDevReady.value = ready && data.available
+    cursorDevWarn.value = Boolean(data.enabled) && !data.available
+    cursorDevLabel.value = !data.available
+      ? '不可用'
+      : ready
+        ? '就绪'
+        : '待确认'
+    // 详情不在侧栏展示；有问题在对话里提示并引导联系管理员
+    cursorDevHint.value = data.available ? '写码车道可用' : '写码车道暂不可用，请在对话中查看说明并联系管理员'
+  } catch {
+    cursorDevPanelVisible.value = false
+  }
 }
 
 function stopIdeBridgePolling() {
@@ -579,6 +629,50 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.cursor-dev-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.cursor-dev-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: #eef1f5;
+}
+
+.cursor-dev-status.ready {
+  color: #166534;
+  background: #ecfdf5;
+}
+
+.cursor-dev-status.warn {
+  color: #a16207;
+  background: #fffbeb;
+}
+
+.cursor-dev-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+  flex-shrink: 0;
+}
+
+.cursor-dev-status.ready .cursor-dev-dot {
+  background: #22c55e;
+}
+
+.cursor-dev-status.warn .cursor-dev-dot {
+  background: #eab308;
 }
 
 .ide-bridge-status {

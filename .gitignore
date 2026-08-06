@@ -23,8 +23,11 @@ data/schema/*
 data/api_calls/*
 data/api_catalog/*
 data/ide_bridge/*
+data/cursor_dev/*
 data/agent_checkpoints.sqlite
 data/agent_checkpoints.sqlite-*
+data/*.sqlite
+data/*.sqlite-*
 !data/uploads/.gitkeep
 !data/converted/.gitkeep
 !data/exports/.gitkeep
@@ -34,8 +37,11 @@ data/agent_checkpoints.sqlite-*
 !data/api_calls/.gitkeep
 !data/api_catalog/.gitkeep
 !data/ide_bridge/.gitkeep
+!data/cursor_dev/.gitkeep
 data/.locks/
 apps/agent/large_tool_results/
+apps/agent/conversation_history/
+pythonProject_zr_aicoding/
 dist/
 *.vsix
 *.xlsx

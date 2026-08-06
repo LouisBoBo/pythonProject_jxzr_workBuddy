@@ -10,6 +10,7 @@ API 探活沙箱 HTTP 服务（与生产 PLATFORM_BASE_URL 隔离）。
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -291,10 +292,21 @@ SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
         body = self._read_json()
 
         if path == "/api/v1/auth/login":
+            # 签发本地假 JWT（API 只读 payload 不验签），带上 sub，避免历史会话按 user_id 隔离后「消失」
+            uname = str((body or {}).get("username") or "admin").strip() or "admin"
+            # 与常见本地 ERP 一致：admin → user_id=1
+            uid = "1" if uname.lower() == "admin" else str(abs(hash(uname)) % 100000)
+            now = int(time.time())
+
+            def _b64(obj: dict[str, Any]) -> str:
+                raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+                return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+            token = f"{_b64({'alg': 'none', 'typ': 'JWT'})}.{_b64({'sub': uid, 'preferred_username': uname, 'exp': now + 86400 * 30})}."
             return self._send(
                 200,
                 {
-                    "access_token": "sandbox-token",
+                    "access_token": token,
                     "token_type": "bearer",
                     "sandbox": True,
                 },

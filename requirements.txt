@@ -9,3 +9,5 @@ fastapi>=0.115.2
 uvicorn[standard]>=0.31.1
 python-multipart>=0.0.18
 python-dotenv>=1.1.0
+# Cursor 研发写码旁路（Cloud Agent）；缺省时 API 仍可启动，写码车道 available=false
+cursor-sdk>=1.0.24

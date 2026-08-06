@@ -7,6 +7,7 @@ import { isLoggedIn } from './auth.js'
 const routes = [
   { path: '/login', name: 'login', component: LoginView, meta: { title: '登录', public: true } },
   { path: '/', name: 'chat', component: ChatView, meta: { title: '对话' } },
+  { path: '/dev-agent', redirect: '/' },
   { path: '/files', name: 'files', component: FileManager, meta: { title: '文件' } },
   { path: '/history', redirect: '/' },
 ]

@@ -22,6 +22,12 @@ from routes.writes import router as writes_router
 from routes.ide_bridge import router as ide_bridge_router
 from routes_config import DATA_DIR, SERVER_PORT
 
+try:
+    from routes.cursor_dev import router as cursor_dev_router
+except Exception as _cursor_dev_import_err:  # noqa: BLE001 — 写码旁路失败不得拖垮登录/MES
+    cursor_dev_router = None
+    print(f"[warn] cursor_dev router disabled: {_cursor_dev_import_err}")
+
 # 确保数据目录存在
 for sub in (
     "history",
@@ -32,6 +38,7 @@ for sub in (
     "writes/pending",
     "api_calls",
     "ide_bridge",
+    "cursor_dev",
     ".locks",
 ):
     os.makedirs(DATA_DIR / sub, exist_ok=True)
@@ -58,6 +65,8 @@ app.include_router(history_router)
 app.include_router(convert_router)
 app.include_router(writes_router)
 app.include_router(ide_bridge_router)
+if cursor_dev_router is not None:
+    app.include_router(cursor_dev_router)
 
 app.mount("/exports", StaticFiles(directory=str(DATA_DIR / "exports")), name="exports")
 
@@ -181,5 +190,6 @@ if __name__ == "__main__":
         reload_dirs=[
             str(Path(__file__).resolve().parent),
             str(Path(__file__).resolve().parents[1] / "agent"),
+            str(Path(__file__).resolve().parents[1] / "cursor_dev"),
         ],
     )
