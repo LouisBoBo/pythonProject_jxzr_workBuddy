@@ -94,9 +94,18 @@
     <template v-else-if="card.status === 'confirmed'">
       <div class="cd-head">
         <div class="cd-title-row">
-          <span class="cd-badge">写码确认</span>
+          <!-- 完成态只由下方「合入指引」卡表达；确认卡闲置态勿再标「写码完成」 -->
+          <span class="cd-badge">{{ isIdle ? '已确认' : '写码确认' }}</span>
+          <span v-if="!isIdle" class="cd-hint">写码进行中</span>
         </div>
-        <p class="cd-summary">已确认，正在按需求写码</p>
+        <p class="cd-summary">
+          {{
+            isIdle
+              ? `本轮已按上表写入工作分支${confirmedRef ? ` ${confirmedRef}` : ''}；合入请看下方「合入指引」`
+              : '已确认，正在按需求写码'
+          }}
+        </p>
+        <p v-if="isIdle" class="cd-desc">同窗可继续补充需求续聊改码。</p>
       </div>
       <div class="cd-chosen">
         <div class="cd-chosen-row">
@@ -104,10 +113,10 @@
           <span class="cd-v mono">{{ confirmedRepo }}</span>
         </div>
         <div v-if="confirmedRef" class="cd-chosen-row">
-          <span class="cd-k">起始分支</span>
+          <span class="cd-k">工作分支</span>
           <span class="cd-v mono">{{ confirmedRef }}</span>
         </div>
-        <div v-if="confirmedRequirement" class="cd-chosen-row cd-chosen-req">
+        <div v-if="confirmedRequirement && !isIdle" class="cd-chosen-row cd-chosen-req">
           <span class="cd-k">需求</span>
           <span class="cd-v">{{ confirmedRequirement }}</span>
         </div>
@@ -145,6 +154,7 @@ const createPr = ref(false)
 const localError = ref('')
 
 const isPending = computed(() => !props.card?.status || props.card.status === 'pending')
+const isIdle = computed(() => props.card?.phase === 'idle_for_followup')
 
 const suggestions = computed(() =>
   Array.isArray(props.card?.repos) ? props.card.repos.filter(Boolean) : []
@@ -152,6 +162,7 @@ const suggestions = computed(() =>
 
 const statusClass = computed(() => {
   const s = props.card?.status || 'pending'
+  if (s === 'confirmed' && isIdle.value) return 'is-confirmed is-idle'
   if (s === 'confirmed') return 'is-confirmed'
   if (s === 'cancelled') return 'is-cancelled'
   if (s === 'failed') return 'is-failed'
@@ -297,12 +308,32 @@ function onRetry() {
   background: linear-gradient(180deg, rgba(244, 248, 252, 0.95) 0%, #fff 48%);
   color: var(--ui-text, #1a1f26);
   box-shadow: 0 1px 0 rgba(47, 84, 140, 0.06);
+  /* 钉死字号，避免继承聊天气泡 16px 导致「需求」比仓库/分支大一号 */
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .cursor-dev-pick.is-confirmed {
   border-color: #c5ddce;
   background: linear-gradient(180deg, #f4faf6 0%, #fff 50%);
   box-shadow: none;
+}
+
+/* 闲置回执：弱化成「已确认」记录，避免与合入指引的「写码完成」抢视觉 */
+.cursor-dev-pick.is-idle {
+  border-color: #d8dee6;
+  background: #f8f9fb;
+  box-shadow: none;
+}
+
+.cursor-dev-pick.is-idle .cd-badge {
+  color: #5a6a7a;
+}
+
+.cursor-dev-pick.is-idle .cd-summary {
+  font-size: 13px;
+  font-weight: 500;
+  color: #3a4250;
 }
 
 .cursor-dev-pick.is-cancelled {
@@ -363,6 +394,11 @@ function onRetry() {
   padding: 2px 8px;
   border-radius: 999px;
   white-space: nowrap;
+}
+
+.cd-hint.warn {
+  color: #9a3412;
+  background: #fff7ed;
 }
 
 .cd-summary {
@@ -509,22 +545,37 @@ function onRetry() {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   gap: 10px;
+  align-items: start;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.85);
   border: 1px solid #d7e8dc;
   border-radius: 8px;
 }
 
+.cd-chosen-row + .cd-chosen-row {
+  margin-top: 8px;
+}
+
 .cd-k {
   font-size: 12px;
+  line-height: 1.5;
   color: #6b7c6f;
+  padding-top: 1px;
+}
+
+.cd-v {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: #3a4250;
+  word-break: break-word;
 }
 
 .cd-v.mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  font-weight: 500;
-  color: #3a4250;
   word-break: break-all;
 }
-</style>
+
+.cd-chosen-req .cd-v {
+  white-space: pre-wrap;
+}</style>

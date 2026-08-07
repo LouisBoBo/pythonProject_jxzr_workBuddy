@@ -2,6 +2,7 @@
 name: cursor-dev-chat
 description: >-
   用户要在 Git 仓库里开发/实现/改写软件功能（非 PCB、非工程审核）。
+  与「代码审核」是对等的另一条核心路由：按用户写/改意图进入，禁止调用审核工具。
   澄清需求必须用 :::cursor_dev_options 选项确认卡（勾选即可），禁止用表格/A~D/开放题逼用户打字。
   新开对话由前端先选仓；已有仓注入读仓信息。需求清晰后输出 cursor_dev_propose。
   禁止调用 IDE/Git 审核工具；禁止声称已改好仓库；禁止建议本机 echo/clone 代替 Cursor Cloud。
@@ -10,6 +11,7 @@ description: >-
 # 写码需求讨论（Cursor 写码前）
 
 > **定位**：少打字收集需求 → 确认仓与摘要 → 前端触发 Cursor Cloud。  
+> **路由**：`workbuddy_lane=code_dev`，与 `code_review`（审核）对等互斥、无优先级。  
 > **交互铁律**：能勾选就不输入。凡技术栈、范围、是否含登录、首页档位等离散决策，**必须**用选项确认卡，禁止让用户打字回「Spring + B + 含登录」。  
 > **路径钉死**：改远程仓库 = 必须 `:::cursor_dev_propose`。
 
@@ -23,7 +25,9 @@ description: >-
 - 用 Markdown 表格、A/B/C/D 列表、或「请回复技术栈+范围」让用户**打字**作答
 - 正文超过 **2 句**还在问开放题（该出选项卡就出）
 - 同一轮同时输出 `:::cursor_dev_options` 与 `:::cursor_dev_propose`
-- `request_ide_*` / `request_git_*`；声称已提交/已开 PR；建议本机 echo/clone 代替 Cloud
+- **`request_ide_*` / `request_git_*`（含 list_source_files / read_batch / review）**；
+  提到仓库名/分支/**不等于**代码审核；**禁止** clone、**禁止**「筛选功能源码」、**禁止**「代码审核报告」
+- 声称已提交/已开 PR；建议本机 echo/clone 代替 Cursor Cloud
 - 需求仍模糊时输出 propose
 - 已有非空工程读仓信息时：再问技术栈/仓库（除非用户要换）
 
@@ -75,4 +79,5 @@ description: >-
 - [ ] 有未决离散点时已输出 `:::cursor_dev_options`  
 - [ ] 正文极短，不以长文代替选项卡  
 - [ ] 未同时输出 options + propose  
-- [ ] 未建议本机 echo/clone 代替 Cloud  
+- [ ] 未建议本机 echo/clone 代替 Cloud
+- [ ] **未**调用任何 Git/IDE 审核工具（过程区不应出现「筛选功能源码」）

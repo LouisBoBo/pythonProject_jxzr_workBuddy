@@ -1,4 +1,4 @@
-.PHONY: install install-web dev stop api web agent-cli health smoke-api-health smoke-entity-phrases smoke-embed-identity smoke-ha smoke-ide-review-m0 smoke-ide-bridge-m1 smoke-checkpoint-context smoke-api-contracts package-vscode-bridge
+.PHONY: install install-web dev stop api web agent-cli health smoke-api-health smoke-entity-phrases smoke-embed-identity smoke-ha smoke-ide-review-m0 smoke-ide-bridge-m1 smoke-checkpoint-context smoke-api-contracts package-vscode-bridge check-cursor-dev smoke-cursor-dev
 
 install:
 	python3 -m pip install -r requirements.txt
@@ -60,3 +60,11 @@ smoke-api-contracts:
 # 打包 VS Code Bridge 为 dist/*.vsix
 package-vscode-bridge:
 	bash scripts/package_vscode_bridge.sh
+
+# Cursor 写码车道：管理员就绪闸门（读 .env，可无 LLM）
+check-cursor-dev:
+	python3 scripts/check_cursor_dev_ready.py
+
+# Cursor 写码旁路单元/流程冒烟（D5：摘要去重、merge_guide 等）
+smoke-cursor-dev:
+	python3 scripts/smoke_cursor_dev_d5.py

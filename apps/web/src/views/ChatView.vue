@@ -61,7 +61,11 @@
             :card="msg.cursorDevPick"
             @resolved="(payload) => onCursorDevPickResolved(msg, payload)"
           />
-          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length || msg.idePick || msg.gitPick || msg.cursorDevPick || msg.cursorDevOptions || msg.cursorDevAnchor">
+          <CursorDevMergeGuideCard
+            v-if="msg.mergeGuide"
+            :guide="msg.mergeGuide"
+          />
+          <div class="msg-actions" v-if="msg.content || (msg.confirms || []).length || msg.idePick || msg.gitPick || msg.cursorDevPick || msg.cursorDevOptions || msg.cursorDevAnchor || msg.mergeGuide">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -236,6 +240,7 @@ import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 import IdeWorkspacePickCard from '../components/IdeWorkspacePickCard.vue'
 import GitRepoPickCard from '../components/GitRepoPickCard.vue'
 import CursorDevRepoPickCard from '../components/CursorDevRepoPickCard.vue'
+import CursorDevMergeGuideCard from '../components/CursorDevMergeGuideCard.vue'
 import CursorDevRepoAnchorCard from '../components/CursorDevRepoAnchorCard.vue'
 import CursorDevOptionsCard from '../components/CursorDevOptionsCard.vue'
 import AiAvatarIcon from '../components/AiAvatarIcon.vue'
@@ -493,6 +498,7 @@ function pushAssistantMessage({
   cursorDevPick = null,
   cursorDevOptions = null,
   cursorDevAnchor = null,
+  mergeGuide = null,
 }) {
   messages.value.push({
     role: 'assistant',
@@ -503,6 +509,7 @@ function pushAssistantMessage({
     ...(cursorDevPick ? { cursorDevPick } : {}),
     ...(cursorDevOptions ? { cursorDevOptions } : {}),
     ...(cursorDevAnchor ? { cursorDevAnchor } : {}),
+    ...(mergeGuide ? { mergeGuide } : {}),
     meta: {
       time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
       durationText,
@@ -723,6 +730,8 @@ function persistableMessages() {
     ...(m.gitPick ? { gitPick: m.gitPick } : {}),
     ...(m.cursorDevPick ? { cursorDevPick: m.cursorDevPick } : {}),
     ...(m.cursorDevOptions ? { cursorDevOptions: m.cursorDevOptions } : {}),
+    ...(m.cursorDevAnchor ? { cursorDevAnchor: m.cursorDevAnchor } : {}),
+    ...(m.mergeGuide ? { mergeGuide: m.mergeGuide } : {}),
   }))
 }
 
@@ -796,6 +805,8 @@ async function loadSession(id) {
         ...(m.gitPick ? { gitPick: { ...m.gitPick } } : {}),
         ...(m.cursorDevPick ? { cursorDevPick: { ...m.cursorDevPick } } : {}),
         ...(m.cursorDevOptions ? { cursorDevOptions: { ...m.cursorDevOptions } } : {}),
+        ...(m.cursorDevAnchor ? { cursorDevAnchor: { ...m.cursorDevAnchor } } : {}),
+        ...(m.mergeGuide ? { mergeGuide: { ...m.mergeGuide } } : {}),
         processCollapsed: true,
       }
     })
@@ -927,6 +938,7 @@ watch(
 function looksLikeCodeReview(text) {
   const t = String(text || '').trim()
   if (!t) return false
+  // 审核意图：明确「审/检查代码」；与写码（改界面/加功能）互斥
   return /审核代码|代码审核|代码审查|审查代码|检查代码|code\s*review|review\s+(this\s+)?code|帮我审(一下|下)?(代码|工程|项目)/i.test(
     t
   )
@@ -952,26 +964,56 @@ function extractGitRepoUrl(text) {
   return url
 }
 
+/** 写码动词：改/写/加功能界面等（不含审核）。允许中间夹仓库 URL。 */
+function hasCodeDevActionWords(text) {
+  const t = String(text || '')
+  // 勿用 \\b：中文后接空格在 JS 里不是 word boundary，会导致「改 https…登录页」漏判
+  const action =
+    /(写代码|改代码|开发功能|帮我写|生成代码|开\s*PR|pull\s*request|写|改|开发|实现|新增|增加|添加|加入|加一个|加个|做一?个|做成|改成|改为|加上)/i.test(
+      t,
+    )
+  const target =
+    /(代码|功能|界面|页面|首页|主页|登录|模块|接口|下拉|输入|选择框|按钮|表单|字段)/i.test(t)
+  if (action && target) return true
+  return /(登录页|页面|界面|表单).{0,24}(增加|加入|添加|加一个|加个|改成|改为|加上|改)/i.test(t)
+}
+
+/**
+ * 公开 Git 仓库审核意图。
+ * 与写码对等互斥：有写/改/加功能意图则绝不走审核；仅 URL ≠ 审核。
+ */
 function looksLikeGitRepoReview(text) {
   const t = String(text || '').trim()
   if (!t) return false
-  if (extractGitRepoUrl(t)) return true
-  return /(?:审|审核|审查|检查).{0,16}(?:git|Git|远程)?\s*仓库|(?:git|Git)\s*仓库.{0,12}(?:审|审核|审查)|review\s+(?:this\s+)?(?:git\s+)?repo|审核\s*https:\/\//i.test(
-    t
-  )
+  if (hasCodeDevActionWords(t)) return false
+  if (looksLikeCodeReview(t) && extractGitRepoUrl(t)) return true
+  const reviewRepo =
+    /(?:审|审核|审查|检查).{0,16}(?:git|Git|远程)?\s*仓库|(?:git|Git)\s*仓库.{0,12}(?:审|审核|审查)|review\s+(?:this\s+)?(?:git\s+)?repo|审核\s*https:\/\//i.test(
+      t,
+    )
+  if (reviewRepo) return true
+  // 仅贴公开 HTTPS 仓、无写码动词 → 约定走 Git 审核选仓
+  const url = extractGitRepoUrl(t)
+  if (url && t.replace(url, '').replace(/[\s，。,.!！？?；;：:、]+/g, '').length < 8) {
+    return true
+  }
+  return false
 }
 
-/** 写码/开发功能意图（新窗先选仓，再讨论需求） */
+/** 写码/开发功能意图（新窗先选仓，再讨论需求）——与审核对等互斥 */
 function looksLikeCodeDevIntent(text) {
   const t = String(text || '').trim()
   if (!t) return false
+  // 审核意图明确时不进写码（两条路由互不抢）
   if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) return false
   if (
-    /工单|生产计划|导入|导出|查询|报表|审核代码|代码审核/.test(t) &&
+    /工单|生产计划|导入|导出|查询|报表/.test(t) &&
+    !hasCodeDevActionWords(t) &&
     !/(写|改|开发|实现|新增).{0,8}(代码|功能|界面|页面|首页|主页|接口|模块)/.test(t)
   ) {
     return false
   }
+  if (hasCodeDevActionWords(t)) return true
   return /写代码|改代码|开发功能|开发一个|帮我写|实现(一个|功能)|生成代码|写个|写一个|开\s*PR|pull\s*request|代码实现|写登录|写界面|写页面|新增功能|我要开发|新增.{0,10}(首页|主页|页面|界面|模块|接口|功能)|做(一个|个)?.{0,8}(首页|主页|页面|界面)|加(一个|个)?.{0,8}(首页|主页|页面)|登录.{0,16}(首页|主页)|跳(转|入).{0,10}(首页|主页)|(系统|平台|ERP|MES).{0,8}新增|前端.{0,6}(首页|主页|页面)|后端.{0,6}(接口|API)/i.test(
     t,
   )
@@ -1018,6 +1060,22 @@ function isFirstCodingIntentInThread(content) {
     if (m?.role === 'user' && looksLikeCodeDevIntent(m.content)) return false
   }
   return true
+}
+
+/** 写码讨论流：显式声明 code_dev 车道（与 code_review 对等互斥，无优先级） */
+function codingDiscussStreamOpts(extra = null) {
+  const hit = findConfirmedCursorDevAnchor()
+  const fromExtra = extra && typeof extra === 'object' ? { ...extra } : {}
+  delete fromExtra.workbuddyLane
+  delete fromExtra.cursorDevLane
+  const repo = String(fromExtra.cursorDevRepo || hit?.anchor?.repo || '').trim()
+  return {
+    ...fromExtra,
+    force: true,
+    workbuddyLane: 'code_dev',
+    cursorDevLane: true,
+    ...(repo ? { cursorDevRepo: repo } : {}),
+  }
 }
 
 function findConfirmedCursorDevAnchor() {
@@ -1115,7 +1173,9 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
   }
   return (
     `【写码需求讨论 · 远程 Cursor Cloud】用户要改的是 GitHub 远程仓库代码，不是本机沙箱。` +
-    `禁止：建议 echo/vim/本机 clone；禁止 IDE/Git 审核工具；禁止未确认就声称已开 PR。` +
+    `禁止：建议 echo/vim/本机 clone；禁止任何 IDE/Git 审核工具（request_git_* / request_ide_*，含筛选功能源码）；` +
+    `禁止输出代码审核报告；禁止未确认就声称已开 PR。` +
+    `仓库名/分支只表示要改哪个仓，绝不等于要审核。` +
     `最终改仓必须 :::cursor_dev_propose。` +
     ctxPart +
     optionsHardRule +
@@ -1142,6 +1202,29 @@ function hideCursorDevMachineBlocks(text) {
 
 function hideCursorDevPropose(text) {
   return hideCursorDevMachineBlocks(text)
+}
+
+/** 有合入指引卡时，去掉正文里与卡片同义的 push/合入说明 */
+function stripCursorDevMergeBoilerplate(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  const dropRe =
+    /代码已\s*push|已\s*push\s*至|如需合入\s*main|请本地自行合并|没有自动合入|尚未合入\s*main|请在\s*GitHub\s*自行|本轮写码已完成[，,].*工作分支|可继续补充需求做续聊改码/i
+  const paras = raw.split(/\n{2,}/)
+  const kept = []
+  for (const p of paras) {
+    let s = String(p || '').trim()
+    if (!s) continue
+    const lines = s.split('\n').map((ln) => ln.replace(/\s+$/, ''))
+    while (lines.length && dropRe.test(lines[lines.length - 1]) && lines[lines.length - 1].length < 200) {
+      lines.pop()
+    }
+    s = lines.join('\n').trim()
+    if (!s) continue
+    if (dropRe.test(s) && s.length < 220 && !/改动说明|验收/.test(s)) continue
+    kept.push(s)
+  }
+  return kept.join('\n\n').trim() || raw
 }
 
 function sessionStackLocked() {
@@ -1413,6 +1496,7 @@ async function beginIdeReviewStream(msg, { selected, content, files }) {
   const agentMessage = buildIdeReviewAgentMessage(content, selected)
   const started = await startAssistantStream(agentMessage, files, selected || null, null, {
     force: true,
+    workbuddyLane: 'code_review',
   })
   if (!started) {
     streaming.value = false
@@ -1552,6 +1636,7 @@ async function beginGitReviewStream(msg, { repoUrl, ref, content, files }) {
   const agentMessage = buildGitReviewAgentMessage(content, repoUrl, ref)
   const started = await startAssistantStream(agentMessage, files, null, null, {
     force: true,
+    workbuddyLane: 'code_review',
     gitRepoUrl: repoUrl || '',
     gitRef: ref || '',
   })
@@ -1773,6 +1858,7 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
   let flushStepsNow = false
   let streamGotError = false
   let prUrl = ''
+  let mergeGuide = null
   const STEP_GAP_MS = 150
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -1816,18 +1902,26 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
       (i) => i.type === 'step' && i.id !== 'boot',
     )
     let body = finalContent
-    if (prUrl && body && !body.includes(prUrl)) {
+    // 有合入指引卡时，正文去掉与卡片同义的 push/合入尾巴，只保留改动摘要
+    if (mergeGuide) {
+      body = stripCursorDevMergeBoilerplate(body)
+      if (mergeGuide.summary && body && body.includes(mergeGuide.summary)) {
+        body = body.split(mergeGuide.summary).join('').replace(/\n{3,}/g, '\n\n').trim()
+      }
+    }
+    if (prUrl && createPr && body && !body.includes(prUrl)) {
       body = `${body}\n\nPR：${prUrl}`
-    } else if (prUrl && !body) {
+    } else if (prUrl && createPr && !body) {
       body = `PR：${prUrl}`
     }
-    if (body || processItems.length) {
+    if (body || processItems.length || mergeGuide) {
       pushAssistantMessage({
         content: body || '',
         processItems,
         confirms: [],
         durationText,
         stopped,
+        mergeGuide: mergeGuide || null,
       })
     } else if (!streamGotError) {
       pushAssistantMessage({
@@ -1877,22 +1971,92 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
             const sec = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
             streamDurationText.value = `${sec}s`
           }
-          streamContent.value += text
+          const prev = streamContent.value || ''
+          const incoming = String(text)
+          // 终稿报告覆盖过程旁白，禁止拼成「正在推送到 `## 已完成」
+          const looksFinal = /^\s*##\s*已完成|已完成本轮需求/m.test(incoming)
+          const prevIsChatter =
+            /^(正在|先|开始|接着|接下来)/m.test(prev.trim()) ||
+            (prev.length < 160 && !/##\s*已完成/.test(prev))
+          if (looksFinal && prevIsChatter) {
+            streamContent.value = incoming
+          } else if (prev && incoming.startsWith(prev)) {
+            streamContent.value = incoming
+          } else if (prev && (incoming === prev || (prev.includes(incoming) && incoming.length > 80))) {
+            /* skip replay / subset */
+          } else if (looksFinal && /##\s*已完成/.test(prev) && incoming.length >= prev.length * 0.85) {
+            streamContent.value = incoming
+          } else {
+            streamContent.value += incoming
+          }
+          scrollToBottom()
+        } else if (type === 'replace_text' && event.text != null) {
+          streamContent.value = String(event.text)
+          streamAnswerPending.value = true
           scrollToBottom()
         } else if (type === 'pr' && event.url) {
-          prUrl = String(event.url)
-          streamContent.value += (streamContent.value ? '\n\n' : '') + `PR：${prUrl}`
+          // 未勾选开 PR 时忽略成功态 PR 事件（后端也会尝试关闭误开 PR）
+          if (!createPr) {
+            scrollToBottom()
+          } else {
+            prUrl = String(event.url)
+            const line = `PR：${prUrl}`
+            if (!streamContent.value.includes(line)) {
+              streamContent.value += (streamContent.value ? '\n\n' : '') + line
+            }
+            scrollToBottom()
+          }
+        } else if (type === 'merge_guide') {
+          mergeGuide = {
+            title: event.title || '',
+            summary: event.summary || '',
+            repo: event.repo || repo || '',
+            work_branch: event.work_branch || ref || '',
+            base_branch: event.base_branch || 'main',
+            create_pr: Boolean(event.create_pr),
+            pr_url: event.pr_url || null,
+            branch_url: event.branch_url || '',
+            compare_url: event.compare_url || '',
+            new_pr_url: event.new_pr_url || '',
+            merged_to_main: false,
+          }
+          if (msg?.cursorDevPick) {
+            msg.cursorDevPick = {
+              ...msg.cursorDevPick,
+              mergeGuide,
+              phase: 'idle_for_followup',
+              ref: mergeGuide.work_branch || msg.cursorDevPick.ref,
+            }
+          }
           scrollToBottom()
         } else if (type === 'review_hint' && event.text) {
-          streamContent.value += (streamContent.value ? '\n\n' : '') + String(event.text)
+          // 有合入指引卡时不再把同义提示塞进正文，避免重复
+          if (!mergeGuide) {
+            const hint = String(event.text)
+            if (!streamContent.value.includes(hint)) {
+              streamContent.value += (streamContent.value ? '\n\n' : '') + hint
+            }
+          }
           scrollToBottom()
         } else if (type === 'done') {
-          if (event.pr_url) prUrl = String(event.pr_url)
-          if (event.text && !streamContent.value) {
-            streamContent.value = String(event.text)
+          if (event.pr_url && createPr) prUrl = String(event.pr_url)
+          if (event.merge_guide && typeof event.merge_guide === 'object') {
+            mergeGuide = { ...event.merge_guide, merged_to_main: false }
           }
-          if (event.review_hint && streamContent.value && !streamContent.value.includes(event.review_hint)) {
-            streamContent.value += `\n\n${event.review_hint}`
+          // 终稿为准，消除流式双份（review_hint 已由专用事件追加则不再重复）
+          if (event.text) {
+            let canonical = String(event.text).trim()
+            // 前端兜底：多份「## 已完成」只留最后一份完整稿
+            const parts = canonical.split(/(?=##\s*已完成)/).filter((p) => /##\s*已完成/.test(p))
+            if (parts.length > 1) {
+              canonical = parts.reduce((a, b) => (b.length >= a.length ? b : a)).trim()
+            }
+            const hint = !mergeGuide && event.review_hint ? String(event.review_hint) : ''
+            if (hint && !canonical.includes(hint)) {
+              streamContent.value = `${canonical}\n\n${hint}`
+            } else {
+              streamContent.value = canonical
+            }
           }
           if (msg?.cursorDevPick) {
             msg.cursorDevPick = {
@@ -1900,6 +2064,7 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
               phase: 'idle_for_followup',
               status: 'confirmed',
               jobId,
+              ...(mergeGuide ? { mergeGuide } : {}),
             }
           }
         } else if (type === 'error') {
@@ -2014,7 +2179,7 @@ async function onCursorDevOptionsResolved(msg, payload) {
     [],
     null,
     null,
-    { force: true },
+    codingDiscussStreamOpts(),
   )
 }
 
@@ -2117,7 +2282,7 @@ async function onCursorDevAnchorResolved(msg, payload) {
     [],
     null,
     null,
-    { force: true },
+    codingDiscussStreamOpts({ cursorDevRepo: repo }),
   )
 }
 
@@ -2288,7 +2453,8 @@ async function send(text) {
     return
   }
 
-  // 贴码优先：有源码围栏则直连 Agent，不弹 Git/IDE 选卡
+  // ── 意图分叉（对等互斥，无优先级）：本条用户话决定走审核还是写码 ──
+  // 贴码：有源码围栏则直连 Agent，不弹 Git/IDE/写码选卡
   if (!hasPastedSourceFence(content) && looksLikeGitRepoReview(content)) {
     const repoUrl = extractGitRepoUrl(content)
     messages.value.push({
@@ -2360,7 +2526,7 @@ async function send(text) {
     return
   }
 
-  // 写码讨论：新窗先选仓；旧窗直接续聊
+  // 写码讨论：新窗先选仓；旧窗直接续聊（与上方审核分支对等，互不抢）
   if (!hasPastedSourceFence(content) && shouldUseCodingDiscuss(content)) {
     const gate = await ensureCursorDevAvailableForUser()
     if (!gate.ok) {
@@ -2402,7 +2568,7 @@ async function send(text) {
       filesSnapshot,
       null,
       null,
-      null,
+      codingDiscussStreamOpts(),
     )
     return
   }
@@ -2450,8 +2616,14 @@ async function startAssistantStream(
   // 本地先挂一条「分析中」，后续真实步骤会替换掉
   const gitRepoUrl = String((opts && opts.gitRepoUrl) || '').trim()
   const gitRef = String((opts && opts.gitRef) || '').trim()
+  const workbuddyLane = String((opts && opts.workbuddyLane) || '').trim()
+  const cursorDevLane =
+    Boolean(opts && opts.cursorDevLane) || workbuddyLane === 'code_dev'
   const cursorDevRepo = String((opts && opts.cursorDevRepo) || '').trim()
   const cursorDevJobId = String((opts && opts.cursorDevJobId) || '').trim()
+  const isCodeReviewLane =
+    workbuddyLane === 'code_review' || Boolean(ideWorkspaceRoot) || Boolean(gitRepoUrl)
+  const isCodeDevLane = workbuddyLane === 'code_dev' || cursorDevLane || Boolean(cursorDevRepo)
 
   streamProcess.value = [{
     id: 'boot',
@@ -2459,12 +2631,12 @@ async function startAssistantStream(
     state: 'running',
     title: resumeCtx
       ? '继续生成…'
-      : ideWorkspaceRoot
+      : isCodeReviewLane && ideWorkspaceRoot
         ? '正在审核本机工程…'
-        : gitRepoUrl
+        : isCodeReviewLane && gitRepoUrl
           ? '正在审核公开 Git 仓库…'
-          : cursorDevRepo
-            ? `写码会话：${cursorDevRepo}`
+          : isCodeDevLane
+            ? (cursorDevRepo ? `写码讨论：${cursorDevRepo}` : '写码需求讨论…')
             : '分析问题…',
   }]
   streamProcessCollapsed.value = false
@@ -2558,13 +2730,34 @@ async function startAssistantStream(
   try {
     const filePaths = files.map(f => f.path).filter(Boolean)
     let extraPageContext = null
-    if (ideWorkspaceRoot) {
-      extraPageContext = { ide_workspace_root: ideWorkspaceRoot }
-    } else if (gitRepoUrl) {
-      extraPageContext = { git_repo_url: gitRepoUrl }
+    if (isCodeReviewLane && ideWorkspaceRoot) {
+      extraPageContext = {
+        workbuddy_lane: 'code_review',
+        ide_workspace_root: ideWorkspaceRoot,
+        cursor_dev_lane: false,
+        cursor_dev_repo: '',
+        git_repo_url: '',
+        git_ref: '',
+      }
+    } else if (isCodeReviewLane && gitRepoUrl) {
+      extraPageContext = {
+        workbuddy_lane: 'code_review',
+        git_repo_url: gitRepoUrl,
+        cursor_dev_lane: false,
+        cursor_dev_repo: '',
+        ide_workspace_root: '',
+      }
       if (gitRef) extraPageContext.git_ref = gitRef
-    } else if (cursorDevRepo) {
-      extraPageContext = { cursor_dev_repo: cursorDevRepo }
+    } else if (isCodeDevLane) {
+      // 写码分支：声明 code_dev，清空审核上下文，两条路由互不干涉
+      extraPageContext = {
+        workbuddy_lane: 'code_dev',
+        cursor_dev_lane: true,
+        git_repo_url: '',
+        git_ref: '',
+        ide_workspace_root: '',
+      }
+      if (cursorDevRepo) extraPageContext.cursor_dev_repo = cursorDevRepo
       if (cursorDevJobId) extraPageContext.cursor_dev_job_id = cursorDevJobId
     }
     const result = await streamMessage(

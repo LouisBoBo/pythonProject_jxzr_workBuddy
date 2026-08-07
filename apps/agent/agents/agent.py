@@ -154,6 +154,17 @@ _PASTE_CODE_ANALYZE_PROMPT = """
   **必须**走 ide-code-review / request_ide_review，本段粘贴禁令不适用。
 - 若用户要审公开 Git 仓（见【Git仓库已确认】或 page_context.git_repo_url），
   **必须**走 git-code-review（list→read_batch），本段粘贴禁令不适用。全文中文。
+- 若 workbuddy_lane=code_dev / 【写码需求讨论】：走写码分支，本段与审核段均不适用。
+"""
+
+_CURSOR_DEV_CODING_PROMPT = """
+【写码分支 · workbuddy_lane=code_dev — 与审核对等互斥】
+- 触发：前端按用户「写/改/加功能」意图进入；标记含【写码需求讨论】、:::cursor_dev_*、
+  page_context.workbuddy_lane=code_dev / cursor_dev_repo。
+- 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；改仓经 Cursor Cloud。
+- **禁止** request_git_* / request_ide_*（含 list_source_files）；**禁止**「代码审核报告」。
+- 仓库名/分支/GitHub URL 只表示改哪个仓，**不是**审核意图，也不是【Git仓库已确认】。
+- 与 code_review 无优先级关系：本轮是写码就不走审核工具。
 """
 
 _REVIEW_FINDING_ITEM = """
@@ -173,18 +184,17 @@ _REVIEW_FINDING_ITEM = """
 """
 
 _GIT_REVIEW_PROMPT = """
-【公开 Git 仓库审核 — 硬约束】
-- 触发：【Git仓库已确认】或 page_context.git_repo_url（公开 https:// 地址）。
-- **必须**走 Skill「git-code-review」，流程对齐本机 IDE 全仓审：
+【审核分支 · 公开 Git · workbuddy_lane=code_review — 与写码对等互斥】
+- 触发：用户明确要「审核/审查」公开仓；【Git仓库已确认】或 page_context.git_repo_url
+  且 workbuddy_lane=code_review（或等价审核确认标记）。
+- **若** workbuddy_lane=code_dev / 【写码需求讨论】：本段不适用，禁止 request_git_*。
+- **必须**走 Skill「git-code-review」：
   1) request_git_list_source_files → 记下 total / batch_count
   2) i=0..batch_count-1：request_git_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
   3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」
-- **禁止**只用 request_git_review 抽样几份文件就结案（那是降级抽样，不是全仓）。
-- **禁止** request_ide_review / request_ide_list_source_files / request_ide_read_batch / request_ide_read_files。
-- **禁止** SSH（git@ / ssh://）、URL 内嵌 Token；一期仅公开 HTTPS。
-- 【输出纪律】分批过程中禁止向用户输出任何正文；进度由系统过程区展示。输出区只允许终稿。
-- 终稿第一行必须是「## 🔍 代码审核报告」；禁止英文过渡句。
-- 审核范围=全部功能/业务源码（工具已排除配置/锁文件/样式/文档）。禁止只审 1～2 批就结案。
+- **禁止**只用 request_git_review 抽样结案；**禁止** request_ide_*；**禁止** :::cursor_dev_*。
+- **禁止** SSH；一期仅公开 HTTPS。
+- 【输出纪律】分批过程中禁止向用户输出任何正文；终稿第一行「## 🔍 代码审核报告」。
 - 方法论：Viprasol + gate-90。全文中文。
 """ + _REVIEW_FINDING_ITEM + """
 【终稿】（全部批次完成后）
@@ -206,22 +216,14 @@ _GIT_REVIEW_PROMPT = """
 """
 
 _IDE_REVIEW_PROMPT = """
-【本机 IDE / 全仓代码审核 — 硬约束】
+【审核分支 · 本机 IDE · workbuddy_lane=code_review — 与写码对等互斥】
 - 禁止 read_file/grep/glob 读本机绝对路径。
-- 用户已选工程或说「审核代码」（且无 Git 仓库确认）：禁止再追问。
-- 若消息含【Git仓库已确认】或 page_context.git_repo_url：本段不适用，走 git-code-review。
-- **正确流程**（仅本机工程）：
-  1) request_ide_list_source_files → 记下 total / batch_count（已自动只要功能源码）
-  2) i=0..batch_count-1：request_ide_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
-  3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」
-- 【输出纪律】分批过程中禁止向用户输出任何正文（含「共 N 个文件」「第 N 批纪要」）；
-  进度由系统过程区展示。输出区只允许终稿报告。
-- 终稿必须以「## 🔍 代码审核报告」作为输出区第一行；
-  **禁止**任何英文过渡句（如 Now I have… / Let me compile… / Here is the report…）。
-  正确：直接从报告标题写起。
-- 审核范围=业务/功能代码。不要审配置/锁文件/样式/文档/uni_modules/locale/static 等。
-- 禁止只审 1～2 批就结案。
-- Bridge 离线且同机不可读、且用户给的是本机路径 → request_git_review(local_path=…)。
+- 用户明确「审核代码」且已选工程：禁止再追问。
+- **若** workbuddy_lane=code_dev / 【写码需求讨论】：本段不适用，禁止 request_ide_*。
+- 若【Git仓库已确认】或 page_context.git_repo_url：本段不适用，走 git-code-review。
+- **正确流程**：request_ide_list_source_files → request_ide_read_batch → 终稿「🔍 代码审核报告」。
+- 【输出纪律】分批过程禁止输出正文；终稿第一行必须是报告标题；禁止英文过渡句。
+- **禁止** :::cursor_dev_* 写码确认卡。
 - 方法论：Viprasol + gate-90。用户可见全文中文。
 """ + _REVIEW_FINDING_ITEM + """
 【终稿】（全部批次完成后）
@@ -259,8 +261,12 @@ def create_agent(model=None, checkpointer=None):
         checkpointer = InMemorySaver()
 
     tools = list(TOOLS)
-    # 先钉死互斥总路由，再分别挂贴码 / Git / IDE 三条车道说明（互不交叉）
-    system_prompt = build_system_prompt() + _PASTE_CODE_ANALYZE_PROMPT
+    # 写码 / 审核两条对等路由说明（按意图分叉，无优先级）
+    system_prompt = (
+        build_system_prompt()
+        + _CURSOR_DEV_CODING_PROMPT
+        + _PASTE_CODE_ANALYZE_PROMPT
+    )
     if Config.IDE_REVIEW_ENABLED:
         from tools.ide_review import (
             request_git_list_source_files,

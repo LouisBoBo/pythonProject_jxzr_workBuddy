@@ -113,21 +113,64 @@ def main() -> int:
         assert out.get("agent_id") == "bc-smoke"
         types_seen = {e.get("type") for e in events}
         assert "status" in types_seen and "done" in types_seen, events
-        assert any(e.get("type") == "pr" for e in events), events
+        assert "replace_text" in types_seen, events
+        assert "merge_guide" in types_seen, events
+        # 未勾选开 PR：不应留下成功态 pr 事件；job.pr_url 为空
+        assert not any(e.get("type") == "pr" for e in events), events
+        done_ev = next(e for e in events if e.get("type") == "done")
+        assert done_ev.get("pr_url") in (None, "")
+        mg = done_ev.get("merge_guide") or {}
+        assert mg.get("merged_to_main") is False
+        assert mg.get("work_branch")
+        assert mg.get("compare_url") or mg.get("branch_url")
         token_texts = [e.get("text") for e in events if e.get("type") == "token"]
-        assert token_texts == [FakeResult.result], token_texts  # 流式+wait 不得重复推全文
+        assert token_texts[0] == FakeResult.result, token_texts  # 首段流式正文
+        # wait() 不得再推同一全文 token（允许随后的「误开 PR」提示）
+        assert token_texts.count(FakeResult.result) == 1, token_texts
         refreshed = get_job(data, job["id"])
-        assert refreshed["pr_url"] and "pull/1" in refreshed["pr_url"]
+        assert not refreshed.get("pr_url"), refreshed
 
     # 增量合并：累计快照只推 delta
-    from cursor_dev.service import _merge_assistant_delta  # noqa: E402
+    from cursor_dev.service import (  # noqa: E402
+        _finalize_assistant_summary,
+        _merge_assistant_delta,
+        _strip_merge_guidance_from_summary,
+    )
 
-    full, d1 = _merge_assistant_delta("", "hello")
-    assert (full, d1) == ("hello", "hello")
-    full, d2 = _merge_assistant_delta(full, "hello world")
-    assert (full, d2) == ("hello world", " world")
-    full, d3 = _merge_assistant_delta(full, "hello world")
-    assert d3 == ""
+    full, d1, r1 = _merge_assistant_delta("", "hello")
+    assert (full, d1, r1) == ("hello", "hello", False)
+    full, d2, r2 = _merge_assistant_delta(full, "hello world")
+    assert (full, d2, r2) == ("hello world", " world", False)
+    full, d3, r3 = _merge_assistant_delta(full, "hello world")
+    assert d3 == "" and r3 is False
+
+    # 过程旁白 + 终稿 → 整段替换，禁止拼接
+    chatter = "正在提交并推送到 `"
+    report = "## 已完成\n\n在固定工作分支 **`hebo`** 上实现了登录页。"
+    full, d, replaced = _merge_assistant_delta(chatter, report)
+    assert replaced and full == report and d == ""
+
+    messy = (
+        "正在提交并推送到 `## 已完成\n\n短稿\n\n## 已完成\n\n"
+        "在固定工作分支 **`hebo`** 上实现了登录页「企业编码」下拉选择，并已 push。\n\n"
+        "### 改动说明\n\n**前端**\n- LoginView\n\n### 验收方式\n1. 可见下拉框\n"
+    )
+    cleaned = _finalize_assistant_summary(messy)
+    assert cleaned.startswith("## 已完成"), cleaned[:80]
+    assert "正在提交" not in cleaned
+    assert cleaned.count("## 已完成") == 1
+    assert "企业编码" in cleaned
+    assert "验收" in cleaned
+
+    # 合入指引卡存在时：正文去掉 push/合入尾巴，避免与卡片重复
+    with_tail = (
+        "## 已完成\n\n- `8abeb5c` fix(login): 企业编码默认选中\n\n"
+        "代码已 push 至 origin/hebo 。如需合入 main，请本地自行合并。"
+    )
+    stripped = _strip_merge_guidance_from_summary(with_tail)
+    assert "8abeb5c" in stripped
+    assert "push" not in stripped.lower()
+    assert "合入 main" not in stripped
 
     sys.path.insert(0, str(ROOT / "apps" / "api"))
     from routes import cursor_dev as cd_routes  # noqa: E402

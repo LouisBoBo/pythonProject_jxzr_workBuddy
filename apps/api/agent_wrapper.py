@@ -24,6 +24,68 @@ from agents.agent import create_agent, build_model  # noqa: E402
 from checkpoint_store import ensure_thread_messages, get_acheckpointer  # noqa: E402
 from middleware.request_context import get_thread_id, get_user_id, get_username  # noqa: E402
 
+# 核心双路由：code_dev（写码）与 code_review（审核）对等互斥，按意图分叉，无优先级
+LANE_CODE_DEV = "code_dev"
+LANE_CODE_REVIEW = "code_review"
+
+_CODE_DEV_MARKERS = (
+    "【写码需求讨论",
+    "【写码仓库已确认】",
+    ":::cursor_dev_options",
+    ":::cursor_dev_propose",
+    "【系统强制路由·Cursor 写码】",
+)
+
+_CODE_REVIEW_MARKERS = (
+    "【Git仓库已确认】",
+    "【本机工程已确认】",
+    "【系统强制路由·公开 Git 全仓审核】",
+    "【系统强制路由·本机代码审核】",
+)
+
+
+def resolve_workbuddy_lane(message: str = "", ctx: dict | None = None) -> str | None:
+    """根据本轮显式车道声明 / 确认标记解析意图分支。
+
+    返回 LANE_CODE_DEV | LANE_CODE_REVIEW | None。
+    不使用「谁优先」：前端按用户意图选分支后写入 workbuddy_lane；
+    若缺失则仅认对应确认标记，两路互不抢占。
+    """
+    ctx = ctx or {}
+    explicit = str(ctx.get("workbuddy_lane") or "").strip()
+    if explicit in (LANE_CODE_DEV, LANE_CODE_REVIEW):
+        return explicit
+
+    m = message or ""
+    # 确认标记互斥：同一条消息不应同时带两套标记；若冲突则两边都不猜，交给前端重试
+    has_dev = any(x in m for x in _CODE_DEV_MARKERS) or bool(
+        ctx.get("cursor_dev_lane")
+    ) or bool(str(ctx.get("cursor_dev_repo") or "").strip())
+    has_review = any(x in m for x in _CODE_REVIEW_MARKERS) or bool(
+        str(ctx.get("git_repo_url") or "").strip()
+    ) or bool(str(ctx.get("ide_workspace_root") or "").strip())
+
+    if has_dev and has_review:
+        # 冲突时：以显式确认标记为准——写码讨论标记与审核确认标记同时出现极少见
+        if any(x in m for x in _CODE_DEV_MARKERS) and not any(
+            x in m for x in ("【Git仓库已确认】", "【本机工程已确认】")
+        ):
+            return LANE_CODE_DEV
+        if any(x in m for x in ("【Git仓库已确认】", "【本机工程已确认】")):
+            return LANE_CODE_REVIEW
+        return None
+    if has_dev:
+        return LANE_CODE_DEV
+    if has_review:
+        return LANE_CODE_REVIEW
+    return None
+
+
+def _is_cursor_dev_coding_lane(message: str = "", ctx: dict | None = None) -> bool:
+    """兼容旧调用：是否为写码分支。"""
+    return resolve_workbuddy_lane(message, ctx) == LANE_CODE_DEV
+
+
 # 工具 → 中文短标题（过程区只显示这些，不 dump 原始内容）
 _TOOL_LABELS = {
     "query_platform_data": "查询平台数据",
@@ -717,15 +779,33 @@ class AgentRunner:
                 bits.append(f"plan_no={ctx['plan_no']}")
             if ctx.get("order_no"):
                 bits.append(f"order_no={ctx['order_no']}")
-            ide_root = str(ctx.get("ide_workspace_root") or "").strip()
-            if ide_root:
-                bits.append(f"ide_workspace_root={ide_root}")
-            git_url = str(ctx.get("git_repo_url") or "").strip()
-            if git_url:
-                bits.append(f"git_repo_url={git_url}")
-            git_ref = str(ctx.get("git_ref") or "").strip()
-            if git_ref:
-                bits.append(f"git_ref={git_ref}")
+            lane = resolve_workbuddy_lane(message or "", ctx)
+            if lane == LANE_CODE_DEV:
+                bits.append("workbuddy_lane=code_dev")
+                repo = str(ctx.get("cursor_dev_repo") or "").strip()
+                if repo:
+                    bits.append(f"cursor_dev_repo={repo}")
+            elif lane == LANE_CODE_REVIEW:
+                bits.append("workbuddy_lane=code_review")
+                ide_root = str(ctx.get("ide_workspace_root") or "").strip()
+                if ide_root:
+                    bits.append(f"ide_workspace_root={ide_root}")
+                git_url = str(ctx.get("git_repo_url") or "").strip()
+                if git_url:
+                    bits.append(f"git_repo_url={git_url}")
+                git_ref = str(ctx.get("git_ref") or "").strip()
+                if git_ref:
+                    bits.append(f"git_ref={git_ref}")
+            else:
+                ide_root = str(ctx.get("ide_workspace_root") or "").strip()
+                if ide_root:
+                    bits.append(f"ide_workspace_root={ide_root}")
+                git_url = str(ctx.get("git_repo_url") or "").strip()
+                if git_url:
+                    bits.append(f"git_repo_url={git_url}")
+                git_ref = str(ctx.get("git_ref") or "").strip()
+                if git_ref:
+                    bits.append(f"git_ref={git_ref}")
             if bits:
                 prefix = (
                     "[平台上下文] 用户从 MES 页面打开助手，当前页："
@@ -736,15 +816,56 @@ class AgentRunner:
             prefix = ""
 
         body = message
-        # 公开 Git 全仓：强制 list→batch，避免模型仍走抽样 request_git_review 或误调 IDE
+        # 写码 / 审核：对等互斥分支。仅按本轮意图注入对应强制路由，无「谁优先」。
         try:
             from middleware.request_context import get_page_context as _gpc
 
             _ctx = _gpc() or {}
             _git = str(_ctx.get("git_repo_url") or "").strip()
+            _ide = str(_ctx.get("ide_workspace_root") or "").strip()
         except Exception:
+            _ctx = {}
             _git = ""
-        if _git or "【Git仓库已确认】" in (message or ""):
+            _ide = ""
+        lane = resolve_workbuddy_lane(message or "", _ctx)
+        if lane == LANE_CODE_DEV:
+            force_coding = (
+                "\n\n【系统强制路由·Cursor 写码】\n"
+                "本轮意图=写码/改功能（workbuddy_lane=code_dev），与代码审核是另一条路由。\n"
+                "禁止调用：request_git_*、request_ide_*（含 list_source_files / read_batch / review）。\n"
+                "禁止 clone 仓库、禁止输出「代码审核报告」、禁止「筛选功能源码」。\n"
+                "只澄清需求并输出 :::cursor_dev_options 或 :::cursor_dev_propose；"
+                "改远程仓须用户确认后由 Cursor Cloud 执行。\n"
+                "消息里出现 GitHub 仓库名/分支仅表示要改哪个仓，不等于审核意图。\n"
+            )
+            body = f"{body}{force_coding}"
+        elif lane == LANE_CODE_REVIEW and (
+            _git or _ide or "【Git仓库已确认】" in (message or "") or "【本机工程已确认】" in (message or "")
+        ):
+            if _git or "【Git仓库已确认】" in (message or ""):
+                force_git = (
+                    "\n\n【系统强制路由·公开 Git 全仓审核】\n"
+                    "本轮意图=代码审核（workbuddy_lane=code_review），与写码是另一条路由。\n"
+                    f"仓库：{_git or '见消息【Git仓库已确认】'}\n"
+                    "必须严格按序：\n"
+                    "1) request_git_list_source_files\n"
+                    "2) request_git_read_batch(batch_index=0)…直至 done_after=true\n"
+                    "3) 仅此时输出「## 🔍 代码审核报告」\n"
+                    "禁止：request_git_review 抽样结案；禁止 request_ide_*；"
+                    "禁止 :::cursor_dev_* 写码确认卡；禁止中途输出报告或英文过渡句。\n"
+                )
+                body = f"{body}{force_git}"
+            elif _ide or "【本机工程已确认】" in (message or ""):
+                force_ide = (
+                    "\n\n【系统强制路由·本机代码审核】\n"
+                    "本轮意图=代码审核（workbuddy_lane=code_review），与写码是另一条路由。\n"
+                    f"工程：{_ide or '见消息【本机工程已确认】'}\n"
+                    "必须严格按序：request_ide_list_source_files → request_ide_read_batch → 终稿报告。\n"
+                    "禁止 :::cursor_dev_*；禁止把本轮当成写功能/改界面。\n"
+                )
+                body = f"{body}{force_ide}"
+        elif lane is None and (_git or "【Git仓库已确认】" in (message or "")):
+            # 兼容未带 workbuddy_lane 的旧审核入口
             force_git = (
                 "\n\n【系统强制路由·公开 Git 全仓审核】\n"
                 f"仓库：{_git or '见消息【Git仓库已确认】'}\n"

@@ -93,7 +93,8 @@ curl http://127.0.0.1:8765/health
 **M2 写操作确认（HITL）**见 [`docs/M2写操作确认交付说明.md`](docs/M2写操作确认交付说明.md)。  
 **第二阶段开发复盘**见 [`docs/第二阶段开发复盘.md`](docs/第二阶段开发复盘.md)。  
 **表结构→业务能力分析**见 [`docs/表结构业务能力分析说明.md`](docs/表结构业务能力分析说明.md)。  
-**IDE 代码审核（可选，`IDE_REVIEW_ENABLED=1`）**见 [`docs/IDE代码审核开发者接入手册.md`](docs/IDE代码审核开发者接入手册.md)；架构与验收见 [`docs/IDE代码审核MCP对接方案.md`](docs/IDE代码审核MCP对接方案.md)。
+**IDE 代码审核（可选，`IDE_REVIEW_ENABLED=1`）**见 [`docs/IDE代码审核开发者接入手册.md`](docs/IDE代码审核开发者接入手册.md)；架构与验收见 [`docs/IDE代码审核MCP对接方案.md`](docs/IDE代码审核MCP对接方案.md)。  
+**Cursor 写码车道（管理员配 Key；同事零配置）**见 [`docs/Cursor写码车道管理员上线清单.md`](docs/Cursor写码车道管理员上线清单.md)；原理见 [`docs/Cursor写码车道原理与完整流程.md`](docs/Cursor写码车道原理与完整流程.md)。上线闸门：`make check-cursor-dev`；旁路冒烟：`make smoke-cursor-dev`。
 
 ## 从旧 mes-client 迁移说明
 

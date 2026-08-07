@@ -303,22 +303,9 @@ export function fetchCursorDevAudit(params = {}) {
   return api.get('/cursor-dev/audit', { params })
 }
 
-/** 项目画像：列表 / 最近一次 */
-export function fetchCursorDevProfiles(limit = 20) {
-  return api.get('/cursor-dev/profiles', { params: { limit } })
-}
-
-export function fetchCursorDevLastProfile() {
-  return api.get('/cursor-dev/profiles/last')
-}
-
-export function upsertCursorDevProfile(body) {
-  return api.put('/cursor-dev/profiles', body)
-}
-
 /**
  * 订阅写码 job SSE（仅 Cursor Cloud 旁路，不经过 Deep Agents）。
- * 事件：status|step|token|pr|done|error|review_hint
+ * 事件：status|step|token|pr|done|error|review_hint|merge_guide
  */
 export function streamCursorDevJob(jobId, onEvent, onDone, onError, signal = null) {
   const handleEvent = typeof onEvent === 'function' ? onEvent : async () => {}
@@ -396,7 +383,7 @@ export function streamCursorDevJob(jobId, onEvent, onDone, onError, signal = nul
               } else if (type === 'pr') {
                 await handleEvent(data)
                 await paintFrame()
-              } else if (type === 'review_hint') {
+              } else if (type === 'review_hint' || type === 'merge_guide') {
                 await handleEvent(data)
                 await paintFrame()
               } else if (type === 'status' || type === 'step') {

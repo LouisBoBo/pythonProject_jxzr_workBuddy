@@ -22,14 +22,6 @@ from cursor_dev import jobs as job_store  # noqa: E402
 from cursor_dev.prompts import build_first_turn_prompt, build_followup_prompt  # noqa: E402
 from cursor_dev.project_inspect import inspect_repo  # noqa: E402
 from cursor_dev.user_branch import user_work_branch  # noqa: E402
-from cursor_dev.project_profiles import (  # noqa: E402
-    extract_repo_from_text,
-    get_last_profile,
-    get_profile,
-    list_profiles,
-    profile_prompt_block,
-    upsert_profile,
-)
 from cursor_dev.readiness import build_readiness  # noqa: E402
 from cursor_dev.github_preflight import resolve_starting_ref  # noqa: E402
 
@@ -366,17 +358,6 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
             "peer_jobs": len(peers),
         },
     )
-    # 静默更新项目画像（仓库锚点），便于新开对话衔接；失败不影响建 job
-    try:
-        upsert_profile(
-            DATA_DIR,
-            user_id=str(uid if uid is not None else getattr(user, "username", None) or "anon"),
-            repo=repo,
-            last_requirement=message,
-            style_notes="与仓库已有页面保持同一视觉与工程风格（组件、路由、目录、命名）",
-        )
-    except Exception:
-        pass
     return _job_to_response(job, warnings=warnings)
 
 
@@ -574,86 +555,6 @@ async def followup_cursor_dev_job(
         },
     )
     return _job_to_response(updated or job)
-
-
-class ProfileUpsertBody(BaseModel):
-    repo: str = Field(..., min_length=1)
-    tech_stack: str = ""
-    frontend: str = ""
-    backend: str = ""
-    style_notes: str = ""
-    selections: dict[str, Any] = Field(default_factory=dict)
-    selection_labels: dict[str, Any] = Field(default_factory=dict)
-    notes: str = ""
-    last_requirement: str = ""
-
-
-@router.get("/profiles")
-async def cursor_dev_list_profiles(limit: int = 20, auth: tuple = Depends(require_auth)):
-    """当前用户的项目画像列表（新开对话衔接用）。"""
-    user = _auth_user(auth)
-    uid = str(getattr(user, "user_id", None) or getattr(user, "username", None) or "anon")
-    items = list_profiles(DATA_DIR, uid, limit=limit)
-    last = get_last_profile(DATA_DIR, uid)
-    return {
-        "items": items,
-        "last": last,
-        "prompt_block": profile_prompt_block(last),
-    }
-
-
-@router.get("/profiles/last")
-async def cursor_dev_last_profile(auth: tuple = Depends(require_auth)):
-    user = _auth_user(auth)
-    uid = str(getattr(user, "user_id", None) or getattr(user, "username", None) or "anon")
-    last = get_last_profile(DATA_DIR, uid)
-    return {"profile": last, "prompt_block": profile_prompt_block(last)}
-
-
-@router.get("/profiles/by-repo")
-async def cursor_dev_get_profile(repo: str, auth: tuple = Depends(require_auth)):
-    user = _auth_user(auth)
-    uid = str(getattr(user, "user_id", None) or getattr(user, "username", None) or "anon")
-    normalized = normalize_repo(repo)
-    if not normalized:
-        raise HTTPException(status_code=400, detail="仓库格式无效")
-    profile = get_profile(DATA_DIR, uid, normalized)
-    return {"profile": profile, "prompt_block": profile_prompt_block(profile)}
-
-
-@router.put("/profiles")
-async def cursor_dev_upsert_profile(body: ProfileUpsertBody, auth: tuple = Depends(require_auth)):
-    """保存/更新项目画像（选项确认或写码确认时由前端调用）。"""
-    user = _auth_user(auth)
-    uid = str(getattr(user, "user_id", None) or getattr(user, "username", None) or "anon")
-    repo = normalize_repo(body.repo) or extract_repo_from_text(body.notes)
-    if not repo:
-        raise HTTPException(status_code=400, detail="请提供有效 repo（owner/repo）")
-    try:
-        profile = upsert_profile(
-            DATA_DIR,
-            user_id=uid,
-            repo=repo,
-            tech_stack=body.tech_stack,
-            frontend=body.frontend,
-            backend=body.backend,
-            style_notes=body.style_notes,
-            selections=body.selections or {},
-            selection_labels=body.selection_labels or {},
-            notes=body.notes,
-            last_requirement=body.last_requirement,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    append_audit(
-        DATA_DIR,
-        {
-            "event": "project_profile_upserted",
-            "user_id": uid,
-            "repo": repo,
-        },
-    )
-    return {"profile": profile, "prompt_block": profile_prompt_block(profile)}
 
 
 @router.get("/audit")

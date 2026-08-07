@@ -19,6 +19,9 @@ def main() -> int:
     print(f"ready: {report['ready']}")
     print(f"summary: {report['summary']}")
     print(f"colleague_zero_config: {report.get('colleague_zero_config')}")
+    print(f"work_branch: {report.get('work_branch') or '(按用户命名)'}")
+    print(f"auto_pr: {report.get('auto_pr')}")
+    print(f"github_token_configured: {report.get('github_token_configured')}")
     print("--- checks ---")
     for c in report["checks"]:
         flag = "OK " if c.get("ok") else "FAIL"
@@ -30,6 +33,8 @@ def main() -> int:
     print("---")
     if report["ready"]:
         print("服务端闸门通过。请确认两条人工 TODO 后即可让同事开箱使用 WorkBuddy 写码。")
+        if not report.get("github_token_configured"):
+            print("提示：建议补 GITHUB_TOKEN（私有仓预检 / 误开 PR 清理）。")
         return 0
     print("未通过：按 FAIL 项修复 .env / 白名单仓 / SDK 后重跑。")
     return 1

@@ -162,13 +162,14 @@ def build_system_prompt() -> str:
         "勿把用户文档 URL 改成 8001。",
         "4. **粘贴代码分析**：消息含代码块要找问题/怎么改，或上一轮已分析、用户短确认要完整改写时，"
         "走 paste-code-analyze（对话交付代码；**不要**审核报告壳；**不要**寒暄开场；无需 Bridge）。",
-        "5. **公开 Git 仓库审核**：IDE_REVIEW 开启且消息含【Git仓库已确认】/ page_context.git_repo_url"
-        "（或明确审公开 HTTPS 仓）时走 git-code-review："
-        "request_git_list_source_files → request_git_read_batch 全仓分批 → 终稿；"
-        "**禁止** request_ide_*；**禁止**只用 request_git_review 抽样结案。",
-        "6. **本机代码审核**：仅 IDE_REVIEW 开启且用户明确要求审本机/当前工程"
-        "（【本机工程已确认】/ ide_workspace_root）时走 Bridge 出报告；"
-        "已贴源码且只是问问题 → 优先粘贴分析；有 Git 确认标记 → 优先 Git 车道，勿抢调 Bridge。",
+        "5. **写码（code_dev）**：用户要写/改/加功能或界面时走 cursor-dev-chat；"
+        "page_context.workbuddy_lane=code_dev；**禁止** request_git_* / request_ide_*；"
+        "提到 GitHub 仓只表示要改哪个仓。与审核对等，无优先级。",
+        "6. **代码审核（code_review）**：用户明确要审核时走 git-code-review 或 ide-code-review；"
+        "page_context.workbuddy_lane=code_review；**禁止** :::cursor_dev_* 写码确认卡。"
+        "Git：list→read_batch→终稿；本机：Bridge 分批。与写码对等，无优先级。",
+        "7. **路由铁律**：写码与审核是两条互不干涉的核心路由，按本轮用户意图分叉，"
+        "禁止用「谁优先」互相抢；禁止在写码轮调用审核工具，禁止在审核轮输出写码确认卡。",
         "",
         "## 演示实体目录（查/导用，非 MES 全量能力清单）",
         "",

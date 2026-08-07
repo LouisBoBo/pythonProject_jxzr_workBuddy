@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +33,62 @@ def _get_json(url: str, timeout: float = 15.0) -> dict[str, Any] | list[Any]:
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any] | list[Any]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "workbuddy-cursor-dev",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = _github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw.strip() else {}
+
+
+_PR_URL_PARSE = re.compile(
+    r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)",
+    re.IGNORECASE,
+)
+
+
+def close_pull_request(pr_url: str, *, comment: str = "") -> dict[str, Any]:
+    """关闭误开的 PR。返回 {ok, pr_url, error}。"""
+    m = _PR_URL_PARSE.search(pr_url or "")
+    if not m:
+        return {"ok": False, "pr_url": pr_url or "", "error": "无法解析 PR URL"}
+    if not _github_token():
+        return {"ok": False, "pr_url": pr_url, "error": "未配置 GITHUB_TOKEN，无法自动关闭误开 PR"}
+    owner, name, number = m.group(1), m.group(2), m.group(3)
+    api = f"https://api.github.com/repos/{owner}/{name}/pulls/{number}"
+    try:
+        _request_json(api, method="PATCH", body={"state": "closed"})
+        if comment.strip():
+            try:
+                _request_json(
+                    f"https://api.github.com/repos/{owner}/{name}/issues/{number}/comments",
+                    method="POST",
+                    body={"body": comment.strip()},
+                )
+            except Exception:
+                pass
+        return {"ok": True, "pr_url": f"https://github.com/{owner}/{name}/pull/{number}", "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "pr_url": pr_url, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _read_http_error_body(exc: urllib.error.HTTPError, limit: int = 400) -> str:

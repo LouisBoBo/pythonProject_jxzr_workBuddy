@@ -27,6 +27,34 @@ _IDE_PATH_HINT = (
 _READ_FILES_MAX_PATHS = 5
 _BATCH_SIZE = 5
 
+_CURSOR_DEV_LANE_BLOCK = (
+    "当前为写码分支（workbuddy_lane=code_dev），与代码审核是对等的另一条路由。"
+    "禁止调用 Git/IDE 审核工具。请只澄清需求并输出 :::cursor_dev_options 或 :::cursor_dev_propose；"
+    "改仓由用户确认后经 Cursor Cloud 执行。提及仓库名不等于审核意图。"
+)
+
+
+def _reject_if_cursor_dev_coding_lane() -> dict[str, Any] | None:
+    """写码分支硬拒绝审核工具；审核分支不受影响（两条路由互不干涉）。"""
+    ctx = get_page_context() or {}
+    lane = str(ctx.get("workbuddy_lane") or "").strip()
+    if lane == "code_review":
+        return None
+    if lane == "code_dev" or ctx.get("cursor_dev_lane") or str(
+        ctx.get("cursor_dev_repo") or ""
+    ).strip():
+        return {
+            "status": "error",
+            "provider": "cursor_dev_lane",
+            "message": _CURSOR_DEV_LANE_BLOCK,
+            "findings": [],
+            "file_contents": [],
+            "total": 0,
+            "batch_count": 0,
+            "path_hint": "禁止 request_git_* / request_ide_*；输出 cursor_dev 机器块。",
+        }
+    return None
+
 
 def _page_ide_workspace_root() -> str:
     ctx = get_page_context() or {}
@@ -92,6 +120,9 @@ def request_ide_review(
     - 切勿再用 read_file 去读返回的 workspace_root 绝对路径。
     - 已拿到非空 file_contents 后禁止再批量 request_ide_read_files 扫全仓；立刻写报告。
     """
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     user_id = get_user_id()
     root = (workspace_root or "").strip() or _page_ide_workspace_root()
     result = submit_review_task(
@@ -147,6 +178,9 @@ def request_ide_read_batch(
     workspace_root: Annotated[str, "可选；默认用 list 时的工程根"] = "",
 ) -> dict[str, Any]:
     """按批次号读取下一组最多 5 个文件（全仓分批主路径，避免把全部路径塞进上下文）。"""
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     from tools.ide_review.batch_plan import get_batch_paths
 
     info = get_batch_paths(get_thread_id(), int(batch_index))
@@ -178,6 +212,9 @@ def _read_paths(
     next_batch_index: int | None = None,
     done_after: bool = False,
 ) -> dict[str, Any]:
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     user_id = get_user_id()
     paths = [str(p).strip() for p in (path_list or []) if str(p).strip()]
     truncated = False
@@ -259,6 +296,9 @@ def request_ide_list_source_files(
     返回摘要（总数/批次数），不把全部路径塞进模型上下文。
     随后用 request_ide_read_batch(0), read_batch(1), … 循环直至 done。
     """
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     from pathlib import Path
 
     from tools.ide_review.batch_plan import save_repo_plan
@@ -347,6 +387,9 @@ def request_git_review(
     优先 request_git_list_source_files → request_git_read_batch（禁止 request_ide_*）。
     本工具仅用于明确只要抽样、或 Bridge 离线审本机 local_path。
     """
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     from tools.ide_review.git_review import run_git_or_local_review
 
     try:
@@ -397,6 +440,9 @@ def request_git_list_source_files(
     返回摘要（总数/批次数）；随后 request_git_read_batch(0)..(N-1)，全部完成后再写终稿。
     禁止对本流程调用 request_ide_*。
     """
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     from pathlib import Path
 
     from tools.ide_review.batch_plan import save_repo_plan
@@ -467,6 +513,9 @@ def request_git_read_batch(
     过程中禁止向用户输出正文；done_after=true 时合并各批写终稿。
     clone 缓存按会话 TTL 回收（末批不立刻删，便于报告失败后重试/补读）。
     """
+    blocked = _reject_if_cursor_dev_coding_lane()
+    if blocked:
+        return blocked
     from pathlib import Path
 
     from tools.ide_review.batch_plan import get_batch_paths
