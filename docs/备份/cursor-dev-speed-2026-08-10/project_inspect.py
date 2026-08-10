@@ -76,164 +76,6 @@ def _root_names(repo: str, ref: str) -> list[str]:
     return names[:40]
 
 
-def _dir_names(repo: str, path: str, ref: str) -> list[str]:
-    """列目录下文件/子目录名（失败返回空）。"""
-    path = (path or "").strip().strip("/")
-    try:
-        url = (
-            f"https://api.github.com/repos/{repo}/contents/"
-            f"{urllib.parse.quote(path)}?ref={urllib.parse.quote(ref)}"
-            if path
-            else f"https://api.github.com/repos/{repo}/contents/?ref={urllib.parse.quote(ref)}"
-        )
-        data = _get_json(url)
-    except Exception:
-        return []
-    if not isinstance(data, list):
-        return []
-    names: list[str] = []
-    for item in data:
-        if isinstance(item, dict) and item.get("name"):
-            names.append(str(item["name"]))
-    return names[:60]
-
-
-_LAYOUT_NAME_RE = re.compile(
-    r"^(App|Layout|MainLayout|DefaultLayout|Home|HomeView|Index|Dashboard|Aside|Sidebar|Frame)",
-    re.I,
-)
-
-
-def probe_layout_anchors(
-    repo: str,
-    ref: str,
-    *,
-    root: list[str] | None = None,
-    page_hints: list[str] | None = None,
-    limit: int = 8,
-) -> list[str]:
-    """轻量探测布局/目标页路径。page_hints 命中时优先于通用 App/Home。"""
-    repo = normalize_repo(repo)
-    ref = (ref or "").strip() or "main"
-    if not repo:
-        return []
-    root_l = {n.lower() for n in (root or _root_names(repo, ref))}
-    prefixes: list[str] = []
-    if "frontend" in root_l:
-        prefixes.append("frontend/")
-    if "src" in root_l or "app" in root_l:
-        prefixes.append("")
-    if not prefixes:
-        prefixes = ["frontend/", ""]
-
-    found: list[str] = []
-    seen: set[str] = set()
-    hints = [str(h).strip() for h in (page_hints or []) if str(h).strip()]
-
-    def _add(path: str) -> None:
-        p = path.replace("\\", "/").strip().lstrip("./")
-        if not p or p in seen:
-            return
-        seen.add(p)
-        found.append(p)
-
-    def _name_matches_hints(name: str) -> bool:
-        low = name.lower()
-        for h in hints:
-            hl = h.lower()
-            if hl and hl in low:
-                return True
-        return False
-
-    # 0) 页面关键词：先扫 views/pages，命中则置顶（避免先读错 App.vue 浪费回合）
-    if hints:
-        scan_dirs: list[str] = []
-        for pfx in prefixes:
-            scan_dirs.extend(
-                [
-                    f"{pfx}src/views",
-                    f"{pfx}src/pages",
-                    f"{pfx}src/views/board",
-                    f"{pfx}src/views/kanban",
-                    f"{pfx}src/views/dashboard",
-                ]
-            )
-        for d in scan_dirs:
-            if len(found) >= limit:
-                break
-            for name in _dir_names(repo, d, ref):
-                if not re.search(r"\.(vue|tsx?|jsx?|css|scss)$", name, re.I):
-                    continue
-                if _name_matches_hints(name):
-                    _add(f"{d.rstrip('/')}/{name}")
-                    if len(found) >= limit:
-                        break
-
-    # 1) 固定候选：存在性用短读探测（有内容才收录）
-    candidates: list[str] = []
-    for pfx in prefixes:
-        candidates.extend(
-            [
-                f"{pfx}src/App.vue",
-                f"{pfx}src/App.tsx",
-                f"{pfx}src/layouts/MainLayout.vue",
-                f"{pfx}src/layouts/Layout.vue",
-                f"{pfx}src/layout/index.vue",
-                f"{pfx}src/views/Home.vue",
-                f"{pfx}src/views/HomeView.vue",
-                f"{pfx}src/views/Dashboard.vue",
-                f"{pfx}src/views/Index.vue",
-                f"{pfx}src/components/Layout.vue",
-            ]
-        )
-    for path in candidates:
-        if len(found) >= limit:
-            break
-        # 已有页面锚点时，通用壳文件最多再补 2 个
-        if hints and sum(1 for p in found if "/views/" in p or "/pages/" in p) >= 1:
-            shell_count = sum(
-                1
-                for p in found
-                if re.search(r"/(App|Layout|MainLayout|layout/index)\.", p, re.I)
-            )
-            if shell_count >= 2 and not re.search(
-                r"/(App|Layout|MainLayout|layout/index)\.", path, re.I
-            ):
-                continue
-            if shell_count >= 2:
-                break
-        if _file_text(repo, path, ref, max_chars=80):
-            _add(path)
-
-    # 2) 列目录启发式补锚点
-    if len(found) < limit:
-        scan_dirs2: list[str] = []
-        for pfx in prefixes:
-            scan_dirs2.extend(
-                [
-                    f"{pfx}src",
-                    f"{pfx}src/layouts",
-                    f"{pfx}src/layout",
-                    f"{pfx}src/views",
-                ]
-            )
-        for d in scan_dirs2:
-            if len(found) >= limit:
-                break
-            for name in _dir_names(repo, d, ref):
-                if not _LAYOUT_NAME_RE.search(name) and not (
-                    hints and _name_matches_hints(name)
-                ):
-                    continue
-                if not re.search(r"\.(vue|tsx?|jsx?|css|scss)$", name, re.I):
-                    continue
-                _add(f"{d.rstrip('/')}/{name}")
-                if len(found) >= limit:
-                    break
-
-    return found[:limit]
-
-
 def _list_branch_names(repo: str, limit: int = 30) -> list[str]:
     try:
         data = _get_json(f"https://api.github.com/repos/{repo}/branches?per_page={limit}")
@@ -601,10 +443,7 @@ def inspect_repo(
     elif hints:
         lines.append("技术栈线索：" + "；".join(hints))
     if continuity.get("requirement_snip"):
-        lines.append(
-            "前序需求摘要（可能过期；若本轮用户说重做/重新设计，以本轮原话为准，忽略旧截图骨架）：\n"
-            + str(continuity["requirement_snip"])[:400]
-        )
+        lines.append("前序需求摘要：\n" + str(continuity["requirement_snip"])[:400])
     if infer_map.get("README.md"):
         lines.append("README 摘要：\n" + infer_map["README.md"][:500])
     if treat_as_new:
@@ -612,16 +451,6 @@ def inspect_repo(
     else:
         lines.append("判定：沿用已有技术栈与风格；写码落在固定用户分支，手动合 main。")
     summary = "\n".join(lines)
-
-    layout_anchors: list[str] = []
-    if not treat_as_new:
-        try:
-            layout_anchors = probe_layout_anchors(repo, ref, root=root, limit=8)
-        except Exception:
-            layout_anchors = []
-        if layout_anchors:
-            lines.append("布局锚点（写码优先打开）：" + "、".join(layout_anchors[:8]))
-            summary = "\n".join(lines)
 
     if treat_as_new:
         prompt_block = (
@@ -641,25 +470,15 @@ def inspect_repo(
             if ref != preferred_work
             else f"在 `{preferred_work}` 上继续提交。"
         )
-        anchor_rule = ""
-        if layout_anchors:
-            anchor_rule = (
-                "6. 纯样式/滚动/布局壳需求：requirement 开头写【任务档位：css_layout】，"
-                "并尽量带上布局锚点路径："
-                + "、".join(f"`{p}`" for p in layout_anchors[:6])
-                + "。\n"
-            )
         prompt_block = (
             "【已有项目 · 技术栈已锁定 · 一人一支 · 禁止再问技术栈】\n"
             f"{summary}\n"
             "规则：\n"
             f"1. 已锁定技术栈：{stack_line}。不要再问/输出技术栈选项组。\n"
             f"2. 写码固定分支：`{preferred_work}`。{fork_hint} 严禁再开 dev/workbuddy-功能名-xxxx。\n"
-            "3. 增量可复用壳层/主题 token；业务页重做时禁止照抄首页/看板布局。"
-            "正文最多 1～2 句；未决点只用范围类 :::cursor_dev_options。\n"
+            "3. 增量须与已有登录页同风格；正文最多 1～2 句；未决点只用范围类 :::cursor_dev_options。\n"
             f"4. :::cursor_dev_propose 的 repo 填 `{repo}`，ref 填 `{preferred_work}`。\n"
-            "5. 不要自动开 PR（用户手动合 main）；禁止表格/A~D 打字作答。\n"
-            f"{anchor_rule}"
+            "5. 不要自动开 PR（用户手动合 main）；禁止表格/A~D 打字作答。"
         )
 
     return {
@@ -674,7 +493,6 @@ def inspect_repo(
         "treat_as_new": treat_as_new,
         "summary": summary,
         "prompt_block": prompt_block,
-        "layout_anchors": layout_anchors,
         "error": None,
         "authenticated": bool(_github_token()),
         "continuity_job_id": continuity.get("job_id"),

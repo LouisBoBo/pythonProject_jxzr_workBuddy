@@ -93,7 +93,14 @@
               <span v-if="idePairExpiresIn">（码 {{ idePairExpiresIn }}s 内有效）</span>
               <br />配对成功后约 90 天自动连接，网页重新登录也不用再贴 token
             </div>
-            <button type="button" class="ide-pair-copy" @click="copyPairCode">复制配对码</button>
+            <button
+              type="button"
+              class="ide-pair-copy"
+              :class="{ copied: idePairCopied }"
+              @click="copyPairCode"
+            >
+              {{ idePairCopied ? '已复制' : '复制配对码' }}
+            </button>
           </div>
         </div>
         <div
@@ -142,7 +149,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { FolderOpened } from '@element-plus/icons-vue'
 import { getHistoryList, deleteHistory, fetchIdeBridgeStatus, createIdeBridgePairing, fetchCursorDevStatus } from './api.js'
 import { clearSession, getDisplayName, getUsername } from './auth.js'
@@ -153,6 +160,7 @@ const router = useRouter()
 
 const sessions = ref([])
 const historyLoading = ref(false)
+let historyRefreshTimer = null
 const displayName = ref(getDisplayName() || getUsername() || '用户')
 const embedMode = ref(isEmbedMode())
 const contextLabel = ref(pageContextLabel(getPageContext()))
@@ -166,8 +174,10 @@ const ideBridgeHint = ref('')
 const idePairLoading = ref(false)
 const idePairCode = ref('')
 const idePairExpiresIn = ref(0)
+const idePairCopied = ref(false)
 let ideBridgeTimer = null
 let idePairCountdown = null
+let idePairCopiedTimer = null
 
 const cursorDevPanelVisible = ref(false)
 const cursorDevReady = ref(false)
@@ -218,16 +228,18 @@ function isActiveSession(id) {
   return route.path === '/' && route.query.thread === id
 }
 
-async function loadHistory() {
+async function loadHistory({ silent = false } = {}) {
   if (isLoginRoute.value) return
-  historyLoading.value = true
+  // 已有列表时静默刷新，避免发消息后侧栏空白闪「加载中」
+  const showLoading = !silent && sessions.value.length === 0
+  if (showLoading) historyLoading.value = true
   try {
     const resp = await getHistoryList()
     sessions.value = resp.data || []
   } catch {
-    sessions.value = []
+    if (!silent) sessions.value = []
   } finally {
-    historyLoading.value = false
+    if (showLoading) historyLoading.value = false
   }
 }
 
@@ -275,7 +287,11 @@ function onLogout() {
 }
 
 function onHistoryUpdated() {
-  loadHistory()
+  if (historyRefreshTimer != null) clearTimeout(historyRefreshTimer)
+  historyRefreshTimer = window.setTimeout(() => {
+    historyRefreshTimer = null
+    loadHistory({ silent: true })
+  }, 280)
 }
 
 async function refreshIdeBridgeStatus() {
@@ -321,6 +337,11 @@ function clearPairCountdown() {
     clearInterval(idePairCountdown)
     idePairCountdown = null
   }
+  idePairCopied.value = false
+  if (idePairCopiedTimer != null) {
+    clearTimeout(idePairCopiedTimer)
+    idePairCopiedTimer = null
+  }
 }
 
 async function onPairIde() {
@@ -353,8 +374,15 @@ async function copyPairCode() {
   if (!idePairCode.value) return
   try {
     await navigator.clipboard.writeText(idePairCode.value)
+    idePairCopied.value = true
+    if (idePairCopiedTimer != null) clearTimeout(idePairCopiedTimer)
+    idePairCopiedTimer = window.setTimeout(() => {
+      idePairCopied.value = false
+      idePairCopiedTimer = null
+    }, 1600)
+    ElMessage.success('配对码已复制')
   } catch {
-    // ignore
+    ElMessage.error('复制失败，请手动选中配对码')
   }
 }
 
@@ -428,6 +456,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('mes-history-updated', onHistoryUpdated)
+  if (historyRefreshTimer != null) {
+    clearTimeout(historyRefreshTimer)
+    historyRefreshTimer = null
+  }
   stopIdeBridgePolling()
 })
 </script>
@@ -762,6 +794,11 @@ onUnmounted(() => {
   color: #fff;
   cursor: pointer;
   font-size: 12px;
+  transition: background 0.15s ease;
+}
+
+.ide-pair-copy.copied {
+  background: #059669;
 }
 
 .footer-link {

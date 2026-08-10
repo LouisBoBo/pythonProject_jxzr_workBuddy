@@ -258,15 +258,23 @@ async def convert_document(file: UploadFile = File(...), _auth: tuple = Depends(
 
 
 @router.get("/convert/download/{job_id}/{filename}")
-async def download_converted(job_id: str, filename: str):
-    """下载转换后的文件（触发浏览器本地下载）。"""
+async def download_converted(
+    job_id: str,
+    filename: str,
+    _auth: tuple = Depends(require_auth),
+):
+    """下载转换后的文件（需登录；触发浏览器本地下载）。"""
     safe_job = Path(job_id).name
     safe_name = Path(filename).name
+    if safe_job != job_id or safe_name != filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
     job_dir = (CONVERT_PATH / safe_job).resolve()
-    target = (job_dir / safe_name).resolve()
-
-    if not str(target).startswith(str(job_dir)):
+    try:
+        target = (job_dir / safe_name).resolve()
+        target.relative_to(job_dir)
+    except ValueError:
         raise HTTPException(status_code=400, detail="非法文件路径")
+
     if not job_dir.exists() or not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
 

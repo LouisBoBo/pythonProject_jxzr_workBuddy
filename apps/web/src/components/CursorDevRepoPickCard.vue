@@ -67,10 +67,12 @@
         <button
           type="button"
           class="cd-btn confirm"
+          :class="{ 'is-loading': busy }"
           :disabled="busy || !canConfirm"
           @click="onConfirm"
         >
-          {{ busy ? '处理中…' : '确认并开始写码' }}
+          <span v-if="busy" class="cd-spinner" aria-hidden="true" />
+          {{ busy ? '启动中…' : '确认并开始写码' }}
         </button>
       </div>
     </template>
@@ -79,14 +81,30 @@
       <div class="cd-head">
         <div class="cd-title-row">
           <span class="cd-badge">写码失败</span>
+          <span class="cd-hint warn">可重试</span>
         </div>
         <p class="cd-summary">{{ card.error || '写码未成功' }}</p>
-        <p class="cd-desc">可重试同一需求，或取消后继续对话澄清</p>
+        <p class="cd-desc">将保留仓库、工作分支与需求摘要；点重试继续，或取消后改需求再聊。</p>
+      </div>
+      <div class="cd-chosen">
+        <div v-if="confirmedRepo" class="cd-chosen-row">
+          <span class="cd-k">仓库</span>
+          <span class="cd-v mono">{{ confirmedRepo }}</span>
+        </div>
+        <div v-if="confirmedRef" class="cd-chosen-row">
+          <span class="cd-k">工作分支</span>
+          <span class="cd-v mono">{{ confirmedRef }}</span>
+        </div>
+        <div v-if="confirmedRequirement" class="cd-chosen-row cd-chosen-req">
+          <span class="cd-k">需求</span>
+          <span class="cd-v">{{ confirmedRequirement }}</span>
+        </div>
       </div>
       <div class="cd-actions">
         <button type="button" class="cd-btn cancel" :disabled="busy" @click="onCancel">取消</button>
-        <button type="button" class="cd-btn confirm" :disabled="busy" @click="onRetry">
-          {{ busy ? '处理中…' : '重试写码' }}
+        <button type="button" class="cd-btn confirm" :class="{ 'is-loading': busy }" :disabled="busy" @click="onRetry">
+          <span v-if="busy" class="cd-spinner" aria-hidden="true" />
+          {{ busy ? '重试中…' : '重试写码' }}
         </button>
       </div>
     </template>
@@ -96,16 +114,18 @@
         <div class="cd-title-row">
           <!-- 完成态只由下方「合入指引」卡表达；确认卡闲置态勿再标「写码完成」 -->
           <span class="cd-badge">{{ isIdle ? '已确认' : '写码确认' }}</span>
-          <span v-if="!isIdle" class="cd-hint">写码进行中</span>
+          <span v-if="isRunning" class="cd-hint">写码进行中</span>
+          <span v-else-if="isIdle" class="cd-hint">可续聊</span>
         </div>
         <p class="cd-summary">
           {{
             isIdle
               ? `本轮已按上表写入工作分支${confirmedRef ? ` ${confirmedRef}` : ''}；合入请看下方「合入指引」`
-              : '已确认，正在按需求写码'
+              : (card.progressText || '已确认，正在按需求写码')
           }}
         </p>
-        <p v-if="isIdle" class="cd-desc">同窗可继续补充需求续聊改码。</p>
+        <p v-if="isRunning" class="cd-desc">可点输入区停止按钮中止；停止后可在本卡重试，无需重选仓库。</p>
+        <p v-else-if="isIdle" class="cd-desc">同窗继续发改码需求会沿用本任务与工作分支；无需重新选仓。</p>
       </div>
       <div class="cd-chosen">
         <div class="cd-chosen-row">
@@ -116,7 +136,7 @@
           <span class="cd-k">工作分支</span>
           <span class="cd-v mono">{{ confirmedRef }}</span>
         </div>
-        <div v-if="confirmedRequirement && !isIdle" class="cd-chosen-row cd-chosen-req">
+        <div v-if="confirmedRequirement" class="cd-chosen-row cd-chosen-req">
           <span class="cd-k">需求</span>
           <span class="cd-v">{{ confirmedRequirement }}</span>
         </div>
@@ -152,9 +172,38 @@ const refInput = ref('')
 const requirementInput = ref('')
 const createPr = ref(false)
 const localError = ref('')
+let busyFallbackTimer = null
+
+function armBusy() {
+  busy.value = true
+  if (busyFallbackTimer != null) clearTimeout(busyFallbackTimer)
+  // 父级若未更新 status，避免按钮永久锁死
+  busyFallbackTimer = window.setTimeout(() => {
+    busyFallbackTimer = null
+    busy.value = false
+  }, 45000)
+}
+
+function clearBusy() {
+  busy.value = false
+  if (busyFallbackTimer != null) {
+    clearTimeout(busyFallbackTimer)
+    busyFallbackTimer = null
+  }
+}
+
+watch(
+  () => props.card?.status,
+  (s) => {
+    if (s && s !== 'pending') clearBusy()
+  },
+)
 
 const isPending = computed(() => !props.card?.status || props.card.status === 'pending')
 const isIdle = computed(() => props.card?.phase === 'idle_for_followup')
+const isRunning = computed(
+  () => props.card?.status === 'confirmed' && props.card?.phase === 'running',
+)
 
 const suggestions = computed(() =>
   Array.isArray(props.card?.repos) ? props.card.repos.filter(Boolean) : []
@@ -163,6 +212,7 @@ const suggestions = computed(() =>
 const statusClass = computed(() => {
   const s = props.card?.status || 'pending'
   if (s === 'confirmed' && isIdle.value) return 'is-confirmed is-idle'
+  if (s === 'confirmed' && isRunning.value) return 'is-confirmed is-running'
   if (s === 'confirmed') return 'is-confirmed'
   if (s === 'cancelled') return 'is-cancelled'
   if (s === 'failed') return 'is-failed'
@@ -178,7 +228,8 @@ const confirmedRequirement = computed(
 const canConfirm = computed(
   () =>
     Boolean(normalizeRepo(repoInput.value)) &&
-    Boolean(String(requirementInput.value || '').trim()),
+    Boolean(String(requirementInput.value || '').trim()) &&
+    props.card?.available !== false,
 )
 
 watch(
@@ -232,19 +283,15 @@ function normalizeRepo(raw) {
 function onCancel() {
   if (busy.value) return
   if (!isPending.value && props.card?.status !== 'failed') return
-  busy.value = true
-  try {
-    emit('resolved', {
-      id: props.card.id,
-      status: 'cancelled',
-      repo: normalizeRepo(repoInput.value) || props.card?.repo || '',
-      ref: String(refInput.value || props.card?.ref || '').trim(),
-      requirement: String(requirementInput.value || props.card?.requirement || '').trim(),
-      createPr: Boolean(createPr.value),
-    })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'cancelled',
+    repo: normalizeRepo(repoInput.value) || props.card?.repo || '',
+    ref: String(refInput.value || props.card?.ref || '').trim(),
+    requirement: String(requirementInput.value || props.card?.requirement || '').trim(),
+    createPr: Boolean(createPr.value),
+  })
 }
 
 function onConfirm() {
@@ -261,37 +308,29 @@ function onConfirm() {
     return
   }
   repoInput.value = repo
-  busy.value = true
-  try {
-    emit('resolved', {
-      id: props.card.id,
-      status: 'confirmed',
-      repo,
-      ref: String(refInput.value || '').trim(),
-      requirement,
-      createPr: Boolean(createPr.value),
-    })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'confirmed',
+    repo,
+    ref: String(refInput.value || '').trim(),
+    requirement,
+    createPr: Boolean(createPr.value),
+  })
 }
 
 function onRetry() {
   if (busy.value || props.card?.status !== 'failed') return
-  busy.value = true
-  try {
-    emit('resolved', {
-      id: props.card.id,
-      status: 'retry',
-      repo: props.card?.repo || normalizeRepo(repoInput.value),
-      ref: String(props.card?.ref || refInput.value || '').trim(),
-      requirement: String(props.card?.requirement || requirementInput.value || '').trim(),
-      createPr: Boolean(props.card?.createPr ?? createPr.value),
-      jobId: props.card?.jobId || '',
-    })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'retry',
+    repo: props.card?.repo || normalizeRepo(repoInput.value),
+    ref: String(props.card?.ref || refInput.value || '').trim(),
+    requirement: String(props.card?.requirement || requirementInput.value || '').trim(),
+    createPr: Boolean(props.card?.createPr ?? createPr.value),
+    jobId: props.card?.jobId || '',
+  })
 }
 </script>
 
@@ -334,6 +373,16 @@ function onRetry() {
   font-size: 13px;
   font-weight: 500;
   color: #3a4250;
+}
+
+.cursor-dev-pick.is-running {
+  border-color: #b7c9e0;
+  background: linear-gradient(180deg, #f3f7fc 0%, #fff 55%);
+}
+
+.cursor-dev-pick.is-running .cd-hint {
+  color: #1d4f91;
+  background: rgba(47, 84, 140, 0.12);
 }
 
 .cursor-dev-pick.is-cancelled {
@@ -511,10 +560,14 @@ function onRetry() {
   background: #fff;
   border-radius: 8px;
   min-width: 96px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .cd-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.7;
   cursor: not-allowed;
 }
 
@@ -535,6 +588,26 @@ function onRetry() {
 
 .cd-btn.confirm:hover:not(:disabled) {
   background: #254572;
+}
+
+.cd-btn.confirm.is-loading {
+  opacity: 1;
+}
+
+.cd-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cd-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes cd-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .cd-chosen {

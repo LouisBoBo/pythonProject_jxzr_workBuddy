@@ -60,9 +60,11 @@
         <button
           type="button"
           class="cd-btn confirm"
+          :class="{ 'is-loading': busy }"
           :disabled="busy || !canConfirm"
           @click="onConfirm"
         >
+          <span v-if="busy" class="cd-spinner" aria-hidden="true" />
           {{ busy ? '提交中…' : '确认选项' }}
         </button>
       </div>
@@ -116,6 +118,31 @@ const notes = ref('')
 const localError = ref('')
 /** @type {Record<string, string[]>} */
 const selected = reactive({})
+let busyFallbackTimer = null
+
+function armBusy() {
+  busy.value = true
+  if (busyFallbackTimer != null) clearTimeout(busyFallbackTimer)
+  busyFallbackTimer = window.setTimeout(() => {
+    busyFallbackTimer = null
+    busy.value = false
+  }, 45000)
+}
+
+function clearBusy() {
+  busy.value = false
+  if (busyFallbackTimer != null) {
+    clearTimeout(busyFallbackTimer)
+    busyFallbackTimer = null
+  }
+}
+
+watch(
+  () => props.card?.status,
+  (s) => {
+    if (s && s !== 'pending') clearBusy()
+  },
+)
 
 const isPending = computed(() => !props.card?.status || props.card.status === 'pending')
 
@@ -198,18 +225,14 @@ function buildLabels() {
 
 function onCancel() {
   if (busy.value || !isPending.value) return
-  busy.value = true
-  try {
-    emit('resolved', {
-      id: props.card.id,
-      status: 'skipped',
-      selections: { ...selected },
-      selectionLabels: buildLabels(),
-      notes: String(notes.value || '').trim(),
-    })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'skipped',
+    selections: { ...selected },
+    selectionLabels: buildLabels(),
+    notes: String(notes.value || '').trim(),
+  })
 }
 
 function onConfirm() {
@@ -219,21 +242,17 @@ function onConfirm() {
     localError.value = '请先完成所有必选项'
     return
   }
-  busy.value = true
-  try {
-    const selectionLabels = buildLabels()
-    emit('resolved', {
-      id: props.card.id,
-      status: 'confirmed',
-      selections: Object.fromEntries(
-        Object.entries(selected).map(([k, v]) => [k, [...(v || [])]]),
-      ),
-      selectionLabels,
-      notes: String(notes.value || '').trim(),
-    })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  const selectionLabels = buildLabels()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'confirmed',
+    selections: Object.fromEntries(
+      Object.entries(selected).map(([k, v]) => [k, [...(v || [])]]),
+    ),
+    selectionLabels,
+    notes: String(notes.value || '').trim(),
+  })
 }
 </script>
 
@@ -431,10 +450,14 @@ function onConfirm() {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .cd-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.7;
   cursor: not-allowed;
 }
 
@@ -446,6 +469,22 @@ function onConfirm() {
 .cd-btn.confirm {
   background: #2f548c;
   color: #fff;
+}
+
+.cd-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cd-opt-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes cd-opt-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .cd-chosen {

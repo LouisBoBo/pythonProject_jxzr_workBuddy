@@ -1,6 +1,7 @@
 # Agent + API 共用依赖
 deepagents>=0.1.0
 langchain-openai>=0.3.0
+openai>=1.40.0
 langgraph-checkpoint-sqlite>=2.0.0
 aiosqlite>=0.20.0
 pandas>=2.0.0

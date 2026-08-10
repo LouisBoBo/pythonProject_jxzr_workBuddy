@@ -19,12 +19,7 @@ from cursor_dev.allowlist import is_allowed, normalize_repo  # noqa: E402
 from cursor_dev.audit import append_audit, list_audit  # noqa: E402
 from cursor_dev.config import reload_config, user_allowed  # noqa: E402
 from cursor_dev import jobs as job_store  # noqa: E402
-from cursor_dev.prompts import (  # noqa: E402
-    build_first_turn_prompt,
-    build_followup_prompt,
-    normalize_cloud_ui_message,
-    should_attach_shot_images,
-)
+from cursor_dev.prompts import build_first_turn_prompt, build_followup_prompt  # noqa: E402
 from cursor_dev.project_inspect import inspect_repo  # noqa: E402
 from cursor_dev.user_branch import user_work_branch  # noqa: E402
 from cursor_dev.readiness import build_readiness  # noqa: E402
@@ -33,8 +28,6 @@ from cursor_dev.github_preflight import resolve_starting_ref  # noqa: E402
 router = APIRouter(prefix="/api/cursor-dev", tags=["cursor-dev"])
 
 _MAX_MESSAGE_LEN = 4000
-# 允许视觉描述追加后的硬顶（防 DoS / 账单放大）；超出则截断尾部
-_MAX_ENRICHED_MESSAGE_LEN = 12_000
 
 
 class ReadinessCheck(BaseModel):
@@ -251,11 +244,9 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
     # 截图理解：写码旁路不经过 Deep Agents，在此注入视觉描述（文字辅助）
     # 原图会随 job.file_paths 交给 Cloud agent.send(images=…) 直接看图
     # 仅允许 data/uploads 下文件（拒绝任意绝对路径）
-    # 重做/重新设计：禁止再注入【截图理解】与旧原图，否则 Cloud 必抄旧布局
     raw_paths = [str(p).strip() for p in (body.file_paths or []) if str(p).strip()]
     image_paths: list[str] = []
-    attach_shots = should_attach_shot_images(message)
-    if raw_paths and attach_shots:
+    if raw_paths:
         try:
             agent_root = Path(__file__).resolve().parents[2] / "agent"
             if str(agent_root) not in sys.path:
@@ -265,7 +256,7 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
             image_paths = sanitize_client_file_paths(raw_paths, data_dir=DATA_DIR)
         except Exception:
             image_paths = []
-    if image_paths and attach_shots:
+    if image_paths:
         try:
             agent_root = Path(__file__).resolve().parents[2] / "agent"
             if str(agent_root) not in sys.path:
@@ -275,9 +266,6 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
             message = append_image_context(message, image_paths)
         except Exception:
             pass
-    message = normalize_cloud_ui_message(message)
-    if len(message) > _MAX_ENRICHED_MESSAGE_LEN:
-        message = message[:_MAX_ENRICHED_MESSAGE_LEN]
 
     ok, reason = cfg.availability()
     # D4：允许在 sdk 未就绪时仍创建 job（queued），便于联调落盘；执行留给 D5
@@ -364,79 +352,6 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
         user_id=uid,
         fixed_branch=cfg.work_branch,
     )
-
-    # P0：同会话同仓可复用 idle job。未澄清的短句新交付禁止静默并进旧 job。
-    thread_id = (body.thread_id or "").strip()
-    from cursor_dev.prompts import looks_like_unscoped_new_deliverable
-
-    reusable = job_store.find_reusable_followup_job(
-        DATA_DIR,
-        thread_id=thread_id,
-        repo=repo,
-        user_id=uid,
-    )
-    if reusable and looks_like_unscoped_new_deliverable(message):
-        reusable = None
-    if reusable and reusable.get("id") and reusable.get("status") in {
-        "idle_for_followup",
-        "succeeded",
-    }:
-        from cursor_dev.prompts import (
-            classify_task_tier,
-            extract_file_anchors_from_text,
-            extract_page_search_hints,
-            build_followup_prompt,
-        )
-        from cursor_dev.repo_index import format_index_for_prompt, load_cached_index
-
-        prior_as = ""
-        for m in reversed(reusable.get("messages") or []):
-            if isinstance(m, dict) and m.get("role") == "assistant":
-                prior_as = str(m.get("content") or "")
-                break
-        reuse_branch = (reusable.get("ref") or "").strip() or work_branch
-        task_tier = classify_task_tier(message, has_images=bool(image_paths))
-        page_hints = extract_page_search_hints(message)
-        # 仅用本地缓存索引，禁止同步打 GitHub
-        idx = load_cached_index(DATA_DIR, repo, reuse_branch)
-        system_prompt = build_followup_prompt(
-            user_message=message,
-            repo=repo,
-            work_branch=reuse_branch,
-            prior_assistant=prior_as,
-            create_pr=bool(body.create_pr),
-            has_images=bool(image_paths),
-            file_anchors=extract_file_anchors_from_text(message) or None,
-            task_tier=task_tier or None,
-            page_hints=page_hints or None,
-            repo_index_block=format_index_for_prompt(idx) if idx else "",
-        )
-        job_store.append_message(DATA_DIR, reusable["id"], role="user", content=message)
-        updated = job_store.update_job(
-            DATA_DIR,
-            reusable["id"],
-            status="queued",
-            error=None,
-            cancel_requested=False,
-            system_prompt=system_prompt,
-            create_pr=bool(body.create_pr),
-            ref=reuse_branch,
-            file_paths=(image_paths or reusable.get("file_paths") or []) if attach_shots else [],
-        )
-        warnings.append("同会话同仓已复用写码任务（Cloud 将 resume，避免重新拉仓）")
-        append_audit(
-            DATA_DIR,
-            {
-                "event": "job_reused_for_followup",
-                "job_id": reusable["id"],
-                "user_id": "" if uid is None else str(uid),
-                "repo": repo,
-                "thread_id": thread_id,
-                "agent_id": reusable.get("agent_id"),
-            },
-        )
-        return _job_to_response(updated or reusable, warnings=warnings)
-
     # 一人一支：job.ref 固定为用户工作分支；Cloud 起始优先已有工作分支，否则从历史功能分支/默认分支分叉
     from cursor_dev.project_inspect import continuity_from_jobs
 
@@ -468,29 +383,36 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
         else:
             base_ref = preferred_base or "main"
 
-    # 建 job 快路径：只做本地文本分类/路径抽取；GitHub 探测与索引放到 run_job
+    # 轻量探测布局锚点 + 任务档位，收窄 Cloud 探索（失败不影响建 job）
     file_anchors: list[str] = []
     task_tier = ""
     page_hints: list[str] = []
-    repo_index_block = ""
     try:
         from cursor_dev.prompts import (
             classify_task_tier,
             extract_file_anchors_from_text,
             extract_page_search_hints,
+            merge_file_anchors,
         )
-        from cursor_dev.repo_index import format_index_for_prompt, load_cached_index
+        from cursor_dev.project_inspect import probe_layout_anchors
 
         task_tier = classify_task_tier(message, has_images=bool(image_paths))
         page_hints = extract_page_search_hints(message)
-        file_anchors = extract_file_anchors_from_text(message)
-        cached = load_cached_index(DATA_DIR, repo, work_branch or base_ref or "main")
-        repo_index_block = format_index_for_prompt(cached) if cached else ""
+        probed: list[str] = []
+        if task_tier in {"css_layout", "ui_visual"}:
+            probe_ref = (base_ref or work_branch or "main").strip()
+            probed = probe_layout_anchors(
+                repo, probe_ref, page_hints=page_hints, limit=8
+            )
+        # 页面级锚点优先：probed 已按 page_hints 置顶；正文路径其次
+        file_anchors = merge_file_anchors(
+            probed,
+            extract_file_anchors_from_text(message),
+        )
     except Exception:
         file_anchors = []
         task_tier = ""
         page_hints = []
-        repo_index_block = ""
 
     system_prompt = build_first_turn_prompt(
         user_message=message,
@@ -502,7 +424,6 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
         file_anchors=file_anchors or None,
         task_tier=task_tier or None,
         page_hints=page_hints or None,
-        repo_index_block=repo_index_block,
     )
     job = job_store.create_job(
         DATA_DIR,
@@ -807,9 +728,8 @@ async def followup_cursor_dev_job(
     if len(message) > _MAX_MESSAGE_LEN:
         raise HTTPException(status_code=400, detail=f"message 过长（>{_MAX_MESSAGE_LEN}）")
 
-    # 本轮新图优先；重做意图时不沿用旧截图（避免 Cloud 抄旧布局）
+    # 本轮新图优先；若未再贴图则沿用任务上已有截图，方便按原图纠偏风格
     # 仅允许 data/uploads
-    attach_shots = should_attach_shot_images(message)
     try:
         agent_root = Path(__file__).resolve().parents[2] / "agent"
         if str(agent_root) not in sys.path:
@@ -827,21 +747,14 @@ async def followup_cursor_dev_job(
     except Exception:
         new_paths = []
         prev_paths = []
-    if not attach_shots:
-        image_paths = []
-        new_paths = []
-    else:
-        image_paths = new_paths or prev_paths
-    if new_paths and attach_shots:
+    image_paths = new_paths or prev_paths
+    if new_paths:
         try:
             from tools.vision_describe import append_image_context
 
             message = append_image_context(message, new_paths)
         except Exception:
             pass
-    message = normalize_cloud_ui_message(message)
-    if len(message) > _MAX_ENRICHED_MESSAGE_LEN:
-        message = message[:_MAX_ENRICHED_MESSAGE_LEN]
 
     ok, reason = cfg.availability()
     if not ok:
@@ -863,7 +776,6 @@ async def followup_cursor_dev_job(
     file_anchors: list[str] = []
     task_tier = ""
     page_hints: list[str] = []
-    repo_index_block = ""
     try:
         from cursor_dev.prompts import (
             classify_task_tier,
@@ -871,14 +783,20 @@ async def followup_cursor_dev_job(
             extract_page_search_hints,
             merge_file_anchors,
         )
-        from cursor_dev.repo_index import format_index_for_prompt, load_cached_index
+        from cursor_dev.project_inspect import probe_layout_anchors
 
         task_tier = classify_task_tier(message, has_images=bool(image_paths))
         page_hints = extract_page_search_hints(f"{message}\n{prior_as}")
-        # followup 接口同样禁止同步打 GitHub；索引仅读缓存，刷新放 run_job
-        idx = load_cached_index(DATA_DIR, str(job.get("repo") or ""), work_branch or "main")
-        repo_index_block = format_index_for_prompt(idx) if idx else ""
+        probed: list[str] = []
+        if task_tier in {"css_layout", "ui_visual"}:
+            probed = probe_layout_anchors(
+                str(job.get("repo") or ""),
+                work_branch or "main",
+                page_hints=page_hints,
+                limit=8,
+            )
         file_anchors = merge_file_anchors(
+            probed,
             extract_file_anchors_from_text(message),
             extract_file_anchors_from_text(prior_as),
         )
@@ -886,7 +804,6 @@ async def followup_cursor_dev_job(
         file_anchors = []
         task_tier = ""
         page_hints = []
-        repo_index_block = ""
 
     system_prompt = build_followup_prompt(
         user_message=message,
@@ -898,7 +815,6 @@ async def followup_cursor_dev_job(
         file_anchors=file_anchors or None,
         task_tier=task_tier or None,
         page_hints=page_hints or None,
-        repo_index_block=repo_index_block,
     )
     job_store.append_message(DATA_DIR, job_id, role="user", content=message)
     updated = job_store.update_job(

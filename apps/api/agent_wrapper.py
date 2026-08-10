@@ -17,16 +17,21 @@ from typing import Any, AsyncIterator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PATH = REPO_ROOT / "apps" / "agent"
+APPS_PATH = REPO_ROOT / "apps"
 if str(AGENT_PATH) not in sys.path:
     sys.path.insert(0, str(AGENT_PATH))
+if str(APPS_PATH) not in sys.path:
+    sys.path.insert(0, str(APPS_PATH))
 
 from agents.agent import create_agent, build_model  # noqa: E402
 from checkpoint_store import ensure_thread_messages, get_acheckpointer  # noqa: E402
 from middleware.request_context import get_thread_id, get_user_id, get_username  # noqa: E402
 
 # 核心双路由：code_dev（写码）与 code_review（审核）对等互斥，按意图分叉，无优先级
+# paste_code（贴码分析）为第三条独立车道，禁止写码选仓 / 全仓审核壳
 LANE_CODE_DEV = "code_dev"
 LANE_CODE_REVIEW = "code_review"
+LANE_PASTE_CODE = "paste_code"
 
 _CODE_DEV_MARKERS = (
     "【写码需求讨论",
@@ -43,6 +48,32 @@ _CODE_REVIEW_MARKERS = (
     "【系统强制路由·本机代码审核】",
 )
 
+# 与 cursor_dev.prompts.should_attach_shot_images 对齐的本地兜底（避免 import 失败时仍注入旧图规格）
+_REDESIGN_SKIP_VISION_RE = re.compile(
+    r"重做|重新设计|重新构图|设计感|不要?照抄|不要按旧|不要按截图|"
+    r"杂志排版|杂志风|彻底区分|新构图|全新(?:构图|排版|设计|工业)",
+    re.I,
+)
+_STRONG_SHOT_KEEP_VISION_RE = re.compile(
+    r"1\s*:\s*1|1：1|按截图复刻|像素级\s*还原|"
+    r"(?:照着|仿照).{0,6}(?:做|改)|改成这种|做成这种|改为这种|按这个界面",
+    re.I,
+)
+
+
+def _should_attach_shot_images_for_discuss(text: str) -> bool:
+    t = text or ""
+    if _STRONG_SHOT_KEEP_VISION_RE.search(t):
+        return True
+    if _REDESIGN_SKIP_VISION_RE.search(t):
+        return False
+    try:
+        from cursor_dev.prompts import should_attach_shot_images
+
+        return should_attach_shot_images(t)
+    except Exception:
+        return True
+
 
 def resolve_workbuddy_lane(message: str = "", ctx: dict | None = None) -> str | None:
     """根据本轮显式车道声明 / 确认标记解析意图分支。
@@ -53,7 +84,7 @@ def resolve_workbuddy_lane(message: str = "", ctx: dict | None = None) -> str | 
     """
     ctx = ctx or {}
     explicit = str(ctx.get("workbuddy_lane") or "").strip()
-    if explicit in (LANE_CODE_DEV, LANE_CODE_REVIEW):
+    if explicit in (LANE_CODE_DEV, LANE_CODE_REVIEW, LANE_PASTE_CODE):
         return explicit
 
     m = message or ""
@@ -480,6 +511,27 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                 summary += "（末批，即将汇总报告）"
             return summary, files[:8]
 
+        # 按路径读文件（非分批）：勿落入下方文本正则，否则内容里的 FileNotFound 等会误标「失败」
+        if name == "request_ide_read_files" or (
+            isinstance(data.get("file_contents"), list) and data.get("status") == "ok"
+        ):
+            files = [
+                str(x.get("path") or "").replace("\\", "/").strip()
+                for x in (data.get("file_contents") or [])
+                if isinstance(x, dict) and str(x.get("path") or "").strip()
+            ]
+            if not files:
+                files = [
+                    str(p).replace("\\", "/").strip()
+                    for p in (data.get("files") or [])
+                    if str(p).strip()
+                ]
+            nfiles = len(files) or len(data.get("file_contents") or [])
+            summary = f"已读 {nfiles} 个文件"
+            if data.get("local_fill"):
+                summary += "（本机直读）"
+            return summary, files[:8]
+
         if "total" in data or "records" in data:
             entity = data.get("entity") or ""
             total = data.get("total")
@@ -523,10 +575,25 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                     preview.append(str(e))
             return summary, preview
 
+        # 已成功解析为 dict 且非错误态：勿再当纯文本扫 FileNotFound（文件内容易误伤）
+        st_ok = str(data.get("status") or "").strip().lower()
+        if st_ok in {"", "ok", "success", "done"} and not data.get("error"):
+            msg = str(data.get("message") or data.get("raw_summary") or "").strip()
+            if msg:
+                return msg[:280], []
+            keys = [k for k in data.keys() if not str(k).startswith("_")][:6]
+            return "完成", [f"字段：{', '.join(keys)}"] if keys else []
+
     text = _strip_line_numbers(_as_text(out)).strip()
     # 虚拟 FS / 路径错误：不要误标成「已读取技能说明」
-    if re.search(r"path_not_found|Error:\s*Path|文件不存在|FileNotFound", text, re.I):
-        return f"失败：{text[:200]}", []
+    # 仅匹配输出开头的工具错误，避免源码正文里的 FileNotFound 误报
+    head = text[:240]
+    if re.search(
+        r"^(?:失败[:：]|Error:\s*|\[错误\])|path_not_found|Error:\s*Path|文件不存在",
+        head,
+        re.I,
+    ):
+        return f"失败：{head[:200]}", []
 
     looks_like_skill = (
         name == "read_file"
@@ -828,7 +895,16 @@ class AgentRunner:
             _git = ""
             _ide = ""
         lane = resolve_workbuddy_lane(message or "", _ctx)
-        if lane == LANE_CODE_DEV:
+        if lane == LANE_PASTE_CODE:
+            force_paste = (
+                "\n\n【系统强制路由·粘贴代码分析】\n"
+                "本轮意图=贴码分析（workbuddy_lane=paste_code）。\n"
+                "必须启用 Skill「paste-code-analyze」：直接分析用户粘贴的源码并给可落地修复建议。\n"
+                "禁止 :::cursor_dev_*、禁止先选仓库、禁止写码确认卡。\n"
+                "禁止 request_git_* / request_ide_*；禁止输出「🔍 代码审核报告」工程审核壳。\n"
+            )
+            body = f"{body}{force_paste}"
+        elif lane == LANE_CODE_DEV:
             force_coding = (
                 "\n\n【系统强制路由·Cursor 写码】\n"
                 "本轮意图=写码/改功能（workbuddy_lane=code_dev），与代码审核是另一条路由。\n"
@@ -880,10 +956,36 @@ class AgentRunner:
 
         if not file_paths:
             return prefix + body
-        file_note = "\n".join([f"[附件路径]: {p}" for p in file_paths])
+
+        # 截图 → 视觉模型文字，再交给纯文本主模型
+        # 重做/重新设计：跳过旧图视觉规格，避免讨论阶段又锁回五卡骨架
+        image_block = ""
+        non_image_paths: list[str] = list(file_paths)
+        try:
+            from tools.vision_describe import build_image_context_block, is_image_path
+
+            image_paths = [p for p in file_paths if is_image_path(p)]
+            non_image_paths = [p for p in file_paths if not is_image_path(p)]
+            skip_vision = not _should_attach_shot_images_for_discuss(body)
+            if image_paths and not skip_vision:
+                image_block = build_image_context_block(image_paths, user_hint=body)
+                if len(image_block) > 6000:
+                    image_block = image_block[:5980].rstrip() + "\n…(截图理解已截断)"
+        except Exception:
+            image_block = ""
+            non_image_paths = list(file_paths)
+
+        body_with_images = body
+        if image_block:
+            body_with_images = f"{body}\n\n{image_block}" if body.strip() else image_block
+
+        if not non_image_paths:
+            return prefix + body_with_images
+
+        file_note = "\n".join([f"[附件路径]: {p}" for p in non_image_paths])
         log_paths = [
             p
-            for p in file_paths
+            for p in non_image_paths
             if (
                 str(p).lower().endswith((".jsonl", ".log"))
                 or "api_access" in str(p).lower()
@@ -896,7 +998,7 @@ class AgentRunner:
         if log_paths:
             paths_block = "\n".join(f"- `{p}`" for p in log_paths)
             return (
-                f"{prefix}{body}\n\n"
+                f"{prefix}{body_with_images}\n\n"
                 "【系统强制路由·访问日志】检测到日志类附件。\n"
                 f"{paths_block}\n\n"
                 "禁止：read_file、ls、glob、transform_file、preview_file、build_api_catalog（这些会失败或误用）。\n"
@@ -909,7 +1011,7 @@ class AgentRunner:
                 f"\n其他附件：\n{file_note}"
             )
         return (
-            f"{prefix}{body}\n\n用户已上传以下文件，请按需读取或导入：\n{file_note}\n"
+            f"{prefix}{body_with_images}\n\n用户已上传以下文件，请按需读取或导入：\n{file_note}\n"
             "若为访问日志（.log/.jsonl）：请 "
             "import_external_api_logs(file_path=上方绝对路径) → analyze_api_errors_from_logs；"
             "不要用 read_file。"
@@ -961,6 +1063,17 @@ class AgentRunner:
         cancel_event: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         import asyncio
+
+        has_images = False
+        try:
+            from tools.vision_describe import is_image_path
+
+            has_images = any(is_image_path(p) for p in (file_paths or []))
+        except Exception:
+            has_images = False
+        if has_images:
+            yield {"type": "status", "text": "正在理解截图…"}
+            await asyncio.sleep(0)
 
         final_message = self._build_message(message, file_paths)
         config = self._run_config(thread_id)

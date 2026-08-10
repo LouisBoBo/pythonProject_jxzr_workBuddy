@@ -82,6 +82,18 @@ class Config:
         "yes",
     )
 
+    # --- 截图理解（主模型多为纯文本时，先走视觉模型再注入）---
+    # 默认复用 ZHIPU_*；也可单独配 VISION_*
+    VISION_API_KEY = os.getenv("VISION_API_KEY", "").strip() or os.getenv(
+        "ZHIPU_API_KEY", ""
+    ).strip()
+    VISION_BASE_URL = (
+        os.getenv("VISION_BASE_URL", "").strip()
+        or os.getenv("ZHIPU_BASE_URL", "").strip()
+        or "https://open.bigmodel.cn/api/paas/v4/"
+    )
+    VISION_MODEL = os.getenv("VISION_MODEL", "").strip() or "glm-4v-flash"
+
     @classmethod
     def summary(cls) -> str:
         lines = [

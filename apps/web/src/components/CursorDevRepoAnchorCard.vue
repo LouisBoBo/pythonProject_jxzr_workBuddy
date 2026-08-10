@@ -50,8 +50,21 @@
 
       <div class="cda-actions">
         <button type="button" class="cda-btn cancel" :disabled="busy" @click="onCancel">取消</button>
-        <button type="button" class="cda-btn confirm" :disabled="busy || !canConfirm" @click="onConfirm">
-          {{ busy ? '处理中…' : mode === 'existing' ? '选仓并读取项目' : '选仓并开始收集需求' }}
+        <button
+          type="button"
+          class="cda-btn confirm"
+          :class="{ 'is-loading': busy }"
+          :disabled="busy || !canConfirm"
+          @click="onConfirm"
+        >
+          <span v-if="busy" class="cda-spinner" aria-hidden="true" />
+          {{
+            busy
+              ? '处理中…'
+              : mode === 'existing'
+                ? '选仓并读取项目'
+                : '选仓并开始收集需求'
+          }}
         </button>
       </div>
     </template>
@@ -87,6 +100,31 @@ const busy = ref(false)
 const repoInput = ref('')
 const mode = ref('existing')
 const localError = ref('')
+let busyFallbackTimer = null
+
+function armBusy() {
+  busy.value = true
+  if (busyFallbackTimer != null) clearTimeout(busyFallbackTimer)
+  busyFallbackTimer = window.setTimeout(() => {
+    busyFallbackTimer = null
+    busy.value = false
+  }, 45000)
+}
+
+function clearBusy() {
+  busy.value = false
+  if (busyFallbackTimer != null) {
+    clearTimeout(busyFallbackTimer)
+    busyFallbackTimer = null
+  }
+}
+
+watch(
+  () => props.card?.status,
+  (s) => {
+    if (s && s !== 'pending') clearBusy()
+  },
+)
 
 const isPending = computed(() => !props.card?.status || props.card.status === 'pending')
 const suggestions = computed(() =>
@@ -137,12 +175,8 @@ function normalizeRepo(raw) {
 
 function onCancel() {
   if (busy.value || !isPending.value) return
-  busy.value = true
-  try {
-    emit('resolved', { id: props.card.id, status: 'cancelled' })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  emit('resolved', { id: props.card.id, status: 'cancelled' })
 }
 
 function onConfirm() {
@@ -153,18 +187,14 @@ function onConfirm() {
     localError.value = '请填写 owner/repo'
     return
   }
-  busy.value = true
-  try {
-    emit('resolved', {
-      id: props.card.id,
-      status: 'confirmed',
-      repo,
-      projectMode: mode.value === 'new' ? 'new' : 'existing',
-      pendingContent: props.card?.pendingContent || '',
-    })
-  } finally {
-    busy.value = false
-  }
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'confirmed',
+    repo,
+    projectMode: mode.value === 'new' ? 'new' : 'existing',
+    pendingContent: props.card?.pendingContent || '',
+  })
 }
 </script>
 
@@ -286,6 +316,10 @@ function onConfirm() {
   border-radius: 8px;
   cursor: pointer;
   background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 .cda-btn.cancel {
   border-color: #d0d7e0;
@@ -297,8 +331,22 @@ function onConfirm() {
   border-color: #2f548c;
 }
 .cda-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.7;
   cursor: not-allowed;
+}
+.cda-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cda-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes cda-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .mono {
   font-family: ui-monospace, Menlo, Monaco, Consolas, monospace;

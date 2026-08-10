@@ -436,62 +436,26 @@ def import_log_file(
 
 
 def resolve_upload_path(file_path: str) -> dict[str, Any]:
-    """解析用户附件路径：绝对路径 / uploads 下文件名 / 模糊匹配。"""
+    """解析用户附件路径：仅允许 data/uploads（及 samples），禁止任意绝对路径读盘。"""
     from config import Config
+    from tools.upload_paths import resolve_under_uploads
 
     raw = (file_path or "").strip().strip('"').strip("'")
     if not raw:
-        return {"error": "请提供 file_path", "hint": "使用消息中的 [附件路径] 绝对路径"}
+        return {"error": "请提供 file_path", "hint": "使用上传返回的 saved_name 或消息中的附件名"}
 
-    candidates: list[Path] = []
-    p = Path(raw).expanduser()
-    candidates.append(p)
-    if not p.is_absolute():
-        candidates.append(Path(Config.DATA_DIR) / "uploads" / p.name)
-        candidates.append(Path(Config.DATA_DIR) / "uploads" / raw)
-        candidates.append(Path(Config.DATA_DIR) / "samples" / p.name)
+    hit = resolve_under_uploads(
+        raw,
+        data_dir=Path(Config.DATA_DIR),
+        include_samples=True,
+    )
+    if hit is not None:
+        return {
+            "path": hit,
+            "resolved_from": "uploads" if "uploads" in str(hit) else "samples",
+        }
 
     upload_dir = Path(Config.DATA_DIR) / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    name = p.name
-    # 精确文件名
-    candidates.append(upload_dir / name)
-    # 上传保存名常为 stem_timestamp.ext；按原始名模糊匹配最新
-    stem = Path(name).stem
-    ext = Path(name).suffix
-    try:
-        matches = sorted(
-            upload_dir.glob(f"{stem}_*{ext}" if ext else f"{stem}_*"),
-            key=lambda x: x.stat().st_mtime,
-            reverse=True,
-        )
-        candidates.extend(matches[:5])
-        # 也匹配「原始名」出现在 saved_name 前缀的情况
-        if stem:
-            matches2 = sorted(
-                [x for x in upload_dir.iterdir() if x.is_file() and stem in x.name],
-                key=lambda x: x.stat().st_mtime,
-                reverse=True,
-            )
-            candidates.extend(matches2[:5])
-    except Exception:
-        pass
-
-    seen: set[str] = set()
-    for c in candidates:
-        try:
-            key = str(c.resolve()) if c.exists() else str(c)
-        except Exception:
-            key = str(c)
-        if key in seen:
-            continue
-        seen.add(key)
-        if c.is_file():
-            return {
-                "path": c.resolve(),
-                "resolved_from": raw if str(c.resolve()) != str(Path(raw).expanduser()) else "as_is",
-            }
-
     listing = []
     try:
         listing = sorted(
@@ -502,10 +466,10 @@ def resolve_upload_path(file_path: str) -> dict[str, Any]:
     except Exception:
         pass
     return {
-        "error": f"文件路径在文件系统中未找到: {raw}",
+        "error": f"文件路径在上传目录中未找到: {Path(raw).name or raw}",
         "hint": (
-            "请使用上传接口返回的绝对路径（消息里的 [附件路径]）。"
-            "也可只传文件名，将在 data/uploads/ 下查找。"
+            "请使用上传接口返回的 saved_name（文件名），"
+            "将仅在 data/uploads/ 下查找；禁止任意本机绝对路径。"
         ),
         "uploads_recent": listing,
         "upload_dir": str(upload_dir),

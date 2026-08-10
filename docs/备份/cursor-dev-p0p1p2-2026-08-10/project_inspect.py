@@ -601,10 +601,7 @@ def inspect_repo(
     elif hints:
         lines.append("技术栈线索：" + "；".join(hints))
     if continuity.get("requirement_snip"):
-        lines.append(
-            "前序需求摘要（可能过期；若本轮用户说重做/重新设计，以本轮原话为准，忽略旧截图骨架）：\n"
-            + str(continuity["requirement_snip"])[:400]
-        )
+        lines.append("前序需求摘要：\n" + str(continuity["requirement_snip"])[:400])
     if infer_map.get("README.md"):
         lines.append("README 摘要：\n" + infer_map["README.md"][:500])
     if treat_as_new:
@@ -655,8 +652,7 @@ def inspect_repo(
             "规则：\n"
             f"1. 已锁定技术栈：{stack_line}。不要再问/输出技术栈选项组。\n"
             f"2. 写码固定分支：`{preferred_work}`。{fork_hint} 严禁再开 dev/workbuddy-功能名-xxxx。\n"
-            "3. 增量可复用壳层/主题 token；业务页重做时禁止照抄首页/看板布局。"
-            "正文最多 1～2 句；未决点只用范围类 :::cursor_dev_options。\n"
+            "3. 增量须与已有登录页同风格；正文最多 1～2 句；未决点只用范围类 :::cursor_dev_options。\n"
             f"4. :::cursor_dev_propose 的 repo 填 `{repo}`，ref 填 `{preferred_work}`。\n"
             "5. 不要自动开 PR（用户手动合 main）；禁止表格/A~D 打字作答。\n"
             f"{anchor_rule}"

@@ -771,19 +771,6 @@ function pushAssistantMessage({
   })
 }
 
-/** 写码过程区收尾：把残留 running（尤其「核对中」心跳）封成完成/失败 */
-function sealCursorDevProcessSteps(items, { asError = false } = {}) {
-  return (items || []).map((i) => {
-    if (i?.type !== 'step') return i
-    if (i.state !== 'running' && i.state !== 'waiting') return i
-    const sealed = { ...i, state: asError ? 'error' : 'done' }
-    if (i.id === 'cursor-heartbeat' || /核对中|执行中（\d+s/.test(String(i.title || ''))) {
-      sealed.title = asError ? 'Cursor 本轮未正常结束' : 'Cursor 本轮已结束'
-    }
-    return sealed
-  })
-}
-
 async function stopStreaming() {
   if (!streaming.value) return
   const cursorJobId = String(activeCursorDevJobId.value || '').trim()
@@ -822,9 +809,8 @@ async function stopStreaming() {
 
   const sec = Math.max(1, Math.round((Date.now() - (streamStartedAt.value || Date.now())) / 1000))
   const durationText = streamDurationText.value || `${sec}s`
-  const processItems = sealCursorDevProcessSteps(
-    (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
-    { asError: false },
+  const processItems = (streamProcess.value || []).filter(
+    (i) => i.type === 'step' && i.id !== 'boot'
   )
   const confirms = (streamConfirms.value || []).map((c) => ({ ...c }))
   let finalContent = (streamContent.value || '').trimEnd()
@@ -1370,7 +1356,7 @@ function hasCodeDevActionWords(text) {
   )
 }
 
-/** 截图 + 视觉对齐/按图改界面 → 明确写码（勿当普通闲聊） */
+/** 截图 + 「改成这种/照着做」→ 明确写码（UI 参照），勿当普通闲聊 */
 function looksLikeScreenshotUiRedesign(text, files = []) {
   const hasImg = (files || []).some(
     (f) => f?.kind === 'image' || /\.(png|jpe?g|webp|gif)$/i.test(String(f?.name || f?.path || '')),
@@ -1378,26 +1364,7 @@ function looksLikeScreenshotUiRedesign(text, files = []) {
   if (!hasImg) return false
   const t = String(text || '').trim()
   if (!t) return false
-  return /(改成这种|改为这种|做成这种|照着|仿照|按这个|按截图|1\s*:\s*1|1：1|复刻|界面效果|像素级|高还原|跟(?:截图|这个|图)一样|和(?:截图|这个|图)一样|做成这样|调成这种|按这个效果|设计稿|效果图|按图|照图|参考.{0,8}(图|截图|界面|设计稿)|改成.{0,12}(侧边栏|菜单|导航|布局|风格|样式|仪表盘|首页|登录)|这种.{0,8}(侧边栏|菜单|导航|布局|风格)|截图里.{0,12}(改|调|修)|按截图.{0,8}(改|调|修)|侧边栏菜单)/i.test(
-    t,
-  )
-}
-
-/** 效果要跟截图一样（话术不限于「1:1」；排除「不要复刻」） */
-function looksLikeVisualMatchIntent(text) {
-  const t = String(text || '')
-  if (/(?:不(?:要|必|用)?|别|非|禁止|勿).{0,6}复刻/.test(t) && !/(1\s*:\s*1|1：1|改成这种|做成这种|跟(?:截图|图)一样)/i.test(t)) {
-    return false
-  }
-  return /(1\s*:\s*1|1：1|按截图复刻|像素级|真正\s*1\s*:\s*1|(?:照着|仿照).{0,8}(?:做|改|还原)|改成这种|做成这种|改为这种|按这个界面|复刻|跟(?:着)?(?:截图|这个|图)一样|和(?:截图|这个|图里|图上)一样|做成图里|改成图上|做成这样|调成这种|长这样|按这个效果|效果跟.{0,10}一样|按图(?:还原|实现|做)|照图|还原成|设计稿|效果图|(?:按|参考)(?:这个|此|该)?(?:界面|页面|设计稿|效果图|UI\s*稿)|【用户意图·视觉对齐】)/i.test(
-    t,
-  )
-}
-
-/** 按截图做局部修改（非整页复刻） */
-function looksLikeGuidedShotEditIntent(text) {
-  const t = String(text || '')
-  return /(?:按|根据|参考|对照)截图.{0,16}(?:改|调|修|换|动)|截图里.{0,20}(?:改|调|修|做成|换成)|图上.{0,16}(?:按钮|颜色|布局|顶栏|侧栏|表单|Logo|logo|间距).{0,10}(?:改|调|修)|把.{0,24}(?:改成|换成|调成).{0,16}(?:截图|图里|图上)|(?:只改|仅改|先改).{0,16}(?:截图|图里|图上)|【用户意图·按图修改】/i.test(
+  return /(改成这种|改为这种|做成这种|照着|仿照|按这个|按截图|1\s*:\s*1|1：1|复刻|界面效果|像素级|高还原|参考.{0,8}(图|截图|界面)|改成.{0,12}(侧边栏|菜单|导航|布局|风格|样式|仪表盘|首页)|这种.{0,8}(侧边栏|菜单|导航|布局|风格)|侧边栏菜单)/i.test(
     t,
   )
 }
@@ -1517,9 +1484,7 @@ function buildScreenshotIntentClarifyCard(content, files, hint = '') {
     pendingContent: content,
     pendingFiles: files,
     options: [
-      { id: 'code_dev_match', label: '做成跟截图一样（视觉对齐）' },
-      { id: 'code_dev_edit', label: '按截图修改部分界面' },
-      { id: 'code_dev', label: '按截图写/改功能（不强制照抄视觉）' },
+      { id: 'code_dev', label: '按截图改代码 / 界面' },
       { id: 'explain', label: '解释截图内容或报错' },
       { id: 'mes', label: '查 MES / 业务问题' },
       { id: 'code_review', label: '审核相关代码' },
@@ -1733,115 +1698,22 @@ function findRunningCursorDevPick() {
 }
 
 /**
- * 从原文抽取交付物短语（通用结构，不写死业务名）。
- * 例：「生产概览界面」→ ["生产概览界面","生产概览"]
+ * 同窗续聊改码意图：须明确改码，不能仅靠「本线程聊过写码」就跟进 Cursor。
+ * 短句续写（继续/再改/加上…）在已有 idle 任务时也算。
  */
-function extractDeliverablePhrases(text) {
-  const t = String(text || '')
-  const out = []
-  const seen = new Set()
-  const re = /((?:[\u4e00-\u9fff]{2,10})|(?:[A-Za-z][A-Za-z0-9_-]{1,24}))(界面|页面|模块|功能|视图|看板)/g
-  let m
-  while ((m = re.exec(t))) {
-    const full = m[0]
-    let stem = m[1]
-    const suffix = m[2]
-    stem = stem.replace(/^(?:开发|实现|新增|搭建|建设|做|写|系统)+/, '') || stem
-    if (stem.length >= 6 && /开发|实现|新增|系统/.test(m[1])) {
-      stem = stem.slice(-4)
-    }
-    const phrase = stem.endsWith(suffix) ? stem : `${stem}${suffix}`
-    for (const p of [phrase, stem, full]) {
-      if (!p || p.length < 2 || seen.has(p)) continue
-      if (['系统', '开发', '实现', '功能', '模块', '界面', '页面'].includes(p)) continue
-      seen.add(p)
-      out.push(p)
-    }
-  }
-  return out
-}
-
-function codingIntentTokens(text) {
-  const raw = String(text || '').toLowerCase()
-  const parts = raw.match(/[\u4e00-\u9fff]{2,}|[a-z0-9_]{3,}/g) || []
-  return new Set(parts)
-}
-
-function tokenOverlapRatio(a, b) {
-  const A = codingIntentTokens(a)
-  const B = codingIntentTokens(b)
-  if (!A.size || !B.size) return 0
-  let inter = 0
-  for (const x of A) if (B.has(x)) inter += 1
-  return inter / Math.max(A.size, B.size)
-}
-
-function isStyleOnlyPatchIntent(text) {
+function looksLikeCursorDevFollowup(text, files = []) {
   const t = String(text || '').trim()
   if (!t) return false
-  const style =
-    /(overflow|100vh|100vw|滚动|横向溢出|超出屏幕|视口|布局壳|纯\s*CSS|仅.*样式|页面固定|框架滚动|不[改动变].{0,6}(视觉|配色|图表|表格))/i.test(
-      t,
-    )
-  const newDeliverable =
-    /新(?:界面|页面|模块|功能)|(?:开发|实现|新增|做|写|搭建).{0,20}(?:模块|界面|页面|功能)/.test(t)
-  return style && !newDeliverable
-}
-
-function isShortContinuationIntent(text) {
-  const t = String(text || '').trim()
-  return (
+  if (looksLikePasteCodeAnalyze(t)) return false
+  if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) return false
+  if (looksLikeCodeDevIntent(t, files)) return true
+  if (
     t.length <= 80 &&
     /^(继续|再改|改一下|补一下|加上|去掉|换成|改成|默认|还要|另外|顺带|顺便)/.test(t)
-  )
-}
-
-/**
- * 按真实意图规划本轮写码路径（通用，不绑具体页面）。
- * - discuss：先讨论/选项/确认卡
- * - direct_followup：仅明确增量微调时可直开写码
- */
-function planCursorDevTurn(text, idlePick) {
-  const t = String(text || '').trim()
-  if (!t) return { mode: 'discuss', reason: 'empty' }
-  if (looksLikePasteCodeAnalyze(t) || looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) {
-    return { mode: 'discuss', reason: 'other_lane' }
-  }
-  if (!idlePick?.pick?.jobId) {
-    return { mode: 'discuss', reason: 'no_idle_job' }
-  }
-  if (isShortContinuationIntent(t)) {
-    return { mode: 'direct_followup', reason: 'short_continuation' }
-  }
-  if (isStyleOnlyPatchIntent(t)) {
-    return { mode: 'direct_followup', reason: 'style_patch' }
-  }
-  const prior = String(idlePick.pick.requirement || idlePick.pick.pendingContent || '')
-  const phrases = extractDeliverablePhrases(t)
-  const priorText = prior + ' ' + String(idlePick.pick.progressText || '')
-  // 用户提出的交付物未出现在上一轮需求里 → 新意图，须确认
-  if (phrases.length) {
-    const missing = phrases.filter((p) => p.length >= 2 && !priorText.includes(p))
-    if (missing.length) {
-      return { mode: 'discuss', reason: 'new_deliverable', missing }
-    }
-  }
-  // 含「开发/写…模块|界面」结构且与上一轮重叠很低 → 新意图
-  if (
-    /(?:开发|实现|新增|做|写|搭建).{0,20}(?:模块|界面|页面|功能)|新(?:界面|页面|模块|功能)/.test(t) &&
-    tokenOverlapRatio(t, prior) < 0.28
   ) {
-    return { mode: 'discuss', reason: 'low_overlap_new_work' }
+    return true
   }
-  // 默认：有 idle 也不直开，避免误伤（宁可多一次确认）
-  return { mode: 'discuss', reason: 'default_confirm' }
-}
-
-/**
- * 同窗可否跳过确认直接写码：仅 plan=direct_followup。
- */
-function looksLikeCursorDevFollowup(text, files = [], idlePick = null) {
-  return planCursorDevTurn(text, idlePick).mode === 'direct_followup'
+  return false
 }
 
 function clearActiveCursorDev() {
@@ -1869,71 +1741,23 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
       ctx.includes('新项目仓库') ||
       ctx.includes('新项目：从头') ||
       (ctx.includes('按新项目处理') && !ctx.includes('技术栈已锁定')))
-  const textForLane = String(userText || '')
-  // 重做/设计感优先于正文里残留的「按截图位置 / 与截图一致」（旧 propose 常见）
-  const redesignIntent =
-    /(重做|重新设计|重新构图|换个布局|换布局|(?:页面|界面|概览|看板|仪表盘|首页).{0,12}重写|重写.{0,12}(?:页面|界面|概览|看板)|更好看|设计感|有设计感|不要?照抄|别照抄|不要?像首页|不要?雷同|不要?套模板|不要按旧|不要按截图|非按截图|不要五卡|非五卡|全新(?:构图|排版|设计|工业)|杂志排版|杂志风|彻底区分|新排版|新构图)/.test(
-      textForLane,
-    ) && !looksLikeVisualMatchIntent(textForLane)
-  const strongShotFidelity = looksLikeVisualMatchIntent(textForLane)
-  const guidedShotEdit =
-    !strongShotFidelity && !redesignIntent && looksLikeGuidedShotEditIntent(textForLane)
-  const cssLayoutOnly =
-    /(overflow(?:-x|-y)?|100vh|100vw|滚动|横向溢出|超出屏幕|X\s*方向|视口固定|页面固定|框架滚动|纯\s*CSS|仅.*样式|不[改动变].{0,6}(视觉|配色|图表|表格)|布局壳|侧边栏.*滚动|内容区.*滚动|无横向)/i.test(
-      textForLane,
-    ) && !strongShotFidelity && !guidedShotEdit && !/(【截图理解】|复刻|按截图)/i.test(textForLane)
-  // 视觉对齐或按图修改都算 uiFromShot；重做盖过弱残留
   const uiFromShot =
-    !cssLayoutOnly &&
-    (strongShotFidelity ||
-      guidedShotEdit ||
-      (!redesignIntent &&
-        /改成这种|改为这种|做成这种|照着|仿照|按这个|按截图|1\s*:\s*1|1：1|复刻|【截图理解】|与截图一致|按截图位置|跟(?:截图|图)一样|按这个效果|设计稿|效果图/.test(
-          textForLane,
-        )))
-  const pageUiDesign =
-    !cssLayoutOnly &&
-    (redesignIntent ||
-      /(界面|页面|概览|看板|仪表盘|首页|视图|更好看|设计感|美观|不要?照抄|不要?像首页)/.test(
-        textForLane,
-      ))
+    /改成这种|改为这种|做成这种|照着|仿照|按这个|按截图|1\s*:\s*1|1：1|复刻|界面效果|侧边栏|导航菜单|仪表盘|【截图理解】/.test(
+      String(userText || ''),
+    )
   const optionsHardRule =
     `【交互铁律】能勾选就不输入。禁止表格/A~D/「请回复xxx」。正文最多 1～2 句。` +
     `同一轮不要同时输出 propose。备注能空就空。\n\n`
-  const cssLayoutRule = cssLayoutOnly
-    ? `【任务档位 · css_layout】本需求是溢出/滚动/宽度自适应修复。` +
-      `够开工则直接 :::cursor_dev_propose；requirement 开头必须写【任务档位：css_layout】，` +
-      `写明用户原文中的目标页面/模块名与验收（整页无横向滚动；表格可内部横滚）。` +
-      `禁止扩写业务；禁止改图表类型/配色/表格数据。\n\n`
-    : ''
-  const intentPlanRule =
-    `【意图规划】先判断用户本轮是「新交付」还是「对已确认需求的增量微调」。` +
-    `新模块/新界面/新功能或范围不清：必须 :::cursor_dev_options 或澄清后再 :::cursor_dev_propose。` +
-    `禁止因为同会话曾写过码就跳过确认直接开写。按用户原文规划，不要套固定页面模板。\n\n`
-  const uiDesignRule = pageUiDesign
-    ? redesignIntent && !strongShotFidelity
-      ? `【产品设计 · 重做优先 · Skill ui-product-design】用户要重做/有设计感：` +
-        `旧截图、旧「按截图位置」五卡骨架、【截图理解】只可作字段/模块清单参考，**不是布局合同**。` +
-        `propose 禁止写「五卡布局与截图一致 / 视觉布局（按截图位置）」；须写新构图。` +
-        `requirement 结构：页面身份（与首页/看板差异）→ 信息层级与新布局 → 保留的业务字段 → 禁止照抄 → 验收（并排不可雷同，须有新视觉签名）。` +
-        `禁止默认 Element 白卡片 KPI 墙、禁止双 gauge 完全同款复制粘贴。\n\n`
-      : `【产品设计 · Skill ui-product-design】做/改业务页时必须有设计感：一页一身份、信息有主次。` +
-        `禁止把首页/Home 布局骨架复制到其它业务页只改标题；须独立视图组件。` +
-        `propose 的 requirement 须含：页面身份（与首页差异）→ 信息层级 → 禁止照抄 → 验收（与首页并排布局不可雷同）。` +
-        `禁止默认 Element 白卡片 KPI 墙、禁止双 gauge 完全同款复制粘贴。\n\n`
-    : ''
   const uiShotRule = uiFromShot
-    ? strongShotFidelity
-      ? `【截图即设计稿 · 视觉对齐 · 质量优先】用户真实意图是效果跟截图一样` +
-        `（话术可能是 1:1/复刻/改成这种/跟截图一样/按这个效果等，不要求必须说「1:1」）。` +
-        `【截图理解】与原图为最高优先级 UI 规格。禁止占位图/假 Logo 交差。` +
-        `requirement 须含主视觉/Logo 资源方案与真正视觉对齐验收。信息够则直接 propose。\n\n`
-      : guidedShotEdit
-        ? `【按截图修改 · 对准改动点】用户是参照截图改一部分，不一定整页复刻。` +
-          `先改用户点名的点；未点名区域保持现状。若上下文其实是「整页跟截图一样」，按视觉对齐处理。\n\n`
-        : `【截图即设计稿 · 视觉优先】用户已贴界面截图并要求按图改界面。` +
-          `先判断是「整页跟截图一样」还是「只改图上某处」；拿不准时选项卡确认。` +
-          `消息里若有【截图理解】，把它当作 UI 规格。禁止臆造模块、禁止白卡片模板偷换色块仪表盘。\n\n`
+    ? `【截图即设计稿 · 视觉优先】用户已贴界面截图并要求复刻/改成这种布局。` +
+      `消息里若有【截图理解】，把它当作最高优先级 UI 规格（布局位置、图表类型、色块背景、叠层、菜单原文）。` +
+      `不要再问「截图里有什么」。禁止开放题追问技术栈/仓库地址（仓由前端选定；栈已锁定则勿再问）。\n` +
+      `【propose 铁律】requirement 必须按截图视觉结构写，禁止：\n` +
+      `1) 臆造截图没有的模块（如无中生有的底部双柱图、明细表）；\n` +
+      `2) 把彩色色块仪表盘改写成「与 Element Plus 一致的白卡片 KPI 行」；\n` +
+      `3) 只抄数字文案却丢掉图表类型（仪表盘/进度条/折线/环形/色块底/半透明浮层）。\n` +
+      `requirement 建议结构：视觉布局（按位置）→ 图表与控件类型 → 配色风格 → 技术（可沿用栈与 ECharts，但样式须贴近截图）→ 验收（布局/图表类型/配色接近截图）。\n` +
+      `用户说 1:1/复刻 且信息够时：优先直接 :::cursor_dev_propose；仅范围未定时用选项卡。\n\n`
     : ''
   const optionsExampleNew =
     `:::cursor_dev_options\n` +
@@ -1945,33 +1769,18 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
     `:::\n`
   const optionsExampleUiShot =
     `:::cursor_dev_options\n` +
-    `{"title":"按截图复刻，请确认","summary":"布局以截图为准，质量优先","notes_placeholder":"其它备注（可选）","groups":[{"id":"ui_scope","label":"本轮改动范围","multi":true,"required":true,"options":[{"id":"dash_home","label":"复刻首页/仪表盘主区（按截图模块）"},{"id":"sidebar_nav","label":"含左侧侧边栏/顶栏导航"},{"id":"charts_visual","label":"图表类型与色块按截图（非白卡片模板）"},{"id":"keep_stack","label":"沿用现有技术栈，视觉按截图"}]},{"id":"ui_fidelity","label":"还原精度","multi":false,"required":true,"options":[{"id":"visual_1to1","label":"真正 1:1：布局/色块/主视觉资源/控件样式对齐截图"},{"id":"visual_high","label":"高还原：允许个别装饰简化但主构图必须一致"}]}]}\n` +
+    `{"title":"按截图复刻，请确认","summary":"布局以截图为准；勾选本轮范围与还原精度","notes_placeholder":"其它备注（可选）","groups":[{"id":"ui_scope","label":"本轮改动范围","multi":true,"required":true,"options":[{"id":"dash_home","label":"复刻首页/仪表盘主区（按截图模块）"},{"id":"sidebar_nav","label":"含左侧侧边栏/顶栏导航"},{"id":"charts_visual","label":"图表类型与色块按截图（非白卡片模板）"},{"id":"keep_stack","label":"沿用现有技术栈，仅视觉贴近截图"}]},{"id":"ui_fidelity","label":"还原精度","multi":false,"required":true,"options":[{"id":"visual_high","label":"高还原：布局/色块/图表类型尽量接近截图"},{"id":"layout_data","label":"布局+数据对上即可，风格可简化"}]}]}\n` +
     `:::\n`
   const proposeExampleUi =
     uiFromShot
       ? `:::cursor_dev_propose\n` +
         `{"requirement":"## 视觉布局（按截图，禁止臆造）\\n- …\\n## 图表与控件类型\\n- …\\n## 配色与风格\\n- 色块卡/非默认白卡片…\\n## 技术\\n- 沿用现有栈；ECharts+自定义样式贴近截图\\n## 验收\\n- 布局比例、图表类型、配色接近截图；禁止白卡片 KPI 模板交差","repo":"","ref":""}\n` +
         `:::\n`
-      : cssLayoutOnly
-        ? `:::cursor_dev_propose\n` +
-          `{"requirement":"【任务档位：css_layout】\\n- 改动点：…\\n- 布局锚点：…\\n- 验收：整页无滚动条；侧栏/内容区各自内部滚动；视觉不变","repo":"","ref":""}\n` +
-          `:::\n`
-        : redesignIntent && !strongShotFidelity
-          ? `:::cursor_dev_propose\n` +
-            `{"requirement":"## 页面身份（重做，非按截图骨架）\\n- 与首页/看板差异：…\\n## 新构图与信息层级\\n- …\\n## 保留业务字段\\n- …\\n## 禁止\\n- 照抄 Home；照搬旧「顶行双 gauge+底表」截图骨架\\n## 验收\\n- 并排不可雷同；有新视觉签名","repo":"","ref":""}\n` +
-            `:::\n`
-          : pageUiDesign
-            ? `:::cursor_dev_propose\n` +
-              `{"requirement":"## 页面身份\\n- 与首页差异：…\\n## 信息层级\\n- 首屏主指标 / 次要区 / 明细\\n## 禁止照抄\\n- 独立视图，不复制 Home 布局\\n## 验收\\n- 与首页并排布局不可雷同；有主次层级","repo":"","ref":""}\n` +
-              `:::\n`
-            : `:::cursor_dev_propose\n` +
-              `{"requirement":"<完整需求摘要与验收点>","repo":"","ref":""}\n` +
-              `:::\n`
+      : `:::cursor_dev_propose\n` +
+        `{"requirement":"<完整需求摘要与验收点>","repo":"","ref":""}\n` +
+        `:::\n`
   let strategy = ''
-  if (cssLayoutOnly && (stackLocked || hasExistingInspect)) {
-    strategy =
-      `【已锁定技术栈 + 纯样式/滚动】禁止再问技术栈；优先直接 propose（见上方 css_layout 示例），勿扩成功能开发。\n`
-  } else if (uiFromShot && (stackLocked || hasExistingInspect)) {
+  if (uiFromShot && (stackLocked || hasExistingInspect)) {
     strategy =
       `【已锁定技术栈 + 截图参照】禁止再问技术栈/仓库。` +
       `用户已明确 1:1/复刻且【截图理解】较完整时，直接 propose；否则先出范围选项卡：\n${optionsExampleUiShot}\n`
@@ -1984,12 +1793,6 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
   } else {
     strategy = `若需用户决策，优先范围类选项卡；仅当上下文完全没有技术栈信息时才问技术栈：\n${uiFromShot ? optionsExampleUiShot : optionsExampleLocked}\n`
   }
-  const userFirst =
-    redesignIntent && !strongShotFidelity
-      ? `【本轮用户原话最高优先 · 盖过上下文一切旧截图/旧propose/前序摘要】\n用户说：${userText}\n\n` +
-        `若上下文有「按截图位置 / 五卡 / 与截图一致 /【截图理解】」一律忽略布局合同，只可留业务字段。\n` +
-        `够开工则直接 :::cursor_dev_propose，requirement 写新构图（工业灰蓝杂志风等用户指定风格），禁止再写按截图骨架。\n\n`
-      : ''
   return (
     `【写码需求讨论 · 远程 Cursor Cloud】用户要改的是 GitHub 远程仓库代码，不是本机沙箱。` +
     `禁止：建议 echo/vim/本机 clone；禁止任何 IDE/Git 审核工具（request_git_* / request_ide_*，含筛选功能源码）；` +
@@ -1997,61 +1800,25 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
     `仓库名/分支只表示要改哪个仓，绝不等于要审核。` +
     `最终改仓必须 :::cursor_dev_propose。` +
     ctxPart +
-    userFirst +
-    cssLayoutRule +
-    intentPlanRule +
-    uiDesignRule +
     uiShotRule +
     optionsHardRule +
     strategy +
     `仅当需求已足够开工时输出：\n` +
     proposeExampleUi +
-    (userFirst ? '' : `\n用户说：${userText}`)
+    `\n用户说：${userText}`
   )
 }
 
-const CURSOR_DEV_PROPOSE_START_RE = /:::cursor_dev_propose\b/i
-const CURSOR_DEV_OPTIONS_START_RE = /:::cursor_dev_options\b/i
-
-/**
- * 抽取写码机器块：允许缺少结尾 :::（模型常漏写），避免主线确认卡消失。
- * 返回 { index, end, body } 或 null。
- */
-function extractCursorDevFence(text, kind) {
-  const s = String(text || '')
-  const startRe = kind === 'options' ? CURSOR_DEV_OPTIONS_START_RE : CURSOR_DEV_PROPOSE_START_RE
-  const m = startRe.exec(s)
-  if (!m) return null
-  const start = m.index
-  const afterTag = s.slice(start + m[0].length)
-  // 跳过标签同行剩余空白/换行
-  const bodyBeginRel = afterTag.match(/^\s*/)?.[0]?.length ?? 0
-  const bodyAndRest = afterTag.slice(bodyBeginRel)
-  // 结尾：独立一行的 ::: ；若无则吃到文末（再剥可能的残缺）
-  const close = bodyAndRest.match(/\n[ \t]*:::[ \t]*(?:\n|$)/)
-  let body
-  let end
-  if (close && typeof close.index === 'number') {
-    body = bodyAndRest.slice(0, close.index).trim()
-    end = start + m[0].length + bodyBeginRel + close.index + close[0].length
-  } else {
-    body = bodyAndRest.replace(/\n?[ \t]*:::[ \t]*\s*$/, '').trim()
-    end = s.length
-  }
-  return { index: start, end, body }
-}
+const CURSOR_DEV_PROPOSE_RE = /:::cursor_dev_propose\s*([\s\S]*?):::/i
+const CURSOR_DEV_OPTIONS_RE = /:::cursor_dev_options\s*([\s\S]*?):::/i
 
 function hideCursorDevMachineBlocks(text) {
-  let s = String(text || '')
-  // 反复剥，避免 options+propose 并存
-  for (let i = 0; i < 4; i++) {
-    const opt = extractCursorDevFence(s, 'options')
-    const prop = extractCursorDevFence(s, 'propose')
-    const hit = [opt, prop].filter(Boolean).sort((a, b) => a.index - b.index)[0]
-    if (!hit) break
-    s = (s.slice(0, hit.index) + s.slice(hit.end)).trim()
-  }
-  return s
+  const s = String(text || '')
+  const idxOpts = s.search(/:::cursor_dev_options/i)
+  const idxProp = s.search(/:::cursor_dev_propose/i)
+  const idxs = [idxOpts, idxProp].filter((i) => i >= 0)
+  if (!idxs.length) return s
+  return s.slice(0, Math.min(...idxs)).trimEnd()
 }
 
 function hideCursorDevPropose(text) {
@@ -2102,67 +1869,13 @@ function stripLockedStackOptionGroups(options) {
   return { ...options, groups: filtered, summary: options.summary || '技术栈已锁定，只需确认本轮范围' }
 }
 
-/** 宽松解析 propose JSON：主线不能因模型 JSON 瑕疵丢确认卡 */
-function parseProposeJsonLoose(raw) {
-  const text = String(raw || '').trim()
-  if (!text) return null
-  const attempts = [text]
-  // 去掉可能的 markdown 代码围栏
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```$/i)
-  if (fenced) attempts.unshift(fenced[1].trim())
-  for (const chunk of attempts) {
-    try {
-      const data = JSON.parse(chunk)
-      if (data && typeof data === 'object') return data
-    } catch {
-      /* continue */
-    }
-  }
-  // 字段级抢救（requirement 可能含未转义换行）
-  const repoM = text.match(/"repo"\s*:\s*"([^"]*)"/)
-  const refM = text.match(/"ref"\s*:\s*"([^"]*)"/)
-  let requirement = ''
-  const reqBlock = text.match(
-    /"requirement"\s*:\s*"([\s\S]*?)"\s*,\s*"repo"\s*:/,
-  )
-  if (reqBlock) {
-    requirement = reqBlock[1]
-      .replace(/\\n/g, '\n')
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, '\\')
-  } else {
-    const reqAlt = text.match(/"requirement"\s*:\s*"((?:[^"\\]|\\.)*)"/)
-    if (reqAlt) {
-      try {
-        requirement = JSON.parse(`"${reqAlt[1]}"`)
-      } catch {
-        requirement = reqAlt[1]
-      }
-    }
-  }
-  if (!requirement.trim()) {
-    // 再退一步：requirement 到 repo 之间的裸文本
-    const soft = text.match(/requirement["']?\s*[:：]\s*([\s\S]+?)(?:\n\s*["']?repo["']?\s*[:：]|$)/i)
-    if (soft) requirement = soft[1].replace(/^["'\s]+|["'\s]+$/g, '')
-  }
-  if (!requirement.trim()) return null
-  return {
-    requirement: requirement.trim(),
-    repo: repoM ? repoM[1] : '',
-    ref: refM ? refM[1] : '',
-  }
-}
-
 function parseCursorDevOptions(text) {
   const s = String(text || '')
-  const fence = extractCursorDevFence(s, 'options')
-  if (!fence) return { content: null, options: null }
+  const m = s.match(CURSOR_DEV_OPTIONS_RE)
+  if (!m) return { content: null, options: null }
   let options = null
   try {
-    let raw = fence.body
-    const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)```$/i)
-    if (fenced) raw = fenced[1].trim()
-    const data = JSON.parse(raw)
+    const data = JSON.parse(String(m[1] || '').trim())
     const groups = Array.isArray(data.groups)
       ? data.groups.filter((g) => g?.id && Array.isArray(g.options))
       : []
@@ -2182,17 +1895,18 @@ function parseCursorDevOptions(text) {
   } catch {
     options = null
   }
-  const content = (s.slice(0, fence.index) + s.slice(fence.end)).trim()
+  const content = (s.slice(0, m.index) + s.slice(m.index + m[0].length)).trim()
   return { content, options }
 }
 
 function parseCursorDevPropose(text) {
   const s = String(text || '')
-  const fence = extractCursorDevFence(s, 'propose')
-  if (!fence) return { content: s.trimEnd(), propose: null }
+  const m = s.match(CURSOR_DEV_PROPOSE_RE)
+  if (!m) return { content: s.trimEnd(), propose: null }
   let propose = null
-  const data = parseProposeJsonLoose(fence.body)
-  if (data) {
+  try {
+    const raw = String(m[1] || '').trim()
+    const data = JSON.parse(raw)
     const requirement = String(data.requirement || data.summary || '').trim()
     if (requirement) {
       propose = {
@@ -2201,9 +1915,10 @@ function parseCursorDevPropose(text) {
         ref: String(data.ref || '').trim(),
       }
     }
+  } catch {
+    propose = null
   }
-  // 无论 JSON 是否成功，都从正文剥掉机器块，避免用户看到裸 :::cursor_dev_propose
-  const content = (s.slice(0, fence.index) + s.slice(fence.end)).trim()
+  const content = (s.slice(0, m.index) + s.slice(m.index + m[0].length)).trim()
   return { content, propose }
 }
 
@@ -2213,13 +1928,7 @@ function parseCursorDevMachineBlocks(text) {
     const cleaned = parseCursorDevPropose(optParsed.content || '').content
     return { content: cleaned, options: optParsed.options, propose: null }
   }
-  // 即便 options 解析失败，也要剥 options 围栏
-  let working = text
-  const optFence = extractCursorDevFence(working, 'options')
-  if (optFence && !optParsed.options) {
-    working = (working.slice(0, optFence.index) + working.slice(optFence.end)).trim()
-  }
-  const propParsed = parseCursorDevPropose(working)
+  const propParsed = parseCursorDevPropose(text)
   return { content: propParsed.content, options: null, propose: propParsed.propose }
 }
 
@@ -3048,20 +2757,6 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
     }
     if (idx >= 0) steps[idx] = { ...steps[idx], ...item }
     else steps.push(item)
-
-    // 真实工具/状态步骤到来时，关掉「核对中」心跳，避免夹在已完成步骤中间仍显示执行中
-    if (id !== 'cursor-heartbeat') {
-      for (let i = 0; i < steps.length; i++) {
-        if (steps[i].id === 'cursor-heartbeat' && steps[i].state === 'running') {
-          steps[i] = {
-            ...steps[i],
-            state: 'done',
-            title: 'Cursor 云端进度已更新',
-          }
-        }
-      }
-    }
-
     // 新步骤进入执行中时，把其它仍 running 的标为完成，避免「全是执行中」像卡死
     if (nextState === 'running') {
       for (let i = 0; i < steps.length; i++) {
@@ -3070,22 +2765,8 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
         }
       }
     }
-
-    // 心跳刷新：挪到列表末尾，避免「中间核对中、后面已完成」的错乱时间线
-    if (id === 'cursor-heartbeat' && nextState === 'running') {
-      const hbIdx = steps.findIndex((s) => s.id === 'cursor-heartbeat')
-      if (hbIdx >= 0 && hbIdx !== steps.length - 1) {
-        const [hb] = steps.splice(hbIdx, 1)
-        steps.push(hb)
-      }
-    }
-
     streamProcess.value = steps
   }
-
-  /** 收尾时把残留 running（尤其核对心跳）封成完成/失败，避免摘要已出但过程区仍「执行中」 */
-  const sealProcessSteps = (items, opts) => sealCursorDevProcessSteps(items, opts)
-
 
   const enqueueStep = (event) => {
     const gap = event.state === 'running' ? STEP_GAP_MS : 0
@@ -3125,12 +2806,9 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
     await stepRevealChain
     const sec = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
     const durationText = streamDurationText.value || `${sec}s`
-    const processItems = sealProcessSteps(
-      (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
-      { asError: Boolean(streamGotError && !stopped) },
+    const processItems = (streamProcess.value || []).filter(
+      (i) => i.type === 'step' && i.id !== 'boot',
     )
-    // 同步流式过程区，避免收尾瞬间仍闪「执行中」
-    streamProcess.value = processItems
     let body = finalContent
     // 有合入指引卡时，正文去掉与卡片同义的 push/合入尾巴，只保留改动摘要
     if (mergeGuide) {
@@ -3428,12 +3106,6 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
           if (event.merge_guide && typeof event.merge_guide === 'object') {
             mergeGuide = { ...event.merge_guide, merged_to_main: false }
           }
-          // 终稿到达：先封掉「核对中」心跳，再写正文
-          applyStep({
-            id: 'cursor-heartbeat',
-            state: 'done',
-            title: 'Cursor 本轮已结束',
-          })
           // 终稿为准，消除流式双份（review_hint 已由专用事件追加则不再重复）
           if (event.text) {
             let canonical = String(event.text).trim()
@@ -3510,7 +3182,7 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
         await finishUi({
           content:
             text ||
-            'Cursor 已完成本轮写码。小改可直接续聊（复用任务）；若提示复用失败会自动新建 Agent，不影响主线。',
+            'Cursor 已完成本轮写码。可继续在对话中补充需求续聊改码。',
           stopped: false,
         })
       },
@@ -3759,22 +3431,6 @@ async function onScreenshotIntentResolved(msg, payload) {
     return
   }
 
-  if (intent === 'code_dev_match') {
-    const need =
-      `【用户意图·视觉对齐】做成跟截图一样（真正视觉对齐，质量优先；话术不限于「1:1」）。\n\n` +
-      (content || '请按截图视觉对齐还原界面。')
-    await beginCodingDiscussEntry(need, files)
-    return
-  }
-
-  if (intent === 'code_dev_edit') {
-    const need =
-      `【用户意图·按图修改】按截图修改相关部分，不必整页像素复刻；对准用户点名的改动点。\n\n` +
-      (content || '请按截图修改界面。')
-    await beginCodingDiscussEntry(need, files)
-    return
-  }
-
   if (intent === 'code_dev') {
     const need =
       content ||
@@ -3936,35 +3592,12 @@ async function onCursorDevPickResolved(msg, payload) {
 
   const repo = payload.repo || msg.cursorDevPick.repo || ''
   const ref = String(payload.ref ?? msg.cursorDevPick.ref ?? '').trim()
-  let requirement = String(
+  const requirement = String(
     payload.requirement || msg.cursorDevPick.requirement || msg.cursorDevPick.pendingContent || '',
   ).trim()
-  // 确认卡里若仍残留旧截图五卡合同，而需求本身是重做 → 开工前撕掉并钉死指令
-  if (
-    /(重做|重新设计|重新构图|设计感|全新(?:构图|排版|设计|工业)|杂志|彻底区分|不要按旧|不要照抄|不要按截图)/.test(requirement) &&
-    !/(1\s*:\s*1|1：1|按截图复刻|改成这种|做成这种)/.test(requirement)
-  ) {
-    requirement = requirement
-      .replace(/【截图理解】[\s\S]*?(?=\n【|\n## |$)/g, '\n')
-      .replace(/^[^\n]*按截图位置[^\n]*\n?/gm, '\n')
-      .replace(/^[^\n]*五卡布局与截图[^\n]*\n?/gm, '\n')
-      .replace(/^[^\n]*与截图一致[^\n]*\n?/gm, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-    if (!requirement.startsWith('【本轮最高指令')) {
-      requirement =
-        '【本轮最高指令 · 重新设计】全新构图；禁止旧截图五卡/首页/看板骨架；只保留业务字段。\n\n' +
-        requirement
-    }
-  }
   const createPr = Boolean(payload.createPr ?? msg.cursorDevPick.createPr)
-  // 重做时丢掉会话里残留的旧截图附件，避免 Cloud 看图抄布局
-  const redesignNoShot =
-    /(重做|重新设计|重新构图|设计感|全新(?:构图|排版|设计|工业)|杂志|彻底区分|不要按旧|不要照抄|不要按截图)/.test(requirement) &&
-    !/(1\s*:\s*1|1：1|按截图复刻|改成这种|做成这种)/.test(requirement)
-  const pendingFiles = redesignNoShot
-    ? []
-    : Array.isArray(msg.cursorDevPick.pendingFiles) && msg.cursorDevPick.pendingFiles.length
+  const pendingFiles =
+    Array.isArray(msg.cursorDevPick.pendingFiles) && msg.cursorDevPick.pendingFiles.length
       ? [...msg.cursorDevPick.pendingFiles]
       : codingSessionPendingFiles()
 
@@ -4102,23 +3735,12 @@ async function onCursorDevPickResolved(msg, payload) {
   }
 
   try {
-    // P0：同会话同仓优先复用 idle job（后端也会兜底），避免无谓新建 Agent 拉仓
-    let reuseJobId = ''
-    const idleSame = findIdleCursorDevPick()
-    if (
-      idleSame?.pick?.jobId &&
-      String(idleSame.pick.repo || '') === String(repo || '') &&
-      !msg.cursorDevPick?.userStopped
-    ) {
-      reuseJobId = String(idleSame.pick.jobId)
-    }
     await beginCursorDevStream(msg, {
       repo,
       ref,
       content: requirement,
       files: pendingFiles,
       createPr,
-      existingJobId: reuseJobId,
     })
   } catch (e) {
     console.error('cursor-dev confirm start failed', e)
@@ -4243,13 +3865,13 @@ async function send(text) {
     return
   }
 
-  // 写码续聊：仅「增量微调」意图才直开 Cursor；新交付必须先讨论/确认
+  // 写码续聊：上一轮已完成（idle）且用户继续提改码需求 → 同一 job 走 Cursor
   const idlePick = findIdleCursorDevPick()
   if (
     !hasPastedSourceFence(content) &&
     !looksLikePasteCodeAnalyze(content) &&
     idlePick?.pick?.jobId &&
-    looksLikeCursorDevFollowup(content, filesSnapshot, idlePick)
+    looksLikeCursorDevFollowup(content, filesSnapshot)
   ) {
     const gate = await ensureCursorDevAvailableForUser()
     if (!gate.ok) {
@@ -4649,43 +4271,13 @@ async function startAssistantStream(
           } else if (parsed.propose && !hasPendingCursorDevPick() && !hasPendingCursorDevOptions()) {
             try {
               cursorDevPick = await buildCursorDevPickFromPropose(parsed.propose)
-              // 主线：即使车道暂不可用也保留确认卡（展示原因），禁止静默丢卡导致「没有后续」
               if (cursorDevPick && cursorDevPick.available === false) {
-                finalContent = [
-                  finalContent,
-                  '写码确认卡已生成；当前车道暂不可用，请按卡片提示处理或联系管理员后点确认。',
-                ]
-                  .filter(Boolean)
-                  .join('\n\n')
+                finalContent = [finalContent, cursorDevPick.reason || formatCursorDevAdminGuide()].filter(Boolean).join('\n\n')
+                cursorDevPick = null
               }
             } catch (e) {
               console.error('build cursor-dev pick failed', e)
               finalContent = [finalContent, formatCursorDevAdminGuide(e?.message || e)].filter(Boolean).join('\n\n')
-            }
-          } else if (
-            !parsed.propose &&
-            !parsed.options &&
-            /:::cursor_dev_propose\b/i.test(streamContent.value || '') &&
-            !hasPendingCursorDevPick()
-          ) {
-            // 机器块存在但解析失败：仍给出可编辑确认卡，避免主线断裂
-            const lastUser = [...messages.value].reverse().find((m) => m?.role === 'user')
-            const fallbackReq =
-              String(hideCursorDevMachineBlocks(streamContent.value || '') || '').trim() ||
-              String(lastUser?.content || '').trim() ||
-              '请确认并补充本轮写码需求'
-            try {
-              cursorDevPick = await buildCursorDevPickFromPropose({
-                requirement: fallbackReq.slice(0, 6000),
-                repo: findConfirmedCursorDevAnchor()?.anchor?.repo || '',
-                ref: '',
-              })
-              finalContent =
-                hideCursorDevMachineBlocks(finalContent) ||
-                '需求摘要已整理到确认卡（自动修复了不完整的机器块）。请核对后点确认写码。'
-            } catch (e) {
-              console.error('fallback cursor-dev pick failed', e)
-              finalContent = hideCursorDevMachineBlocks(finalContent)
             }
           }
         } else if (!confirms.length && isPasteCodeLane) {

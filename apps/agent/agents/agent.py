@@ -157,11 +157,27 @@ _PASTE_CODE_ANALYZE_PROMPT = """
 - 若 workbuddy_lane=code_dev / 【写码需求讨论】：走写码分支，本段与审核段均不适用。
 """
 
+_SCREENSHOT_PROMPT = """
+【截图理解】
+- 用户可在输入框粘贴或上传截图。系统会先用视觉模型生成【截图理解】文字块再交给你。
+- 请结合【截图理解】与用户意图处理：排错、改 UI、写码讨论、MES 答疑等。
+- 不要声称自己直接看到了像素；依据【截图理解】中的文字描述作答。
+- 若用户说「改成这种 / 1:1 / 复刻 / 照着做 / 跟截图一样 / 按这个效果」等（不要求必须说「1:1」）且带【截图理解】：把截图当**视觉设计规格**（布局位置、图表类型、色块背景优先于纯数字文案），走写码讨论；质量优先于速度；
+  禁止开放题问技术栈/仓库/「截图里有什么」；propose 禁止臆造截图没有的模块，禁止写成 Element 白卡片 KPI 模板。
+- 若用户是「按截图改某处 / 图上这个按钮…」：按局部修改处理，不要默认整页复刻；若上下文其实要整页一样，再按视觉对齐。
+- 若意图仍不清楚（例如只有截图、或话很短）：先用 1～2 个选择题反问确认目标
+  （做成跟截图一样 / 按图改一部分 / 解释报错 / 查 MES / 审核代码），不要臆测后直接开干。
+- 截图本身不改变车道：仍按用户确认的意图走 MES / 贴码 / 审核 / 写码。
+"""
+
 _CURSOR_DEV_CODING_PROMPT = """
 【写码分支 · workbuddy_lane=code_dev — 与审核对等互斥】
 - 触发：前端按用户「写/改/加功能」意图进入；标记含【写码需求讨论】、:::cursor_dev_*、
   page_context.workbuddy_lane=code_dev / cursor_dev_repo。
 - 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；改仓经 Cursor Cloud。
+- 做/改业务页、仪表盘、看板时同时启用 Skill「ui-product-design」：一页一身份、有信息层级；
+  禁止照抄首页布局骨架，禁止默认白卡片 KPI 模板交差。
+- 用户说重做/重新设计/设计感时：旧「按截图位置」只作字段参考，禁止再锁截图骨架；明文 1:1/复刻除外。
 - **禁止** request_git_* / request_ide_*（含 list_source_files）；**禁止**「代码审核报告」。
 - 仓库名/分支/GitHub URL 只表示改哪个仓，**不是**审核意图，也不是【Git仓库已确认】。
 - 与 code_review 无优先级关系：本轮是写码就不走审核工具。
@@ -266,6 +282,7 @@ def create_agent(model=None, checkpointer=None):
         build_system_prompt()
         + _CURSOR_DEV_CODING_PROMPT
         + _PASTE_CODE_ANALYZE_PROMPT
+        + _SCREENSHOT_PROMPT
     )
     if Config.IDE_REVIEW_ENABLED:
         from tools.ide_review import (

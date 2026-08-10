@@ -249,48 +249,6 @@ def is_cancel_requested(data_dir: Path, job_id: str) -> bool:
     return job.get("status") == "cancelled"
 
 
-def find_reusable_followup_job(
-    data_dir: Path,
-    *,
-    thread_id: str,
-    repo: str,
-    user_id: str | int | None = None,
-) -> dict[str, Any] | None:
-    """同会话 + 同仓可续聊的 job（优先带 agent_id，便于 Cloud resume 免重拉仓）。
-
-    新会话 thread_id 不同 → 返回 None，走新建 Agent。
-    """
-    tid = (thread_id or "").strip()
-    repo_n = (repo or "").strip()
-    if not tid or not repo_n:
-        return None
-    uid = "" if user_id is None else str(user_id)
-    best: dict[str, Any] | None = None
-    best_score = -1
-    for job in list_jobs(
-        data_dir,
-        statuses={"idle_for_followup", "succeeded"},
-    ):
-        if str(job.get("thread_id") or "").strip() != tid:
-            continue
-        if str(job.get("repo") or "").strip() != repo_n:
-            continue
-        if uid and str(job.get("user_id") or "") not in ("", uid, "0"):
-            # 有明确 user_id 时校验归属；空/0 本地免登录放行
-            if str(job.get("user_id") or "") != uid:
-                continue
-        if job.get("cancel_requested"):
-            continue
-        aid = str(job.get("agent_id") or "").strip()
-        updated = int(job.get("updated_at") or job.get("created_at") or 0)
-        # 有 agent_id 大幅加分；同档比更新时间
-        score = updated + (1_000_000_000 if aid else 0)
-        if score > best_score:
-            best_score = score
-            best = job
-    return best
-
-
 def active_jobs_on_repo(
     data_dir: Path,
     repo: str,

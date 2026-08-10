@@ -13,7 +13,7 @@ import sys, os
 _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
-from routes_config import UPLOAD_DIR, AgentConfig
+from routes_config import UPLOAD_DIR, AgentConfig, DATA_DIR
 from agent_wrapper import AgentRunner
 from routes.auth import require_auth
 from tools.platform_api import set_request_erp_token, reset_request_erp_token
@@ -49,8 +49,11 @@ async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
         page_context=req.page_context,
     )
     try:
+        from tools.upload_paths import sanitize_client_file_paths
+
+        safe_paths = sanitize_client_file_paths(req.file_paths, data_dir=Path(DATA_DIR))
         runner = AgentRunner()
-        reply = await runner.chat(req.message, thread_id, req.file_paths)
+        reply = await runner.chat(req.message, thread_id, safe_paths)
         return ChatResponse(reply=reply, thread_id=thread_id)
     finally:
         reset_request_agent_context(ctx)
@@ -82,12 +85,15 @@ async def chat_stream(
         )
         cancel_event = asyncio.Event()
         try:
+            from tools.upload_paths import sanitize_client_file_paths
+
+            safe_paths = sanitize_client_file_paths(req.file_paths, data_dir=Path(DATA_DIR))
             # 先发一条带填充的 SSE 注释，冲掉代理/内核初始缓冲
             yield ": " + (" " * 2048) + "\n\n"
             async for event in runner.stream_chat(
                 req.message,
                 thread_id,
-                req.file_paths,
+                safe_paths,
                 cancel_event=cancel_event,
             ):
                 if await request.is_disconnected():
@@ -175,24 +181,41 @@ async def chat_stream(
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), _auth: tuple = Depends(require_auth)):
-    """上传文件（CSV/Excel/JSON/日志等），保存到 uploads 目录并返回预览。"""
+    """上传文件（CSV/Excel/JSON/日志/截图等），保存到 uploads 目录并返回预览。"""
     import time
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
     content = await file.read()
-    safe_name = Path(file.filename).name
+    safe_name = Path(file.filename or "upload.bin").name
     timestamp = int(time.time())
-    stem = Path(safe_name).stem
+    stem = Path(safe_name).stem or "upload"
     ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+    # 剪贴板粘贴常无扩展名，按 content-type 补
+    image_exts = {"png", "jpg", "jpeg", "webp", "gif", "bmp"}
+    ctype = (file.content_type or "").lower()
+    if not ext and ctype.startswith("image/"):
+        ext = ctype.split("/", 1)[-1].replace("jpeg", "jpg")
+        if ext == "jpg":
+            pass
+        elif ext not in image_exts:
+            ext = "png"
     saved_name = f"{stem}_{timestamp}.{ext}" if ext else f"{stem}_{timestamp}"
     file_path = Path(UPLOAD_DIR) / saved_name
+
+    is_image = ext in image_exts or ctype.startswith("image/")
+    max_image = 8 * 1024 * 1024
+    if is_image and len(content) > max_image:
+        raise HTTPException(status_code=400, detail="截图过大（上限 8MB）")
+
     file_path.write_bytes(content)
     stat = file_path.stat()
 
     # 简单预览
     preview = ""
     try:
-        if ext == "csv":
+        if is_image:
+            preview = f"[image {ext or 'bin'} {stat.st_size} bytes]"
+        elif ext == "csv":
             text = content.decode("utf-8-sig")
             lines = text.strip().split("\n")
             preview = "\n".join(lines[:8])
@@ -211,23 +234,57 @@ async def upload_file(file: UploadFile = File(...), _auth: tuple = Depends(requi
 
     return {
         "status": "ok",
-        "filename": file.filename,
+        "filename": file.filename or saved_name,
         "saved_name": saved_name,
-        "path": str(file_path),
+        # 不回传本机绝对路径，避免泄露服务器目录结构；客户端请用 saved_name
+        "path": saved_name,
         "size": stat.st_size,
         "preview": preview,
         "extension": ext,
+        "kind": "image" if is_image else "file",
+        "mime": ctype or (f"image/{ext}" if is_image else "application/octet-stream"),
+        "preview_url": f"/api/uploads/{saved_name}" if is_image else "",
     }
 
 
-@router.get("/download/{filename}")
-async def download_file(filename: str):
-    """下载导出目录中的文件（仅允许访问 EXPORT_DIR 下的文件，防止路径遍历）。"""
-    export_dir = Path(AgentConfig.EXPORT_DIR).resolve()
-    target = (export_dir / filename).resolve()
+@router.get("/uploads/{filename}")
+async def get_uploaded_file(filename: str, _auth: tuple = Depends(require_auth)):
+    """读取 uploads 目录中的文件（用于截图预览；需登录）。"""
+    safe = Path(filename).name
+    if safe != filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    upload_root = Path(UPLOAD_DIR).resolve()
+    try:
+        target = (upload_root / safe).resolve()
+        target.relative_to(upload_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法文件路径")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    media = "application/octet-stream"
+    ext = target.suffix.lower()
+    media = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }.get(ext, media)
+    return FileResponse(path=str(target), filename=safe, media_type=media)
 
-    # 安全校验：目标文件必须在 EXPORT_DIR 之内
-    if not str(target).startswith(str(export_dir)):
+
+@router.get("/download/{filename}")
+async def download_file(filename: str, _auth: tuple = Depends(require_auth)):
+    """下载导出目录中的文件（需登录；仅允许 EXPORT_DIR，防止路径遍历）。"""
+    safe = Path(filename).name
+    if safe != filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    export_dir = Path(AgentConfig.EXPORT_DIR).resolve()
+    try:
+        target = (export_dir / safe).resolve()
+        target.relative_to(export_dir)
+    except ValueError:
         raise HTTPException(status_code=400, detail="非法文件路径")
 
     if not target.exists() or not target.is_file():
@@ -235,6 +292,6 @@ async def download_file(filename: str):
 
     return FileResponse(
         path=str(target),
-        filename=filename,
+        filename=safe,
         media_type="application/octet-stream",
     )

@@ -56,7 +56,14 @@
 
     <div class="wc-actions" v-if="isPending && !isExpiredLocally">
       <button type="button" class="wc-btn cancel" :disabled="busy" @click="onCancel">取消</button>
-      <button type="button" class="wc-btn confirm" :disabled="busy" @click="onConfirm">
+      <button
+        type="button"
+        class="wc-btn confirm"
+        :class="{ 'is-loading': busy }"
+        :disabled="busy"
+        @click="onConfirm"
+      >
+        <span v-if="busy" class="wc-spinner" aria-hidden="true" />
         {{ busy ? '处理中…' : (card.error ? '重试写入' : '确认写入') }}
       </button>
     </div>
@@ -454,11 +461,15 @@ async function onCancel() {
   background: #fff;
   border-radius: 8px;
   min-width: 96px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
 }
 
 .wc-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.7;
   cursor: not-allowed;
 }
 
@@ -480,6 +491,22 @@ async function onCancel() {
 
 .wc-btn.confirm:hover:not(:disabled) {
   background: #a84c1e;
+}
+
+.wc-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: wc-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes wc-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .wc-result {

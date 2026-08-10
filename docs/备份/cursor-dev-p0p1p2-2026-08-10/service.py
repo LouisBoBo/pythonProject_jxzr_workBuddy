@@ -534,107 +534,6 @@ def run_job(
                 "phase": "preflight",
             },
         )
-
-    # P2：css_layout 小改优先走 GitHub 补丁通道（不拉 Cloud 仓）；失败再回退
-    last_user_msg = ""
-    for m in reversed(job.get("messages") or []):
-        if isinstance(m, dict) and m.get("role") == "user":
-            last_user_msg = str(m.get("content") or "")
-            break
-    if not last_user_msg:
-        last_user_msg = str(job.get("system_prompt") or "")
-    try:
-        from .patch_channel import eligible_for_patch_channel, try_patch_channel
-        from .prompts import extract_page_search_hints
-        from .repo_index import format_index_for_prompt, get_or_refresh_repo_index, match_paths_by_hints
-
-        if eligible_for_patch_channel(
-            last_user_msg,
-            has_images=bool(job.get("file_paths")),
-        ):
-            _emit(
-                sink,
-                {
-                    "type": "status",
-                    "text": "检测到纯样式/溢出修复，尝试快速补丁通道（不重新拉仓）…",
-                    "phase": "patch",
-                },
-            )
-            hints = extract_page_search_hints(last_user_msg)
-            idx = get_or_refresh_repo_index(data_dir, repo, work_branch)
-            anchors = match_paths_by_hints(idx, hints, limit=6)
-            patch = try_patch_channel(
-                data_dir=data_dir,
-                repo=repo,
-                branch=work_branch,
-                message=last_user_msg,
-                file_anchors=anchors,
-                page_hints=hints,
-            )
-            if patch.get("ok"):
-                summary = str(patch.get("summary") or "快速补丁完成")
-                updated = job_store.update_job(
-                    data_dir,
-                    job_id,
-                    status="idle_for_followup",
-                    error=None,
-                    # 保留原 agent_id，便于同会话后续 Cloud resume
-                    agent_id=job.get("agent_id"),
-                )
-                job_store.append_message(
-                    data_dir, job_id, role="assistant", content=summary[:8000]
-                )
-                append_audit(
-                    data_dir,
-                    {
-                        "event": "job_patch_finished",
-                        "job_id": job_id,
-                        "repo": repo,
-                        "files": patch.get("files"),
-                        "channel": "patch",
-                    },
-                )
-                _emit(
-                    sink,
-                    {
-                        "type": "step",
-                        "id": "cursor-boot",
-                        "state": "done",
-                        "title": "快速补丁完成（未拉 Cloud 仓）",
-                    },
-                )
-                _emit(sink, {"type": "replace_text", "text": summary})
-                _emit(
-                    sink,
-                    {
-                        "type": "done",
-                        "job_id": job_id,
-                        "status": "idle_for_followup",
-                        "text": summary,
-                        "summary": summary,
-                        "channel": "patch",
-                        "suggest_code_review": False,
-                    },
-                )
-                return job_store.get_job(data_dir, job_id) or updated or job
-            _emit(
-                sink,
-                {
-                    "type": "status",
-                    "text": f"快速补丁未采用（{patch.get('error') or '未知'}），回退 Cursor Cloud…",
-                    "phase": "patch",
-                },
-            )
-    except Exception as patch_exc:  # noqa: BLE001
-        _emit(
-            sink,
-            {
-                "type": "status",
-                "text": f"快速补丁异常，回退 Cloud：{type(patch_exc).__name__}",
-                "phase": "patch",
-            },
-        )
-
     _emit(
         sink,
         {
@@ -648,32 +547,12 @@ def run_job(
     try:
         from cursor_sdk import (  # type: ignore
             Agent,
-            AgentOptions,
             CloudAgentOptions,
             CloudRepository,
             CursorAgentError,
         )
     except ImportError as exc:
         raise RuntimeError("未安装 cursor-sdk") from exc
-
-    # P1：注入仓结构索引（优先本地缓存，避免主线功能开发被 GitHub tree 拖慢）
-    try:
-        from .prompts import classify_task_tier
-        from .repo_index import (
-            format_index_for_prompt,
-            get_or_refresh_repo_index,
-            load_cached_index,
-        )
-
-        idx = load_cached_index(data_dir, repo, work_branch)
-        tier_now = classify_task_tier(last_user_msg, has_images=bool(job.get("file_paths")))
-        if not idx and tier_now in {"css_layout", "ui_visual"}:
-            idx = get_or_refresh_repo_index(data_dir, repo, work_branch)
-        index_block = format_index_for_prompt(idx, limit=50)
-        if index_block and index_block not in (prompt or ""):
-            prompt = f"{index_block}\n{prompt}"
-    except Exception:
-        pass
 
     url = f"https://github.com/{repo}"
     auto_pr = bool(job.get("create_pr")) and bool(cfg.auto_pr)
@@ -703,7 +582,7 @@ def run_job(
         except TypeError:
             return CloudAgentOptions(**kwargs)
 
-    agent_id = str(job.get("agent_id") or "").strip() or None
+    agent_id = None
     run_id = None
     final_text = ""
     pr_url = None
@@ -717,73 +596,26 @@ def run_job(
 
     last_err: Exception | None = None
     max_rounds = 5
-    # P0：同 job 已有 agent_id 时先 resume（免重新 clone）；失败再 create
-    resume_id = str(job.get("agent_id") or "").strip()
-    tried_resume = False
 
     try:
         for round_i in range(1, max_rounds + 1):
             starting = ref_candidates[(round_i - 1) % len(ref_candidates)]
             cloud = _make_cloud(starting)
             agent_cm = None
-            opened_via_resume = False
             try:
-                use_resume = bool(resume_id) and not tried_resume
-                if use_resume:
-                    tried_resume = True
-                    _emit(
-                        sink,
-                        {
-                            "type": "status",
-                            "text": f"复用已有 Cloud Agent（免重新拉仓）：{resume_id}",
-                            "phase": "agent",
-                        },
-                    )
-                    try:
-                        agent_cm = Agent.resume(
-                            resume_id,
-                            AgentOptions(api_key=cfg.api_key, model=cfg.model),
-                        )
-                        opened_via_resume = True
-                    except Exception as resume_err:  # noqa: BLE001
-                        _emit(
-                            sink,
-                            {
-                                "type": "status",
-                                "text": (
-                                    f"Agent resume 失败，改为新建（将拉仓）："
-                                    f"{type(resume_err).__name__}"
-                                ),
-                                "phase": "retry",
-                            },
-                        )
-                        resume_id = ""
-                        opened_via_resume = False
-                        agent_cm = Agent.create(
-                            model=cfg.model, api_key=cfg.api_key, cloud=cloud
-                        )
-                else:
-                    _emit(
-                        sink,
-                        {
-                            "type": "status",
-                            "text": f"启动 Cursor（第 {round_i}/{max_rounds} 轮，ref={starting or 'default'}）…",
-                            "phase": "retry" if round_i > 1 else "agent",
-                        },
-                    )
-                    agent_cm = Agent.create(model=cfg.model, api_key=cfg.api_key, cloud=cloud)
-
-                agent = agent_cm.__enter__()
-                agent_id = getattr(agent, "agent_id", None) or getattr(agent, "agentId", None) or agent_id
-                job_store.update_job(data_dir, job_id, agent_id=agent_id)
                 _emit(
                     sink,
                     {
                         "type": "status",
-                        "text": f"Agent 已就绪：{agent_id or '-'}（{'resume' if opened_via_resume else 'create'}）",
-                        "phase": "agent",
+                        "text": f"启动 Cursor（第 {round_i}/{max_rounds} 轮，ref={starting or 'default'}）…",
+                        "phase": "retry" if round_i > 1 else "agent",
                     },
                 )
+                agent_cm = Agent.create(model=cfg.model, api_key=cfg.api_key, cloud=cloud)
+                agent = agent_cm.__enter__()
+                agent_id = getattr(agent, "agent_id", None) or getattr(agent, "agentId", None)
+                job_store.update_job(data_dir, job_id, agent_id=agent_id)
+                _emit(sink, {"type": "status", "text": f"Agent 已创建：{agent_id or '-'}", "phase": "agent"})
 
                 from .cloud_images import build_send_message
 
@@ -964,42 +796,6 @@ def run_job(
                     _emit(sink, {"type": "token", "text": pr_note})
 
                 if status.lower() in {"error", "failed"}:
-                    # 主线兜底：resume 后的 run error 不直接判死，清 agent 后新建再试
-                    if opened_via_resume and round_i < max_rounds:
-                        _emit(
-                            sink,
-                            {
-                                "type": "status",
-                                "text": (
-                                    "复用 Agent 执行失败，正在新建 Cloud Agent 重试（保障主线）…"
-                                ),
-                                "phase": "retry",
-                            },
-                        )
-                        append_audit(
-                            data_dir,
-                            {
-                                "event": "job_resume_run_error_retry_create",
-                                "job_id": job_id,
-                                "repo": repo,
-                                "agent_id": agent_id,
-                                "run_id": run_id,
-                                "status": status,
-                            },
-                        )
-                        resume_id = ""
-                        job_store.update_job(data_dir, job_id, agent_id=None, run_id=None)
-                        agent_id = None
-                        final_text = ""
-                        pr_url = None
-                        if agent_cm is not None:
-                            try:
-                                agent_cm.__exit__(None, None, None)
-                            except Exception:
-                                pass
-                            agent_cm = None
-                        _time.sleep(min(3.0, 0.8 * round_i))
-                        continue
                     err = f"Cursor run 失败：status={status}"
                     job_store.update_job(
                         data_dir,
