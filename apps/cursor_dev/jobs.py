@@ -110,6 +110,28 @@ def update_job(data_dir: Path, job_id: str, **fields: Any) -> dict[str, Any] | N
         job = get_job(data_dir, job_id)
         if not job:
             return None
+        cur_status = str(job.get("status") or "")
+        new_status = fields.get("status")
+        # cancelled 禁止复活为 active（须新建 job）；failed/idle/succeeded 允许 queued 重试或续聊
+        if cur_status == "cancelled" and new_status is not None:
+            if str(new_status) in {"queued", "running", "creating_pr"}:
+                return job
+        # 已请求取消且仍在 active：禁止清 flag / 改回 running（防取消后幽灵复活）
+        # 若已是 failed 且显式 cancel_requested=False + queued，视为合法「重试写码」
+        if job.get("cancel_requested") and cur_status in {"queued", "running", "creating_pr"}:
+            if fields.get("cancel_requested") is False:
+                fields = {**fields}
+                fields.pop("cancel_requested", None)
+            if fields.get("status") in {"queued", "running", "creating_pr"}:
+                fields = {**fields, "status": "cancelled"}
+        elif job.get("cancel_requested") and cur_status == "failed":
+            # 重试路径会带 cancel_requested=False；未带则保持 failed 不可偷偷改回 running
+            if fields.get("cancel_requested") is not False and new_status in {
+                "queued",
+                "running",
+                "creating_pr",
+            }:
+                return job
         for k, v in fields.items():
             if k == "id":
                 continue

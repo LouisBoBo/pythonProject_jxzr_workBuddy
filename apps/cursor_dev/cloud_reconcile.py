@@ -1,4 +1,4 @@
-"""Cursor Cloud 与本地 job 状态对账：避免云端已完成、UI 仍卡在 running。"""
+"""Cursor Cloud 与本地 job 状态对账：避免云端已结束、UI 仍卡在 running。"""
 from __future__ import annotations
 
 import logging
@@ -88,15 +88,31 @@ def cloud_status_is_finished(status: str) -> bool:
     return s in {"FINISHED", "COMPLETED", "DONE", "SUCCEEDED", "SUCCESS"}
 
 
+def cloud_status_is_failed(status: str) -> bool:
+    s = (status or "").upper()
+    return s in {
+        "ERROR",
+        "FAILED",
+        "FAILURE",
+        "CANCELLED",
+        "CANCELED",
+        "EXPIRED",
+        "TIMED_OUT",
+        "TIMEOUT",
+    }
+
+
 def reconcile_running_job_with_cloud(
     data_dir: Path,
     job_id: str,
     *,
     api_key: str | None = None,
 ) -> dict[str, Any] | None:
-    """若本地仍 running/queued 但 Cloud 已结束，收尾为 idle_for_followup 并写入摘要。
+    """本地仍 active 时，按 Cloud 终态收尾。
 
-    返回更新后的 job；无需对账则返回 None。
+    - Cloud 成功 → idle_for_followup + 摘要
+    - Cloud 失败/取消 → failed/cancelled + error（可重试）
+    无需对账则返回 None。
     """
     from . import jobs as job_store
 
@@ -105,6 +121,16 @@ def reconcile_running_job_with_cloud(
         return None
     if job.get("status") not in {"running", "queued", "creating_pr"}:
         return None
+    # 用户已点停止：优先落 cancelled，不拿 Cloud 成功盖掉停止意图
+    if job.get("cancel_requested"):
+        return job_store.update_job(
+            data_dir,
+            job_id,
+            status="cancelled",
+            error=str(job.get("error") or "用户已取消写码任务"),
+            cancel_requested=True,
+        )
+
     agent_id = str(job.get("agent_id") or "").strip()
     if not agent_id:
         return None
@@ -113,6 +139,18 @@ def reconcile_running_job_with_cloud(
     if not info.get("ok"):
         return None
     status = str(info.get("status") or "")
+
+    if cloud_status_is_failed(status):
+        err = f"Cursor Cloud 未成功结束：status={status}"
+        local_status = "cancelled" if status in {"CANCELLED", "CANCELED"} else "failed"
+        return job_store.update_job(
+            data_dir,
+            job_id,
+            status=local_status,
+            error=err,
+            agent_id=agent_id,
+        )
+
     if not cloud_status_is_finished(status):
         return None
 
@@ -128,7 +166,6 @@ def reconcile_running_job_with_cloud(
         cancel_requested=False,
         agent_id=agent_id,
     )
-    # 避免重复追加同一摘要
     msgs = list((updated or job).get("messages") or [])
     last_as = ""
     for m in reversed(msgs):

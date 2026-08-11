@@ -81,6 +81,12 @@ else
   exit 1
 fi
 
+# 本地无真实 ERP(:8000) 时：登录会回落沙箱；同时把沙箱 URL 显式传给 API
+if ! curl -sf --connect-timeout 1 "${PLATFORM_BASE_URL:-http://127.0.0.1:8000}/health" >/dev/null 2>&1 \
+  && ! curl -sf --connect-timeout 1 "${PLATFORM_BASE_URL:-http://127.0.0.1:8000}/docs" >/dev/null 2>&1; then
+  log "PLATFORM_BASE_URL 不可达 → 登录将回落探活沙箱 ${API_PROBE_SANDBOX_URL}"
+fi
+
 log "启动 API → http://127.0.0.1:${API_PORT}  (health: /health)"
 (
   cd "$ROOT/apps/api"

@@ -348,6 +348,10 @@ async def create_cursor_dev_job(body: CreateJobBody, auth: tuple = Depends(requi
             )
 
     warnings: list[str] = []
+    if freed_replace:
+        warnings.append(
+            f"已自动结束你上一次未完成的写码任务（{len(freed_replace)} 个），本轮以新任务为准；旧确认卡可点「重试写码」补救。"
+        )
     peers = job_store.active_jobs_on_repo(DATA_DIR, repo)
     if peers:
         who = ", ".join(
@@ -572,12 +576,17 @@ def _assert_job_owner(job: dict[str, Any], user) -> None:
 
 @router.get("/jobs/{job_id}/stream")
 async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)):
-    """执行 queued job 并通过 SSE 推送进度。不经过 Deep Agents。"""
+    """执行 queued job 并通过 SSE 推送进度。不经过 Deep Agents。
+
+    若任务已在 running：软挂接（只对账/心跳，不二次 run_job），保证刷新/断线可补救。
+    """
     import asyncio
     import json
+    import time as _time
 
     from fastapi.responses import StreamingResponse
 
+    from cursor_dev.cloud_reconcile import reconcile_running_job_with_cloud
     from cursor_dev.service import run_job
 
     user = _auth_user(auth)
@@ -587,11 +596,9 @@ async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)
     _assert_job_owner(job, user)
 
     status = job.get("status")
-    # 假死 running：先对账云端；已完成则允许客户端拉摘要，勿一直 409
+    # 假死 running：先对账云端；已完成/失败则直接可被客户端消费
     if status == "running":
         try:
-            from cursor_dev.cloud_reconcile import reconcile_running_job_with_cloud
-
             reconciled = reconcile_running_job_with_cloud(
                 DATA_DIR, job_id, api_key=reload_config().api_key
             )
@@ -600,10 +607,41 @@ async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)
                 status = job.get("status")
         except Exception:
             pass
-    if status == "running":
-        raise HTTPException(status_code=409, detail="任务正在执行中")
-    # queued 首跑 / failed 重试 / idle_for_followup 经 messages 重新入队后也可 stream
-    if status not in {"queued", "failed"}:
+
+    # 终态：短流推送结果，便于前端补救收尾
+    if status in {"idle_for_followup", "succeeded", "failed", "cancelled"}:
+        cfg = reload_config()
+
+        def _last_assistant(cur: dict[str, Any]) -> str:
+            for m in reversed(cur.get("messages") or []):
+                if m.get("role") == "assistant":
+                    return str(m.get("content") or "")
+            return ""
+
+        async def terminal_gen():
+            cur = job_store.get_job(DATA_DIR, job_id) or job
+            st = cur.get("status")
+            if st in {"idle_for_followup", "succeeded"}:
+                summary = _last_assistant(cur) or "Cursor 已完成本轮写码。"
+                yield f"data: {json.dumps({'type': 'status', 'text': '写码已完成（对账恢复）', 'phase': 'start'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'replace_text', 'text': summary}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'job_id': job_id, 'text': summary, 'status': st, 'recovered': True}, ensure_ascii=False)}\n\n"
+            else:
+                err = cur.get("error") or "写码未成功结束，可点重试写码"
+                yield f"data: {json.dumps({'type': 'error', 'message': err}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            terminal_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    soft_attach = status == "running"
+    if status not in {"queued", "failed", "running"}:
         raise HTTPException(
             status_code=409,
             detail=f"任务状态不可执行：{status}（续聊请先 POST /jobs/{{id}}/messages）",
@@ -618,14 +656,80 @@ async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)
     loop = asyncio.get_running_loop()
 
     def sink(event: dict[str, Any]) -> None:
-        # run_job 在线程池；asyncio.Queue 须经 call_soon_threadsafe
         loop.call_soon_threadsafe(queue.put_nowait, event)
 
     async def produce() -> None:
         try:
-            job_store.update_job(DATA_DIR, job_id, status="queued", error=None)
-            fresh = job_store.get_job(DATA_DIR, job_id)
-            await asyncio.to_thread(run_job, DATA_DIR, fresh, sink=sink, cfg=cfg)
+            if soft_attach:
+                # 不二次执行：仅循环对账直到终态
+                while True:
+                    cur = job_store.get_job(DATA_DIR, job_id) or {}
+                    if cur.get("cancel_requested"):
+                        job_store.update_job(
+                            DATA_DIR,
+                            job_id,
+                            status="cancelled",
+                            error=str(cur.get("error") or "用户已取消写码任务"),
+                            cancel_requested=True,
+                        )
+                        await queue.put({"type": "error", "message": "写码任务已取消"})
+                        break
+                    try:
+                        reconciled = await asyncio.to_thread(
+                            reconcile_running_job_with_cloud,
+                            DATA_DIR,
+                            job_id,
+                            api_key=cfg.api_key,
+                        )
+                    except Exception:
+                        reconciled = None
+                    cur = reconciled or job_store.get_job(DATA_DIR, job_id) or {}
+                    st = cur.get("status")
+                    if st in {"idle_for_followup", "succeeded"}:
+                        summary = ""
+                        for m in reversed(cur.get("messages") or []):
+                            if m.get("role") == "assistant":
+                                summary = str(m.get("content") or "")
+                                break
+                        summary = summary or "Cursor Cloud 已完成本轮写码（软挂接恢复）。"
+                        await queue.put(
+                            {
+                                "type": "done",
+                                "job_id": job_id,
+                                "text": summary,
+                                "status": st,
+                                "recovered": True,
+                            }
+                        )
+                        break
+                    if st in {"failed", "cancelled"}:
+                        await queue.put(
+                            {
+                                "type": "error",
+                                "message": cur.get("error") or "写码未成功结束",
+                            }
+                        )
+                        break
+                    await asyncio.sleep(5.0)
+            else:
+                # failed 重试：显式清 cancel，允许合法重回 queued
+                job_store.update_job(
+                    DATA_DIR,
+                    job_id,
+                    status="queued",
+                    error=None,
+                    cancel_requested=False,
+                )
+                fresh = job_store.get_job(DATA_DIR, job_id)
+                if not fresh or fresh.get("status") == "cancelled":
+                    await queue.put(
+                        {
+                            "type": "error",
+                            "message": "任务已取消，请点「重试写码」开新任务（勿复用已取消 job）",
+                        }
+                    )
+                else:
+                    await asyncio.to_thread(run_job, DATA_DIR, fresh, sink=sink, cfg=cfg)
         except Exception as exc:  # noqa: BLE001
             await queue.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             job_store.update_job(DATA_DIR, job_id, status="failed", error=str(exc))
@@ -639,22 +743,17 @@ async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)
         return ""
 
     async def event_gen():
-        import time as _time
-
-        from cursor_dev.cloud_reconcile import reconcile_running_job_with_cloud
-
         task = asyncio.create_task(produce())
         started = _time.time()
         saw_terminal = False
         try:
-            yield f"data: {json.dumps({'type': 'status', 'text': '写码任务开始', 'phase': 'start'}, ensure_ascii=False)}\n\n"
+            start_text = "写码任务接管中（云端仍在执行）" if soft_attach else "写码任务开始"
+            yield f"data: {json.dumps({'type': 'status', 'text': start_text, 'phase': 'start'}, ensure_ascii=False)}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=8.0)
                 except asyncio.TimeoutError:
-                    # 心跳：避免前端一直停在「正在调用工具」像假死
                     elapsed = max(1, int(_time.time() - started))
-                    # 流卡住时主动对账：云端已完成则立刻 done，解放 UI
                     try:
                         reconciled = await asyncio.to_thread(
                             reconcile_running_job_with_cloud,
@@ -686,7 +785,6 @@ async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)
                     continue
 
                 if event.get("type") == "_end":
-                    # produce 结束但可能没推 done：再对账一次
                     if not saw_terminal:
                         try:
                             reconciled = await asyncio.to_thread(
@@ -709,33 +807,33 @@ async def stream_cursor_dev_job(job_id: str, auth: tuple = Depends(require_auth)
                     saw_terminal = True
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
-            # 流断开时：优先对账 Cloud——若云端已完成则收尾为 idle，勿误取消已成功任务。
-            # 若仍在跑才释放名额（cancel），避免下一轮误报并发已满。
+            # 断流补救：对账优先；有 agent 的 running 不强制 cancel（云端继续，下次可软挂接）
             try:
                 reconciled = reconcile_running_job_with_cloud(
                     DATA_DIR,
                     job_id,
                     api_key=cfg.api_key,
                 )
-                if not reconciled:
-                    cur = job_store.get_job(DATA_DIR, job_id) or {}
-                    if cur.get("status") in {"queued", "running", "creating_pr"}:
+                cur = reconciled or job_store.get_job(DATA_DIR, job_id) or {}
+                if cur.get("cancel_requested"):
+                    job_store.update_job(
+                        DATA_DIR,
+                        job_id,
+                        status="cancelled",
+                        error=str(cur.get("error") or "用户已取消写码任务"),
+                        cancel_requested=True,
+                    )
+                elif cur.get("status") in {"queued", "running", "creating_pr"}:
+                    has_agent = bool(str(cur.get("agent_id") or "").strip())
+                    # 仅取消「从未真正开工」的孤儿 queued，避免刷新页面杀掉云端写码
+                    if cur.get("status") == "queued" and not has_agent:
                         job_store.request_cancel(
                             DATA_DIR,
                             job_id,
-                            reason="写码流已断开或未正常收尾，释放任务名额",
+                            reason="写码流断开且任务尚未开工，释放名额",
                         )
             except Exception:
-                try:
-                    cur = job_store.get_job(DATA_DIR, job_id) or {}
-                    if cur.get("status") in {"queued", "running", "creating_pr"}:
-                        job_store.request_cancel(
-                            DATA_DIR,
-                            job_id,
-                            reason="写码流已断开或未正常收尾，释放任务名额",
-                        )
-                except Exception:
-                    pass
+                pass
             if not task.done():
                 task.cancel()
                 try:

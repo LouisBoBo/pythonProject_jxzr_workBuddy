@@ -786,8 +786,16 @@ function sealCursorDevProcessSteps(items, { asError = false } = {}) {
 
 async function stopStreaming() {
   if (!streaming.value) return
-  const cursorJobId = String(activeCursorDevJobId.value || '').trim()
+  let cursorJobId = String(activeCursorDevJobId.value || '').trim()
   const cursorMsg = activeCursorDevMsg.value
+  // 兜底：active id 丢了时仍按确认卡 jobId 取消，避免假死 running
+  if (!cursorJobId && cursorMsg?.cursorDevPick?.jobId) {
+    cursorJobId = String(cursorMsg.cursorDevPick.jobId || '').trim()
+  }
+  if (!cursorJobId) {
+    const stuck = findRunningCursorDevPick()
+    if (stuck?.pick?.jobId) cursorJobId = String(stuck.pick.jobId)
+  }
   const ctrl = streamAbort.value
   streamAbort.value = null
   // 先抬 requestId，丢弃后续迟到事件，再 abort
@@ -805,9 +813,13 @@ async function stopStreaming() {
     } catch {
       /* ignore */
     }
-                if (cursorMsg?.cursorDevPick) {
-      cursorMsg.cursorDevPick = {
-        ...cursorMsg.cursorDevPick,
+    const pickMsg =
+      cursorMsg ||
+      messages.value.find((m) => String(m?.cursorDevPick?.jobId || '') === cursorJobId) ||
+      null
+    if (pickMsg?.cursorDevPick) {
+      pickMsg.cursorDevPick = {
+        ...pickMsg.cursorDevPick,
         status: 'failed',
         phase: 'failed',
         error: '已停止写码。可点「重试写码」用同一需求再跑，或继续对话改需求后再确认。',
@@ -1154,6 +1166,8 @@ async function loadSession(id) {
     nextTick(() => inputEl.value?.focus())
     await attachPendingConfirms(id)
     await loadWriteAudit(id)
+    // 刷新/重进会话时：修正「写码进行中」假状态，或重新挂上仍在跑的 job
+    void resumeOrReconcileCursorDevAfterLoad()
   }
 }
 
@@ -1725,11 +1739,105 @@ function findRunningCursorDevPick() {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const m = messages.value[i]
     const pick = m?.cursorDevPick
-    if (pick && pick.status === 'confirmed' && pick.phase === 'running' && pick.jobId) {
+    if (
+      pick &&
+      pick.status === 'confirmed' &&
+      (pick.phase === 'running' || pick.phase === 'starting') &&
+      pick.jobId
+    ) {
       return { msg: m, pick, index: i }
     }
   }
   return null
+}
+
+/**
+ * 对账：确认卡停在「写码进行中」，但服务端 job 已取消/失败/完成时，修正卡片状态。
+ * 避免点停止/流断开后仍显示进行中，用户误以为「确认了却没写码」。
+ */
+async function reconcileStuckCursorDevPicks() {
+  if (streaming.value) return false
+  let changed = false
+  for (const m of messages.value) {
+    const pick = m?.cursorDevPick
+    if (!pick || pick.status !== 'confirmed' || (pick.phase !== 'running' && pick.phase !== 'starting'))
+      continue
+    const jobId = String(pick.jobId || '').trim()
+    if (!jobId) {
+      m.cursorDevPick = {
+        ...pick,
+        status: 'failed',
+        phase: 'failed',
+        error: '写码任务状态丢失，请点「重试写码」。',
+        progressText: '',
+      }
+      changed = true
+      continue
+    }
+    if (String(activeCursorDevJobId.value || '') === jobId) continue
+    try {
+      const resp = await getCursorDevJob(jobId)
+      const st = String(resp?.data?.status || '')
+      const err = String(resp?.data?.error || '').trim()
+      if (st === 'cancelled' || st === 'failed') {
+        m.cursorDevPick = {
+          ...pick,
+          status: 'failed',
+          phase: 'failed',
+          error:
+            err ||
+            (st === 'cancelled'
+              ? '写码已取消（未改完代码）。可点「重试写码」继续。'
+              : '写码失败，可点「重试写码」。'),
+          userStopped: /取消|停止/.test(err) || st === 'cancelled',
+          progressText: '',
+        }
+        changed = true
+      } else if (st === 'idle_for_followup' || st === 'succeeded') {
+        m.cursorDevPick = {
+          ...pick,
+          status: 'confirmed',
+          phase: 'idle_for_followup',
+          error: '',
+          progressText: '写码完成',
+        }
+        changed = true
+      }
+    } catch {
+      /* 拉不到任务时不强制改，避免误伤 */
+    }
+  }
+  if (changed) await persistSession()
+  return changed
+}
+
+/** 加载会话后：若仍有 running 卡，对账或重新挂上 SSE（绝不对 running 发 followup） */
+async function resumeOrReconcileCursorDevAfterLoad() {
+  const stuck = findRunningCursorDevPick()
+  if (!stuck?.pick?.jobId || streaming.value) {
+    await reconcileStuckCursorDevPicks()
+    return
+  }
+  try {
+    const resp = await getCursorDevJob(stuck.pick.jobId)
+    const st = String(resp?.data?.status || '')
+    // queued / running / failed：只挂流（软挂接或重跑），禁止 messages 续聊
+    if (st === 'queued' || st === 'running' || st === 'failed') {
+      await beginCursorDevStream(stuck.msg, {
+        repo: stuck.pick.repo,
+        ref: stuck.pick.ref || '',
+        content: stuck.pick.requirement || stuck.pick.pendingContent || '',
+        files: Array.isArray(stuck.pick.pendingFiles) ? stuck.pick.pendingFiles : [],
+        createPr: Boolean(stuck.pick.createPr),
+        existingJobId: stuck.pick.jobId,
+        attachOnly: true,
+      })
+      return
+    }
+  } catch {
+    /* fall through */
+  }
+  await reconcileStuckCursorDevPicks()
 }
 
 /**
@@ -2878,7 +2986,10 @@ function buildCursorDevAgentMessage(content, repo, jobId) {
   return `${base}\n\n【写码仓库已确认】目标仓库：${repo}。${jobPart}请围绕该仓库澄清需求并给出实现方案；后续轮次可继续修改。开 PR 须用户明确确认。`
 }
 
-async function beginCursorDevStream(msg, { repo, ref, content, files, createPr = false, existingJobId = '' }) {
+async function beginCursorDevStream(
+  msg,
+  { repo, ref, content, files, createPr = false, existingJobId = '', attachOnly = false },
+) {
   // D5：确认仓库后只走 Cursor Cloud SSE，绝不调用 Deep Agents / startAssistantStream
   const filePaths = (Array.isArray(files) ? files : [])
     .map((f) => f?.saved_name || (f?.path ? String(f.path).split(/[/\\]/).pop() : ''))
@@ -2901,7 +3012,8 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
       ref: String(ref || msg.cursorDevPick.ref || '').trim(),
       requirement: content || msg.cursorDevPick.requirement || '',
       createPr: Boolean(createPr),
-      progressText: '正在创建写码任务…',
+      phase: 'starting',
+      progressText: attachOnly ? '正在重新挂接写码进度…' : '正在创建写码任务…',
     }
   }
 
@@ -2927,13 +3039,46 @@ async function beginCursorDevStream(msg, { repo, ref, content, files, createPr =
           processCollapsed: true,
         })
       }
-    } else {
-      await followupCursorDevJob(jobId, {
-        message: content,
-        create_pr: Boolean(createPr),
-        confirmed: true,
-        file_paths: filePaths,
-      })
+      // 开新任务会自动取消旧 active：把同会话其它「写码进行中」卡落到可重试
+      if (warnings.some((w) => /自动结束你上一次|新任务为准/.test(String(w)))) {
+        for (const m of messages.value) {
+          const p = m?.cursorDevPick
+          if (!p || p === msg?.cursorDevPick) continue
+          if (p.status === 'confirmed' && (p.phase === 'running' || p.phase === 'starting')) {
+            m.cursorDevPick = {
+              ...p,
+              status: 'failed',
+              phase: 'failed',
+              error: '已开新写码任务，本轮被自动结束。可点「重试写码」补救。',
+              userStopped: true,
+              progressText: '',
+            }
+          }
+        }
+      }
+    } else if (!attachOnly) {
+      // 仅 idle/failed 续聊可 followup；running/queued 绝不可 messages（会 409）
+      let jobStatus = ''
+      try {
+        const stResp = await getCursorDevJob(jobId)
+        jobStatus = String(stResp?.data?.status || '')
+      } catch {
+        jobStatus = ''
+      }
+      if (jobStatus === 'cancelled' || jobStatus === 'queued' || jobStatus === 'running') {
+        // 已取消 / 仍在跑：交给上层 forceNew 或 attachOnly；此处勿 followup
+        if (jobStatus === 'cancelled') {
+          throw new Error('任务已取消，不可续聊；将自动开新任务')
+        }
+        // queued/running：直接挂流，不追加 messages
+      } else {
+        await followupCursorDevJob(jobId, {
+          message: content,
+          create_pr: Boolean(createPr),
+          confirmed: true,
+          file_paths: filePaths,
+        })
+      }
     }
     if (msg?.cursorDevPick) {
       const workRef = String(ref || msg.cursorDevPick.ref || '').trim()
@@ -3991,6 +4136,93 @@ async function onCursorDevPickResolved(msg, payload) {
     return
   }
 
+  if (payload.status === 'force_stop') {
+    const jobId = String(payload.jobId || msg.cursorDevPick?.jobId || '').trim()
+    if (jobId && String(activeCursorDevJobId.value || '') === jobId) {
+      await stopStreaming()
+      return
+    }
+    if (jobId) {
+      try {
+        await cancelCursorDevJob(jobId, '用户强制结束')
+      } catch {
+        /* ignore */
+      }
+    }
+    msg.cursorDevPick = {
+      ...msg.cursorDevPick,
+      status: 'failed',
+      phase: 'failed',
+      error: '已强制结束写码。可点「重试写码」用同一需求再跑。',
+      jobId,
+      userStopped: true,
+      progressText: '',
+      repo,
+      ref,
+      requirement,
+      createPr,
+    }
+    void persistSession()
+    messages.value.push({
+      role: 'assistant',
+      content: '已强制结束本轮写码。可在上方确认卡点「重试写码」。',
+      process: [],
+      processCollapsed: true,
+    })
+    await persistSession()
+    scrollToBottom()
+    return
+  }
+
+  if (payload.status === 'reattach') {
+    const jobId = String(payload.jobId || msg.cursorDevPick?.jobId || '').trim()
+    if (!jobId) {
+      msg.cursorDevPick = {
+        ...msg.cursorDevPick,
+        status: 'failed',
+        phase: 'failed',
+        error: '缺少任务 id，无法挂接。请点「重试写码」。',
+        progressText: '',
+      }
+      void persistSession()
+      return
+    }
+    msg.cursorDevPick = {
+      ...msg.cursorDevPick,
+      status: 'confirmed',
+      phase: 'running',
+      progressText: '正在重新挂接写码进度…',
+      error: '',
+      jobId,
+      repo,
+      ref,
+      requirement,
+      createPr,
+    }
+    void persistSession()
+    try {
+      await beginCursorDevStream(msg, {
+        repo,
+        ref,
+        content: requirement,
+        files: pendingFiles,
+        createPr,
+        existingJobId: jobId,
+        attachOnly: true,
+      })
+    } catch (e) {
+      msg.cursorDevPick = {
+        ...msg.cursorDevPick,
+        status: 'failed',
+        phase: 'failed',
+        error: e?.message || String(e),
+        progressText: '',
+      }
+      void persistSession()
+    }
+    return
+  }
+
   if (payload.status === 'retry') {
     msg.cursorDevPick = {
       ...msg.cursorDevPick,
@@ -4007,23 +4239,44 @@ async function onCursorDevPickResolved(msg, payload) {
     const prevJobId = String(payload.jobId || msg.cursorDevPick.jobId || '').trim()
     // 用户停止后的 job 已是 cancelled，不能 /messages 续聊；直接开新 job（保留仓/分支/需求）
     const forceNewJob =
+      Boolean(payload.forceNew) ||
       Boolean(msg.cursorDevPick.userStopped) ||
-      /已停止|用户停止|用户取消|不可续聊：(?:running|cancelled)/i.test(
+      /已停止|用户停止|用户取消|自动结束|开新写码|不可续聊：(?:running|cancelled|queued)/i.test(
         String(msg.cursorDevPick.error || ''),
       )
     try {
       let ok = false
       if (prevJobId && !forceNewJob) {
-        ok = await beginCursorDevStream(msg, {
-          repo,
-          ref,
-          content: requirement,
-          files: pendingFiles,
-          createPr,
-          existingJobId: prevJobId,
-        })
+        // 先探状态：cancelled/running 必须新开；failed/idle 可续
+        let st = ''
+        try {
+          const jr = await getCursorDevJob(prevJobId)
+          st = String(jr?.data?.status || '')
+        } catch {
+          st = ''
+        }
+        if (st === 'cancelled' || st === 'queued' || st === 'running') {
+          ok = false
+        } else {
+          ok = await beginCursorDevStream(msg, {
+            repo,
+            ref,
+            content: requirement,
+            files: pendingFiles,
+            createPr,
+            existingJobId: prevJobId,
+          })
+        }
       }
       if (!ok) {
+        // 开新任务前尽量取消旧 job，释放并发并避免双写
+        if (prevJobId) {
+          try {
+            await cancelCursorDevJob(prevJobId, '重试写码，结束旧任务')
+          } catch {
+            /* ignore */
+          }
+        }
         msg.cursorDevPick = {
           ...msg.cursorDevPick,
           userStopped: false,

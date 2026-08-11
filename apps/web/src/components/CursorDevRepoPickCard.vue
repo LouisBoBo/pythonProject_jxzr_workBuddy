@@ -124,7 +124,9 @@
               : (card.progressText || '已确认，正在按需求写码')
           }}
         </p>
-        <p v-if="isRunning" class="cd-desc">可点输入区停止按钮中止；停止后可在本卡重试，无需重选仓库。</p>
+        <p v-if="isRunning" class="cd-desc">
+          可点输入区停止，或下方「强制结束」；结束后可「重试写码」，无需重选仓库。进度丢失时可「重新挂接」。
+        </p>
         <p v-else-if="isIdle" class="cd-desc">同窗继续发改码需求会沿用本任务与工作分支；无需重新选仓。</p>
       </div>
       <div class="cd-chosen">
@@ -140,6 +142,17 @@
           <span class="cd-k">需求</span>
           <span class="cd-v">{{ confirmedRequirement }}</span>
         </div>
+      </div>
+      <div v-if="isRunning" class="cd-actions">
+        <button type="button" class="cd-btn cancel" :disabled="busy" @click="onForceStop">
+          强制结束
+        </button>
+        <button type="button" class="cd-btn ghost" :disabled="busy" @click="onReattach">
+          重新挂接
+        </button>
+        <button type="button" class="cd-btn confirm" :disabled="busy" @click="onRetryFromRunning">
+          重试写码
+        </button>
       </div>
     </template>
 
@@ -193,16 +206,19 @@ function clearBusy() {
 }
 
 watch(
-  () => props.card?.status,
-  (s) => {
-    if (s && s !== 'pending') clearBusy()
+  () => [props.card?.status, props.card?.phase],
+  () => {
+    // 状态/阶段变化后释放按钮（含 running→failed）
+    if (props.card?.status && props.card.status !== 'pending') clearBusy()
   },
 )
 
 const isPending = computed(() => !props.card?.status || props.card.status === 'pending')
 const isIdle = computed(() => props.card?.phase === 'idle_for_followup')
 const isRunning = computed(
-  () => props.card?.status === 'confirmed' && props.card?.phase === 'running',
+  () =>
+    props.card?.status === 'confirmed' &&
+    (props.card?.phase === 'running' || props.card?.phase === 'starting'),
 )
 
 const suggestions = computed(() =>
@@ -330,6 +346,49 @@ function onRetry() {
     requirement: String(props.card?.requirement || requirementInput.value || '').trim(),
     createPr: Boolean(props.card?.createPr ?? createPr.value),
     jobId: props.card?.jobId || '',
+  })
+}
+
+function onForceStop() {
+  if (busy.value || !isRunning.value) return
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'force_stop',
+    repo: props.card?.repo || '',
+    ref: String(props.card?.ref || '').trim(),
+    requirement: String(props.card?.requirement || props.card?.pendingContent || '').trim(),
+    createPr: Boolean(props.card?.createPr),
+    jobId: props.card?.jobId || '',
+  })
+}
+
+function onReattach() {
+  if (busy.value || !isRunning.value) return
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'reattach',
+    repo: props.card?.repo || '',
+    ref: String(props.card?.ref || '').trim(),
+    requirement: String(props.card?.requirement || props.card?.pendingContent || '').trim(),
+    createPr: Boolean(props.card?.createPr),
+    jobId: props.card?.jobId || '',
+  })
+}
+
+function onRetryFromRunning() {
+  if (busy.value || !isRunning.value) return
+  armBusy()
+  emit('resolved', {
+    id: props.card.id,
+    status: 'retry',
+    repo: props.card?.repo || '',
+    ref: String(props.card?.ref || '').trim(),
+    requirement: String(props.card?.requirement || props.card?.pendingContent || '').trim(),
+    createPr: Boolean(props.card?.createPr),
+    jobId: props.card?.jobId || '',
+    forceNew: true,
   })
 }
 </script>
@@ -578,6 +637,16 @@ function onRetry() {
 
 .cd-btn.cancel:hover:not(:disabled) {
   background: #f3f5f8;
+}
+
+.cd-btn.ghost {
+  border-color: #c5d0de;
+  color: #2f548c;
+  background: #fff;
+}
+
+.cd-btn.ghost:hover:not(:disabled) {
+  background: #eef3f9;
 }
 
 .cd-btn.confirm {

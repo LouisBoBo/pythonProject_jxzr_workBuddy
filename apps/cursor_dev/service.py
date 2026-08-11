@@ -400,7 +400,20 @@ def run_job(
 
     import time as _time
 
-    job_store.update_job(data_dir, job_id, status="running", error=None, cancel_requested=False)
+    # 进入执行前：若已请求取消，直接落 cancelled，禁止清 flag 复活
+    fresh0 = job_store.get_job(data_dir, job_id) or job
+    if fresh0.get("cancel_requested") or fresh0.get("status") == "cancelled":
+        job_store.update_job(
+            data_dir,
+            job_id,
+            status="cancelled",
+            error=str(fresh0.get("error") or "用户已取消写码任务"),
+            cancel_requested=True,
+        )
+        _emit(sink, {"type": "error", "message": "写码任务已取消"})
+        return job_store.get_job(data_dir, job_id) or fresh0
+
+    job_store.update_job(data_dir, job_id, status="running", error=None)
     deadline = _time.time() + int(cfg.job_timeout_sec)
 
     from .github_preflight import resolve_starting_ref

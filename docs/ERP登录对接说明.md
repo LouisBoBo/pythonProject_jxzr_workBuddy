@@ -27,6 +27,7 @@
 |------|------|------|
 | `AUTH_REQUIRED` | `true` | `false` 时跳过登录校验（仅建议本地 Mock） |
 | `PLATFORM_BASE_URL` | `http://localhost:8000` | ERP 根地址 |
+| `API_PROBE_SANDBOX_URL` | `http://127.0.0.1:8001`（`dev.sh`） | 主 ERP 连不上时，登录自动回落此沙箱 |
 
 ## 相关代码
 
