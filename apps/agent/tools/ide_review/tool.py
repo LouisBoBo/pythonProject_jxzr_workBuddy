@@ -30,7 +30,8 @@ _BATCH_SIZE = 5
 _CURSOR_DEV_LANE_BLOCK = (
     "当前为写码分支（workbuddy_lane=code_dev），与代码审核是对等的另一条路由。"
     "禁止调用 Git/IDE 审核工具。请只澄清需求并输出 :::cursor_dev_options 或 :::cursor_dev_propose；"
-    "改仓由用户确认后经 Cursor Cloud 执行。提及仓库名不等于审核意图。"
+    "默认本机目录（target=local）；GitHub 用 target=github。勿直读本机绝对路径。"
+    "本机写码经沙箱同步；GitHub 改仓由用户确认后经 Cursor Cloud 执行。提及仓库名不等于审核意图。"
 )
 
 
@@ -271,6 +272,8 @@ def _read_paths(
             result["next_step"] = (
                 f"第 {batch_index + 1}/{batch_count} 批（最后一批）已读完。"
                 "合并此前各批纪要，立刻输出完整「🔍 代码审核报告」。"
+                "第一行必须是「## 🔍 代码审核报告」。"
+                "禁止再调用 request_ide_read_files / request_ide_read_batch 补读配置或其它文件。"
                 "每条问题必须含：问题描述、问题代码、修复建议、修复代码（完整相对路径）。"
             )
         else:

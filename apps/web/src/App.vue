@@ -120,6 +120,10 @@
           <el-icon :size="16"><FolderOpened /></el-icon>
           <span>文件管理</span>
         </router-link>
+        <router-link to="/settings" class="footer-link" active-class="active">
+          <el-icon :size="16"><Setting /></el-icon>
+          <span>系统配置</span>
+        </router-link>
         <div class="user-row">
           <div class="user-meta">
             <span class="user-name">{{ displayName }}</span>
@@ -141,7 +145,8 @@
           <button type="button" class="embed-new" @click="goNewChat">新对话</button>
         </div>
       </div>
-      <router-view />
+      <!-- 按会话 thread 强制重挂载，避免写码轮询/HMR 损坏后切换会话无响应 -->
+      <router-view :key="mainViewKey" />
     </main>
   </div>
 </template>
@@ -150,7 +155,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpened } from '@element-plus/icons-vue'
+import { FolderOpened, Setting } from '@element-plus/icons-vue'
 import { getHistoryList, deleteHistory, fetchIdeBridgeStatus, createIdeBridgePairing, fetchCursorDevStatus } from './api.js'
 import { clearSession, getDisplayName, getUsername } from './auth.js'
 import { isEmbedMode, pageContextLabel, getPageContext, setEmbedMode, clearPageContext } from './embed.js'
@@ -191,6 +196,14 @@ const idePairUiVisible = computed(
 )
 const isLoginRoute = computed(() => route.name === 'login' || route.path === '/login')
 const groupedHistory = computed(() => groupSessions(sessions.value))
+/** 对话页：thread 变化即整页重建，保证新对话/历史切换一定生效并清掉残留定时器 */
+const mainViewKey = computed(() => {
+  if (route.name === 'chat' || route.path === '/') {
+    const t = route.query.thread
+    return typeof t === 'string' && t ? `chat:${t}` : 'chat:boot'
+  }
+  return String(route.name || route.path)
+})
 
 function startOfDay(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate())
@@ -414,11 +427,16 @@ async function refreshCursorDevStatus() {
       : ready
         ? '就绪'
         : '待确认'
-    // 详情不在侧栏展示；有问题在对话里提示并引导联系管理员
-    cursorDevHint.value = data.available ? '写码车道可用' : '写码车道暂不可用，请在对话中查看说明并联系管理员'
+    cursorDevHint.value = data.available
+      ? '写码车道可用'
+      : '写码车道暂不可用，可在「系统配置」中检查 Key 与开关'
   } catch {
     cursorDevPanelVisible.value = false
   }
+}
+
+function onSettingsUpdated() {
+  refreshCursorDevStatus()
 }
 
 function stopIdeBridgePolling() {
@@ -449,6 +467,7 @@ onMounted(() => {
   contextLabel.value = pageContextLabel(getPageContext())
   loadHistory()
   window.addEventListener('mes-history-updated', onHistoryUpdated)
+  window.addEventListener('workbuddy:settings-updated', onSettingsUpdated)
   if (!isLoginRoute.value) {
     startIdeBridgePolling()
   }
@@ -456,6 +475,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('mes-history-updated', onHistoryUpdated)
+  window.removeEventListener('workbuddy:settings-updated', onSettingsUpdated)
   if (historyRefreshTimer != null) {
     clearTimeout(historyRefreshTimer)
     historyRefreshTimer = null
@@ -868,10 +888,18 @@ onUnmounted(() => {
 
 .main-content {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--bg-secondary);
+}
+
+.main-content > :deep(.chat-view),
+.main-content > :deep(.file-view),
+.main-content > :deep(.settings-view) {
+  flex: 1;
+  min-height: 0;
 }
 
 .app-shell.is-embed .main-content {

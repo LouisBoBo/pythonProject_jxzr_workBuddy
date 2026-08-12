@@ -1,0 +1,438 @@
+"""本机写码执行：沙箱内 LLM 工具循环 → 闸门 → 同步目标目录。"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+from . import jobs as job_store
+from .config import LocalDevConfig, get_config
+from .dev_runtime import ensure_dev_preview
+from .prompts import SYSTEM_PROMPT, TOOL_SPECS, build_user_prompt, parse_plan_steps_from_text
+from .sandbox import prepare_sandbox, sync_changed_to_target
+from .tools_fs import SandboxFS
+from .workspace import validate_workspace
+
+Sink = Callable[[dict[str, Any]], None]
+
+
+def _emit(sink: Sink | None, event: dict[str, Any]) -> None:
+    if sink:
+        try:
+            sink(event)
+        except Exception:
+            pass
+
+
+class _PlanTracker:
+    def __init__(self, sink: Sink | None) -> None:
+        self.sink = sink
+        self.steps: list[dict[str, Any]] = []
+
+    def set_steps(self, titles: list[str]) -> dict[str, Any]:
+        cleaned: list[str] = []
+        for t in titles or []:
+            s = str(t or "").strip()
+            if not s:
+                continue
+            s = re.sub(r"^第\s*[一二三四五六七八九十百零〇\d]+\s*步\s*[：:．.]?\s*", "", s)
+            if s and s not in cleaned:
+                cleaned.append(s[:80])
+            if len(cleaned) >= 12:
+                break
+        if len(cleaned) < 1:
+            return {"ok": False, "error": "steps 不能为空"}
+        self.steps = [
+            {"id": str(i), "title": title, "state": "pending"} for i, title in enumerate(cleaned)
+        ]
+        _emit(self.sink, {"type": "plan", "steps": list(self.steps)})
+        return {"ok": True, "count": len(self.steps), "steps": [s["title"] for s in self.steps]}
+
+    def update(self, index: int, state: str) -> dict[str, Any]:
+        if not self.steps:
+            return {"ok": False, "error": "请先调用 set_plan"}
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "index 无效"}
+        if idx < 0 or idx >= len(self.steps):
+            return {"ok": False, "error": f"index 越界（0..{len(self.steps) - 1}）"}
+        st = str(state or "").strip().lower()
+        if st not in {"running", "done", "error", "pending"}:
+            return {"ok": False, "error": "state 须为 running/done/error"}
+        # 同一时刻只保留一个 running
+        if st == "running":
+            for s in self.steps:
+                if s["state"] == "running":
+                    s["state"] = "done"
+        self.steps[idx]["state"] = st
+        _emit(
+            self.sink,
+            {
+                "type": "plan_progress",
+                "id": self.steps[idx]["id"],
+                "index": idx,
+                "state": st,
+                "title": self.steps[idx]["title"],
+                "steps": list(self.steps),
+            },
+        )
+        return {"ok": True, "index": idx, "state": st, "title": self.steps[idx]["title"]}
+
+    def mark_all_done(self) -> None:
+        if not self.steps:
+            return
+        for s in self.steps:
+            if s["state"] != "done":
+                s["state"] = "done"
+        _emit(self.sink, {"type": "plan", "steps": list(self.steps)})
+
+
+def _load_llm_client():
+    """复用 agent Config 的 OpenAI 兼容客户端。"""
+    agent_root = Path(__file__).resolve().parents[1] / "agent"
+    if str(agent_root) not in sys.path:
+        sys.path.insert(0, str(agent_root))
+    from config import Config  # type: ignore
+
+    try:
+        Config.reload_runtime()
+    except Exception:
+        pass
+    api_key = (Config.LLM_API_KEY or "").strip()
+    if not api_key:
+        raise RuntimeError("未配置对话模型 API Key（系统配置 LLM_API_KEY）")
+    from openai import OpenAI
+
+    kwargs: dict[str, Any] = {"api_key": api_key}
+    base = (Config.LLM_BASE_URL or "").strip().rstrip("/")
+    if base:
+        kwargs["base_url"] = base
+    client = OpenAI(**kwargs)
+    model = (Config.MODEL_NAME or "deepseek-chat").strip()
+    return client, model
+
+
+def _dispatch_tool(
+    fs: SandboxFS,
+    plan: _PlanTracker,
+    name: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    if name == "set_plan":
+        raw = args.get("steps") or []
+        if isinstance(raw, str):
+            raw = [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
+        if not isinstance(raw, list):
+            return {"ok": False, "error": "steps 须为字符串数组"}
+        return plan.set_steps([str(x) for x in raw])
+    if name == "update_plan_step":
+        return plan.update(args.get("index", -1), str(args.get("state") or ""))
+    if name == "list_dir":
+        return fs.list_dir(str(args.get("path") or "."))
+    if name == "read_file":
+        return fs.read_file(str(args.get("path") or ""))
+    if name == "write_file":
+        return fs.write_file(str(args.get("path") or ""), str(args.get("content") or ""))
+    if name == "mkdir":
+        return fs.mkdir(str(args.get("path") or ""))
+    return {"ok": False, "error": f"未知工具：{name}"}
+
+
+def run_job(
+    data_dir: Path,
+    job: dict[str, Any],
+    *,
+    sink: Sink | None = None,
+    cfg: LocalDevConfig | None = None,
+) -> dict[str, Any]:
+    cfg = cfg or get_config()
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        raise ValueError("job id missing")
+
+    if not cfg.enabled:
+        err = "本机写码未开启（LOCAL_DEV_ENABLED）"
+        job_store.update_job(data_dir, job_id, status="failed", error=err)
+        _emit(sink, {"type": "error", "message": err})
+        return job_store.get_job(data_dir, job_id) or job
+
+    job_store.update_job(data_dir, job_id, status="running", error=None)
+    _emit(sink, {"type": "status", "text": "本机沙箱写码开始", "phase": "start"})
+
+    workspace = str(job.get("workspace") or "").strip()
+    check = validate_workspace(workspace)
+    if not check.get("ok"):
+        err = check.get("error") or "目标目录无效"
+        job_store.update_job(data_dir, job_id, status="failed", error=err)
+        _emit(sink, {"type": "error", "message": err})
+        return job_store.get_job(data_dir, job_id) or job
+
+    target = Path(check["path"])
+    # 以运行时目录状态为准，避免创建任务时 empty 快照过期
+    empty_target = bool(check.get("empty"))
+    job_store.update_job(data_dir, job_id, empty_target=empty_target)
+
+    def step(title: str, *, sid: str, state: str = "running") -> None:
+        _emit(sink, {"type": "step", "id": sid, "state": state, "title": title})
+
+    try:
+        if job_store.is_cancel_requested(data_dir, job_id):
+            raise RuntimeError("任务已取消")
+
+        step("准备沙箱", sid="sandbox-prep")
+        meta = prepare_sandbox(
+            data_dir,
+            job_id,
+            target,
+            empty_target=empty_target,
+            cfg=cfg,
+            on_progress=lambda t: step(t, sid="sandbox-prep"),
+        )
+        sandbox_path = Path(meta["sandbox"])
+        job_store.update_job(data_dir, job_id, sandbox_path=str(sandbox_path))
+        step("沙箱就绪", sid="sandbox-prep", state="done")
+
+        requirement = ""
+        for m in reversed(job.get("messages") or []):
+            if m.get("role") == "user":
+                requirement = str(m.get("content") or "")
+                break
+        if not requirement.strip():
+            raise RuntimeError("需求为空")
+
+        fs = SandboxFS(sandbox_path, cfg=cfg)
+        plan = _PlanTracker(sink)
+        client, model = _load_llm_client()
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_user_prompt(
+                    requirement=requirement,
+                    workspace_hint=str(target),
+                    empty_target=empty_target,
+                ),
+            },
+        ]
+
+        step("模型在沙箱内改码…", sid="agent-loop")
+        assistant_text = ""
+        last_emitted_norm = ""
+        for i in range(cfg.max_agent_steps):
+            if job_store.is_cancel_requested(data_dir, job_id):
+                raise RuntimeError("任务已取消")
+
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=TOOL_SPECS,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+            choice = resp.choices[0]
+            msg = choice.message
+            tool_calls = list(msg.tool_calls or [])
+            content = (msg.content or "").strip()
+            if content:
+                assistant_text = content
+                # 正文若含「第N步」清单且尚未 set_plan：兜底生成计划卡，避免纯文本无状态
+                if not plan.steps:
+                    parsed = parse_plan_steps_from_text(content)
+                    if len(parsed) >= 2:
+                        plan.set_steps(parsed)
+                        # 有结构化计划后不再把长清单刷进正文
+                        content = re.sub(
+                            r"(?m)^\s*第\s*[一二三四五六七八九十百零〇\d]+\s*步.*$",
+                            "",
+                            content,
+                        ).strip()
+                        content = re.sub(r"\n{3,}", "\n\n", content)
+                # 有工具调用时进度在计划卡/步骤里，不把每轮旁白拼进气泡（避免「现在追加…」重复）
+                should_stream = bool(content) and not tool_calls
+                if should_stream:
+                    norm = re.sub(r"\s+", "", content)
+                    if norm and norm != last_emitted_norm and not (
+                        last_emitted_norm and (norm in last_emitted_norm or last_emitted_norm in norm)
+                    ):
+                        _emit(sink, {"type": "token", "text": content if not last_emitted_norm else ("\n" + content)})
+                        last_emitted_norm = norm
+
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+            if tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments or "{}",
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+            messages.append(assistant_msg)
+
+            if not tool_calls:
+                step("模型已结束工具调用", sid="agent-loop", state="done")
+                break
+
+            for tc in tool_calls:
+                name = tc.function.name
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                result = _dispatch_tool(fs, plan, name, args)
+                if name in {"set_plan", "update_plan_step"}:
+                    title = (
+                        f"计划已更新（{result.get('count')} 步）"
+                        if name == "set_plan" and result.get("ok")
+                        else (
+                            f"步骤 {int(args.get('index', -1)) + 1} → {args.get('state')}"
+                            if name == "update_plan_step"
+                            else f"{name} 失败"
+                        )
+                    )
+                    step(title, sid=f"tool-{tc.id}", state="done")
+                else:
+                    title = f"{name}({args.get('path') or '.'})"
+                    if result.get("ok"):
+                        step(title, sid=f"tool-{tc.id}", state="done")
+                    else:
+                        step(f"{title} 失败：{result.get('error')}", sid=f"tool-{tc.id}", state="done")
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+        else:
+            step("达到最大步数，停止", sid="agent-loop", state="done")
+
+        plan.mark_all_done()
+        changed = fs.changed_files()
+        job_store.update_job(data_dir, job_id, changed_files=changed)
+
+        if not changed:
+            summary = assistant_text or "模型未写入任何文件。"
+            err = "沙箱内无文件变更，未同步到目标目录"
+            job_store.append_message(data_dir, job_id, role="assistant", content=summary)
+            job_store.update_job(data_dir, job_id, status="failed", error=err)
+            _emit(sink, {"type": "error", "message": err})
+            return job_store.get_job(data_dir, job_id) or job
+
+        if len(changed) > cfg.max_changed_files:
+            raise RuntimeError(f"变更文件过多（{len(changed)}），已中止同步")
+
+        if job_store.is_cancel_requested(data_dir, job_id):
+            raise RuntimeError("任务已取消")
+
+        step(f"同步 {len(changed)} 个文件到目标目录…", sid="sync")
+        synced = sync_changed_to_target(sandbox_path, target, changed, cfg=cfg)
+        step(f"已同步 {len(synced)} 个文件", sid="sync", state="done")
+
+        if job_store.is_cancel_requested(data_dir, job_id):
+            raise RuntimeError("任务已取消")
+
+        preview: dict[str, Any] = {}
+        preview_url = ""
+        try:
+            step("确保开发服务 / 预览…", sid="preview")
+            preview = ensure_dev_preview(
+                target,
+                synced,
+                cfg=cfg,
+                on_progress=lambda t: step(t, sid="preview"),
+                should_cancel=lambda: job_store.is_cancel_requested(data_dir, job_id),
+            )
+            preview_url = str(preview.get("preview_url") or "").strip()
+            if preview.get("ok") and preview_url:
+                step(f"预览就绪：{preview_url}", sid="preview", state="done")
+            else:
+                step(
+                    f"预览未完全就绪：{preview.get('notes') or '未知原因'}",
+                    sid="preview",
+                    state="done",
+                )
+        except Exception as preview_exc:  # noqa: BLE001
+            preview = {
+                "ok": False,
+                "preview_url": "",
+                "backend_url": "",
+                "notes": f"{type(preview_exc).__name__}: {preview_exc}",
+                "frontend": {"action": "skipped", "error": str(preview_exc)},
+                "backend": {"action": "skipped", "error": str(preview_exc)},
+            }
+            step(f"预览步骤异常（同步已成功）：{preview_exc}", sid="preview", state="done")
+
+        if job_store.is_cancel_requested(data_dir, job_id):
+            raise RuntimeError("任务已取消")
+
+        files_md = "\n".join(f"- `{p}`" for p in synced[:80])
+        if preview_url:
+            preview_md = (
+                f"可打开预览验收：[{preview_url}]({preview_url})\n\n"
+                f"{preview.get('notes') or ''}\n"
+            )
+        else:
+            preview_md = (
+                f"同步已完成，预览未自动就绪："
+                f"{preview.get('notes') or '请手动启动该工程前后端'}\n"
+            )
+        summary = (
+            f"## 已完成本机写码\n\n"
+            f"已写入目标目录：`{target}`\n\n"
+            f"变更文件（{len(synced)}）：\n{files_md}\n\n"
+            f"{preview_md}\n"
+            f"沙箱 id：`{job_id}`\n\n"
+            f"本机写码不经 GitHub / Cursor Cloud。\n"
+        )
+        if assistant_text:
+            summary += f"\n### 模型说明\n{assistant_text}\n"
+
+        job_store.append_message(data_dir, job_id, role="assistant", content=summary)
+        updated = job_store.update_job(
+            data_dir,
+            job_id,
+            status="succeeded",
+            synced_files=synced,
+            preview_url=preview_url or None,
+            preview=preview,
+            error=None,
+        )
+        # 取消竞态：落盘可能已完成，但任务状态不得被改成成功
+        if not updated or str(updated.get("status") or "") != "succeeded":
+            _emit(sink, {"type": "error", "message": "任务已取消"})
+            return updated or job_store.get_job(data_dir, job_id) or job
+        _emit(sink, {"type": "replace_text", "text": summary})
+        _emit(
+            sink,
+            {
+                "type": "done",
+                "job_id": job_id,
+                "text": summary,
+                "status": "succeeded",
+                "workspace": str(target),
+                "changed_files": synced,
+                "sandbox_id": job_id,
+                "channel": "local_sandbox",
+                "preview_url": preview_url,
+                "preview": preview,
+            },
+        )
+        return updated or job_store.get_job(data_dir, job_id) or job
+
+    except Exception as exc:  # noqa: BLE001
+        err = f"{type(exc).__name__}: {exc}"
+        if "取消" in str(exc):
+            job_store.update_job(data_dir, job_id, status="cancelled", error=str(exc))
+        else:
+            job_store.update_job(data_dir, job_id, status="failed", error=err)
+        _emit(sink, {"type": "error", "message": err})
+        return job_store.get_job(data_dir, job_id) or job

@@ -52,7 +52,11 @@
         rel="noopener noreferrer"
       >用网页开 PR</a>
     </div>
-    <p class="cd-merge-note">同窗继续提需求会接着改工作分支；不要以为代码已经在 main 上。</p>
+    <p class="cd-merge-note">
+      同窗继续提需求会接着改工作分支。
+      <strong>不要以为代码已经在 main 上，更不要以为本机 ERP 已经更新</strong>
+      ——须合入目标分支后，在本机仓库 pull 并重启前后端，浏览器才能看到新界面。
+    </p>
   </div>
 </template>
 

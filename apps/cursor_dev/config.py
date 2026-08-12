@@ -1,7 +1,8 @@
-"""Cursor 写码车道配置（环境变量）。不依赖 Deep Agents。"""
+"""Cursor 写码车道配置（环境变量 + 界面 settings 覆盖）。不依赖 Deep Agents。"""
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -12,27 +13,43 @@ try:
     _REPO_ROOT = Path(__file__).resolve().parents[2]
     load_dotenv(_REPO_ROOT / ".env")
 except ImportError:
-    pass
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from .allowlist import parse_allowlist
 
+# 复用 agent settings_store（apps/agent 加入 path）
+_AGENT_DIR = Path(__file__).resolve().parents[1] / "agent"
+if str(_AGENT_DIR) not in sys.path:
+    sys.path.insert(0, str(_AGENT_DIR))
+
+
+def _resolve(name: str, default: str = "") -> str:
+    try:
+        from settings_store import resolve_setting
+
+        return resolve_setting(name, default=default)
+    except Exception:
+        raw = os.getenv(name)
+        if raw is None or str(raw).strip() == "":
+            return default
+        return str(raw).strip()
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
+    raw = _resolve(name, "")
+    if raw is None or str(raw).strip() == "":
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
+    raw = _resolve(name, "")
+    if raw is None or str(raw).strip() == "":
         return default
     try:
-        return int(raw.strip())
+        return int(str(raw).strip())
     except ValueError:
         return default
-
 
 def _sdk_importable() -> tuple[bool, str]:
     try:
@@ -79,34 +96,42 @@ class CursorDevConfig:
 
 @lru_cache(maxsize=1)
 def get_config() -> CursorDevConfig:
+    # 用户白名单仍仅环境变量（P0 不开放 UI）
     users_raw = os.getenv("CURSOR_DEV_ALLOWED_USERS", "") or ""
     allowed_users = [u.strip() for u in users_raw.split(",") if u.strip()]
     sdk_ok, sdk_reason = _sdk_importable()
     return CursorDevConfig(
         enabled=_env_bool("CURSOR_DEV_ENABLED", False),
-        api_key=(os.getenv("CURSOR_API_KEY") or "").strip(),
-        repo_allowlist=parse_allowlist(os.getenv("CURSOR_DEV_REPO_ALLOWLIST", "") or ""),
+        api_key=_resolve("CURSOR_API_KEY", ""),
+        repo_allowlist=parse_allowlist(_resolve("CURSOR_DEV_REPO_ALLOWLIST", "")),
         allowed_users=allowed_users,
         max_concurrent=max(1, _env_int("CURSOR_DEV_MAX_CONCURRENT", 3)),
         max_concurrent_per_user=max(1, _env_int("CURSOR_DEV_MAX_CONCURRENT_PER_USER", 1)),
         job_timeout_sec=max(60, _env_int("CURSOR_DEV_JOB_TIMEOUT_SEC", 2700)),
-        model=(os.getenv("CURSOR_DEV_MODEL") or "composer-2.5").strip(),
+        model=(_resolve("CURSOR_DEV_MODEL", "") or "composer-2.5").strip(),
         auto_pr=_env_bool("CURSOR_DEV_AUTO_PR", False),
         skip_reviewer_request=_env_bool("CURSOR_DEV_SKIP_REVIEWER_REQUEST", True),
-        branch_prefix=(os.getenv("CURSOR_DEV_BRANCH_PREFIX") or "dev/wb/").strip() or "dev/wb/",
-        starting_ref=(os.getenv("CURSOR_DEV_STARTING_REF") or "").strip(),
-        work_branch=(os.getenv("CURSOR_DEV_WORK_BRANCH") or "").strip(),
+        branch_prefix=(_resolve("CURSOR_DEV_BRANCH_PREFIX", "") or "dev/wb/").strip()
+        or "dev/wb/",
+        starting_ref=_resolve("CURSOR_DEV_STARTING_REF", ""),
+        work_branch=_resolve("CURSOR_DEV_WORK_BRANCH", ""),
         sdk_ok=sdk_ok,
         sdk_reason=sdk_reason,
     )
 
 
 def reload_config() -> CursorDevConfig:
-    """测试或热更新环境变量后调用。"""
+    """测试或热更新环境变量 / 界面配置后调用。"""
     try:
         from dotenv import load_dotenv
 
         load_dotenv(_REPO_ROOT / ".env", override=True)
+    except Exception:
+        pass
+    try:
+        from settings_store import invalidate_cache
+
+        invalidate_cache()
     except Exception:
         pass
     get_config.cache_clear()

@@ -263,6 +263,132 @@ export function createIdeBridgePairing() {
   return api.post('/ide/bridge/pairing/create')
 }
 
+/** 整站系统配置（对话模型 + 写码车道） */
+export function fetchSettings() {
+  return api.get('/settings')
+}
+
+export function saveSettings(values) {
+  return api.put('/settings', { values: values || {} })
+}
+
+/** 当前用户上次本机写码目录 */
+export function fetchLocalWorkspacePref() {
+  return api.get('/settings/local-workspace')
+}
+
+export function saveLocalWorkspacePref(path) {
+  return api.put('/settings/local-workspace', { path: path || '' })
+}
+
+/** 本机沙箱写码 */
+export function fetchLocalDevStatus() {
+  return api.get('/local-dev/status')
+}
+
+export function checkLocalDevWorkspace(path) {
+  return api.get('/local-dev/workspace/check', { params: { path } })
+}
+
+/** 本机原生选文件夹（API 同机弹出系统对话框） */
+export function pickLocalDevFolder(prompt = '选择工程目录') {
+  return api.post('/local-dev/pick-folder', null, {
+    params: { prompt },
+    timeout: 620000,
+  })
+}
+
+export function createLocalDevJob(body) {
+  return api.post('/local-dev/jobs', body)
+}
+
+export function getLocalDevJob(jobId) {
+  return api.get(`/local-dev/jobs/${encodeURIComponent(jobId)}`)
+}
+
+export function cancelLocalDevJob(jobId, reason = '用户取消') {
+  return api.post(`/local-dev/jobs/${encodeURIComponent(jobId)}/cancel`, { reason })
+}
+
+/**
+ * 本机写码 job SSE。事件：status|step|token|replace_text|done|error
+ */
+export function streamLocalDevJob(jobId, onEvent, onDone, onError, signal = null) {
+  const handleEvent = typeof onEvent === 'function' ? onEvent : async () => {}
+  const url = `/api/local-dev/jobs/${encodeURIComponent(jobId)}`
+
+  return fetch(`${url}/stream`, {
+    method: 'GET',
+    headers: authHeaders(),
+    signal: signal || undefined,
+  }).then(async (response) => {
+    if (response.status === 401) {
+      clearSession()
+      if (typeof window !== 'undefined') {
+        window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
+      }
+      throw new Error('登录已过期，请重新登录')
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      let detail = text
+      try {
+        const j = JSON.parse(text)
+        detail = j.detail || text
+      } catch {
+        /* keep */
+      }
+      throw new Error(detail || `HTTP ${response.status}`)
+    }
+    if (!response.body) throw new Error('响应不支持流式读取')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let sawTerminal = false
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          try {
+            await reader.cancel()
+          } catch {
+            /* ignore */
+          }
+          break
+        }
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || ''
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data:')) continue
+          const raw = line.slice(5).trim()
+          if (!raw || raw === '[DONE]') continue
+          let event
+          try {
+            event = JSON.parse(raw)
+          } catch {
+            continue
+          }
+          const type = event?.type
+          if (type === 'done' || type === 'error') sawTerminal = true
+          await handleEvent(event)
+          if (type === 'done' && typeof onDone === 'function') await onDone(event)
+          if (type === 'error' && typeof onError === 'function') await onError(event)
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock()
+      } catch {
+        /* ignore */
+      }
+    }
+    return { sawTerminal }
+  })
+}
+
 /** Cursor 研发写码旁路：可用性 */
 export function fetchCursorDevStatus() {
   return api.get('/cursor-dev/status')

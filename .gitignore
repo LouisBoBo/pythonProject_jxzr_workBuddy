@@ -24,6 +24,9 @@ data/api_calls/*
 data/api_catalog/*
 data/ide_bridge/*
 data/cursor_dev/*
+data/settings.json
+data/user_prefs/
+data/local_dev/
 data/agent_checkpoints.sqlite
 data/agent_checkpoints.sqlite-*
 data/*.sqlite

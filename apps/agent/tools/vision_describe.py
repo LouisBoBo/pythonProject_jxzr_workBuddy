@@ -80,6 +80,15 @@ def _api_key() -> str:
             return key
     except Exception:
         pass
+    try:
+        from settings_store import resolve_setting
+
+        return (
+            resolve_setting("VISION_API_KEY", "")
+            or resolve_setting("ZHIPU_API_KEY", "")
+        )
+    except Exception:
+        pass
     return (
         os.getenv("VISION_API_KEY", "").strip()
         or os.getenv("ZHIPU_API_KEY", "").strip()
@@ -91,6 +100,17 @@ def _base_url() -> str:
         from config import Config
 
         raw = (getattr(Config, "VISION_BASE_URL", None) or "").strip()
+        if raw:
+            return raw.rstrip("/") + "/"
+    except Exception:
+        pass
+    try:
+        from settings_store import resolve_setting
+
+        raw = (
+            resolve_setting("VISION_BASE_URL", "")
+            or resolve_setting("ZHIPU_BASE_URL", "")
+        )
         if raw:
             return raw.rstrip("/") + "/"
     except Exception:
@@ -108,6 +128,14 @@ def _model() -> str:
         from config import Config
 
         m = (getattr(Config, "VISION_MODEL", None) or "").strip()
+        if m:
+            return m
+    except Exception:
+        pass
+    try:
+        from settings_store import resolve_setting
+
+        m = resolve_setting("VISION_MODEL", "")
         if m:
             return m
     except Exception:
@@ -178,7 +206,7 @@ def describe_image(path: str | Path, *, user_hint: str = "") -> str:
     if not vision_enabled():
         return (
             f"（已收到截图 {p.name}，但未配置视觉模型。"
-            "请管理员配置 ZHIPU_API_KEY 或 VISION_API_KEY。）"
+            "请到「系统配置」填写视觉模型 API Key（VISION_API_KEY / 智谱 Key）。）"
         )
 
     try:

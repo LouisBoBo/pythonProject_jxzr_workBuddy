@@ -768,7 +768,7 @@ class AgentRunner:
 
     _instance = None
     # 工具集变更时 bump，避免热更新后仍复用旧 Agent（缺 request_git_*_batch）
-    _TOOLS_SIG = "ide+git-batch-v3-report-format"
+    _TOOLS_SIG = "ide+git-batch-v5-host-path-guard"
 
     def __new__(cls):
         if cls._instance is None:
@@ -906,12 +906,13 @@ class AgentRunner:
             body = f"{body}{force_paste}"
         elif lane == LANE_CODE_DEV:
             force_coding = (
-                "\n\n【系统强制路由·Cursor 写码】\n"
+                "\n\n【系统强制路由·写码】\n"
                 "本轮意图=写码/改功能（workbuddy_lane=code_dev），与代码审核是另一条路由。\n"
                 "禁止调用：request_git_*、request_ide_*（含 list_source_files / read_batch / review）。\n"
                 "禁止 clone 仓库、禁止输出「代码审核报告」、禁止「筛选功能源码」。\n"
+                "禁止 read_file/write_file 本机绝对路径；路径只写入 propose.workspace。\n"
                 "只澄清需求并输出 :::cursor_dev_options 或 :::cursor_dev_propose；"
-                "改远程仓须用户确认后由 Cursor Cloud 执行。\n"
+                "默认 target=local（本机沙箱写码）；仅用户明确要 GitHub 时用 target=github（Cursor Cloud）。\n"
                 "消息里出现 GitHub 仓库名/分支仅表示要改哪个仓，不等于审核意图。\n"
             )
             body = f"{body}{force_coding}"
@@ -937,6 +938,8 @@ class AgentRunner:
                     "本轮意图=代码审核（workbuddy_lane=code_review），与写码是另一条路由。\n"
                     f"工程：{_ide or '见消息【本机工程已确认】'}\n"
                     "必须严格按序：request_ide_list_source_files → request_ide_read_batch → 终稿报告。\n"
+                    "末批 done_after=true 后：立刻输出「## 🔍 代码审核报告」，"
+                    "禁止再 request_ide_read_files 补读 pom/yml/Dockerfile 等配置。\n"
                     "禁止 :::cursor_dev_*；禁止把本轮当成写功能/改界面。\n"
                 )
                 body = f"{body}{force_ide}"
@@ -1092,6 +1095,8 @@ class AgentRunner:
         suppress_ide_report_tokens = False
         ide_await_report_header = False
         ide_report_buf = ""
+        # 末批 done_after 后置位：禁止后续 request_ide_read_files 再次压制终稿输出
+        ide_batches_done = False
 
         # 与昨天 ab15a1e 相同：直接 async for。
         # 禁止对 __anext__ 使用 wait_for 超时——超时会 Cancel 底层读，
@@ -1113,7 +1118,11 @@ class AgentRunner:
                     name = _tool_name(event)
                     if name in ("import_file_to_platform", "import_platform_data"):
                         saw_write_tool = True
-                    if name in _IDE_BATCH_TOOLS or name == "request_git_review":
+                    # 末批完成后勿再压制模型输出（常见误调：补读 pom/yml）
+                    if (
+                        not ide_batches_done
+                        and (name in _IDE_BATCH_TOOLS or name == "request_git_review")
+                    ):
                         suppress_ide_report_tokens = True
                     data = event.get("data") or {}
                     inp = data.get("input")
@@ -1275,6 +1284,7 @@ class AgentRunner:
                                     "phase": "waiting",
                                 }
                             if done:
+                                ide_batches_done = True
                                 suppress_ide_report_tokens = False
                                 ide_await_report_header = True
                                 ide_report_buf = ""
@@ -1286,13 +1296,25 @@ class AgentRunner:
                             else:
                                 suppress_ide_report_tokens = True
                         else:
-                            suppress_ide_report_tokens = True
-                            if not active_runs:
-                                yield {
-                                    "type": "status",
-                                    "text": "继续分批读取功能代码…",
-                                    "phase": "waiting",
-                                }
+                            # request_ide_read_files 等：末批完成后不得再压制终稿
+                            if ide_batches_done:
+                                suppress_ide_report_tokens = False
+                                if not ide_await_report_header and not ide_report_buf:
+                                    ide_await_report_header = True
+                                if not active_runs:
+                                    yield {
+                                        "type": "status",
+                                        "text": "各批已完成，正在汇总完整审核报告…",
+                                        "phase": "generating",
+                                    }
+                            else:
+                                suppress_ide_report_tokens = True
+                                if not active_runs:
+                                    yield {
+                                        "type": "status",
+                                        "text": "继续分批读取功能代码…",
+                                        "phase": "waiting",
+                                    }
                     elif name == "request_git_review":
                         parsed_git = parsed if isinstance(parsed, dict) else {}
                         n_files = len(
@@ -1300,6 +1322,7 @@ class AgentRunner:
                         )
                         mode = parsed_git.get("mode") or "git"
                         if ok:
+                            ide_batches_done = True
                             yield {
                                 "type": "status",
                                 "text": (
@@ -1369,7 +1392,8 @@ class AgentRunner:
                         ide_report_buf += text
                         idx = _find_ide_report_start(ide_report_buf)
                         if idx < 0:
-                            if len(ide_report_buf) < 2500:
+                            # 缓冲较短时继续等标题；过长则去掉英文旁白后放行，避免整段被吞
+                            if len(ide_report_buf) < 1200:
                                 continue
                             text = _drop_leading_english_aside(ide_report_buf)
                             ide_report_buf = ""
@@ -1415,6 +1439,34 @@ class AgentRunner:
                     "error": err_text,
                 }
             return
+
+        # 流结束兜底：若仍卡在「等报告标题」缓冲里，冲刷出来，避免前端空白
+        if ide_report_buf.strip():
+            leftover = ide_report_buf
+            idx = _find_ide_report_start(leftover)
+            if idx >= 0:
+                leftover = leftover[idx:]
+            else:
+                leftover = _drop_leading_english_aside(leftover)
+            ide_report_buf = ""
+            ide_await_report_header = False
+            if leftover.strip():
+                if not generating_sent:
+                    yield {"type": "status", "text": "正在组织最终回答…", "phase": "generating"}
+                yield {"type": "token", "text": leftover, "token": leftover}
+        elif ide_batches_done and not generating_sent:
+            # 末批已完成但模型未吐出任何可见正文
+            yield {
+                "type": "token",
+                "text": (
+                    "\n\n⚠️ 各批源码已读完，但本轮未生成「🔍 代码审核报告」正文。"
+                    "请回复「继续输出审核报告」或点「重新开始审核」。"
+                ),
+                "token": (
+                    "\n\n⚠️ 各批源码已读完，但本轮未生成「🔍 代码审核报告」正文。"
+                    "请回复「继续输出审核报告」或点「重新开始审核」。"
+                ),
+            }
 
         # 流结束兜底：本轮调用了写工具但未成功推送 confirm 时，从 pending 回补全部
         if saw_write_tool and not emitted_confirm_ids:

@@ -97,35 +97,22 @@ TOOLS = [
 
 
 def build_model():
-    """根据配置构建 LLM 实例。支持硅基流动 / DeepSeek / OpenAI。"""
-    provider = Config.LLM_PROVIDER
-
-    if provider == "siliconflow":
-        if not Config.SILICONFLOW_API_KEY:
-            raise RuntimeError("请设置 SILICONFLOW_API_KEY 环境变量")
-        return ChatOpenAI(
-            model=Config.MODEL_NAME,
-            api_key=Config.SILICONFLOW_API_KEY,
-            base_url=Config.SILICONFLOW_BASE_URL,
-            timeout=120,
-            max_retries=3,
+    """根据配置构建 LLM 实例（OpenAI 兼容协议：任意供应商）。"""
+    api_key = (Config.LLM_API_KEY or "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "请设置对话模型 API Key（可在「系统配置」填写，或配置 LLM_API_KEY / DEEPSEEK_API_KEY）"
         )
-
-    if provider == "deepseek":
-        if not Config.DEEPSEEK_API_KEY:
-            raise RuntimeError("请设置 DEEPSEEK_API_KEY 环境变量")
-        return ChatOpenAI(
-            model=Config.MODEL_NAME,
-            api_key=Config.DEEPSEEK_API_KEY,
-            base_url=Config.DEEPSEEK_BASE_URL,
-            timeout=120,
-            max_retries=3,
-        )
-
-    if provider == "openai":
-        return ChatOpenAI(model=Config.MODEL_NAME)
-
-    raise ValueError(f"不支持的 LLM provider: {provider}")
+    kwargs: dict = {
+        "model": Config.MODEL_NAME,
+        "api_key": api_key,
+        "timeout": 120,
+        "max_retries": 3,
+    }
+    base = (Config.LLM_BASE_URL or "").strip().rstrip("/")
+    if base:
+        kwargs["base_url"] = base
+    return ChatOpenAI(**kwargs)
 
 
 def _build_backend() -> FilesystemBackend:
@@ -173,13 +160,19 @@ _SCREENSHOT_PROMPT = """
 _CURSOR_DEV_CODING_PROMPT = """
 【写码分支 · workbuddy_lane=code_dev — 与审核对等互斥】
 - 触发：前端按用户「写/改/加功能」意图进入；标记含【写码需求讨论】、:::cursor_dev_*、
-  page_context.workbuddy_lane=code_dev / cursor_dev_repo。
-- 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；改仓经 Cursor Cloud。
+  page_context.workbuddy_lane=code_dev / cursor_dev_repo / local_workspace_root。
+- 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；**默认目标为本机目录（沙箱写码）**，
+  GitHub + Cursor Cloud 为第二入口（propose 里 target=github）。
 - 做/改业务页、仪表盘、看板时同时启用 Skill「ui-product-design」：一页一身份、有信息层级；
   禁止照抄首页布局骨架，禁止默认白卡片 KPI 模板交差。
 - 用户说重做/重新设计/设计感时：旧「按截图位置」只作字段参考，禁止再锁截图骨架；明文 1:1/复刻除外。
 - **禁止** request_git_* / request_ide_*（含 list_source_files）；**禁止**「代码审核报告」。
-- 仓库名/分支/GitHub URL 只表示改哪个仓，**不是**审核意图，也不是【Git仓库已确认】。
+- **禁止** read_file / ls / glob / grep / write_file 任何本机绝对路径（/Users/…、Desktop、本机 ERP 目录）；
+  服务端虚拟文件系统读不到用户电脑。用户提到本机路径时写入 propose 的 workspace 字段，
+  由确认卡 + 本机沙箱任务落盘（先沙箱后同步），**不要**自己直写宿主机。
+- 仓库名/分支/GitHub URL 只表示改哪个仓（target=github），**不是**审核意图，也不是【Git仓库已确认】。
+- 「本机写码完成」= 已同步到用户确认目录，须用户重启该工程前后端验收。
+- 「GitHub 写码完成」= 已推到 GitHub **工作分支**，**不等于**已合入 main，**不等于**本机/ERP 已更新。
 - 与 code_review 无优先级关系：本轮是写码就不走审核工具。
 """
 
@@ -238,6 +231,7 @@ _IDE_REVIEW_PROMPT = """
 - **若** workbuddy_lane=code_dev / 【写码需求讨论】：本段不适用，禁止 request_ide_*。
 - 若【Git仓库已确认】或 page_context.git_repo_url：本段不适用，走 git-code-review。
 - **正确流程**：request_ide_list_source_files → request_ide_read_batch → 终稿「🔍 代码审核报告」。
+- 末批完成后禁止再 request_ide_read_files 补读配置文件；立刻写终稿。
 - 【输出纪律】分批过程禁止输出正文；终稿第一行必须是报告标题；禁止英文过渡句。
 - **禁止** :::cursor_dev_* 写码确认卡。
 - 方法论：Viprasol + gate-90。用户可见全文中文。

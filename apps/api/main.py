@@ -20,6 +20,7 @@ from routes.convert import router as convert_router
 from routes.auth import router as auth_router
 from routes.writes import router as writes_router
 from routes.ide_bridge import router as ide_bridge_router
+from routes.settings import router as settings_router
 from routes_config import DATA_DIR, SERVER_PORT
 
 try:
@@ -27,6 +28,12 @@ try:
 except Exception as _cursor_dev_import_err:  # noqa: BLE001 — 写码旁路失败不得拖垮登录/MES
     cursor_dev_router = None
     print(f"[warn] cursor_dev router disabled: {_cursor_dev_import_err}")
+
+try:
+    from routes.local_dev import router as local_dev_router
+except Exception as _local_dev_import_err:  # noqa: BLE001
+    local_dev_router = None
+    print(f"[warn] local_dev router disabled: {_local_dev_import_err}")
 
 # 确保数据目录存在
 for sub in (
@@ -39,6 +46,10 @@ for sub in (
     "api_calls",
     "ide_bridge",
     "cursor_dev",
+    "local_dev",
+    "local_dev/jobs",
+    "local_dev/sandboxes",
+    "user_prefs",
     ".locks",
 ):
     os.makedirs(DATA_DIR / sub, exist_ok=True)
@@ -65,8 +76,11 @@ app.include_router(history_router)
 app.include_router(convert_router)
 app.include_router(writes_router)
 app.include_router(ide_bridge_router)
+app.include_router(settings_router)
 if cursor_dev_router is not None:
     app.include_router(cursor_dev_router)
+if local_dev_router is not None:
+    app.include_router(local_dev_router)
 
 app.mount("/exports", StaticFiles(directory=str(DATA_DIR / "exports")), name="exports")
 
@@ -191,5 +205,6 @@ if __name__ == "__main__":
             str(Path(__file__).resolve().parent),
             str(Path(__file__).resolve().parents[1] / "agent"),
             str(Path(__file__).resolve().parents[1] / "cursor_dev"),
+            str(Path(__file__).resolve().parents[1] / "local_dev"),
         ],
     )

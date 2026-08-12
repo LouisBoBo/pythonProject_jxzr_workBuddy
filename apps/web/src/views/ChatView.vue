@@ -92,11 +92,16 @@
           <CursorDevRepoPickCard
             v-if="msg.cursorDevPick"
             :card="msg.cursorDevPick"
+            :plan-steps="msg.codingPlan"
             @resolved="(payload) => onCursorDevPickResolved(msg, payload)"
           />
           <CursorDevMergeGuideCard
             v-if="msg.mergeGuide"
             :guide="msg.mergeGuide"
+          />
+          <CodingPlanCard
+            v-if="msg.codingPlan?.length && !msg.cursorDevPick"
+            :steps="msg.codingPlan"
           />
           <ScreenshotIntentCard
             v-if="msg.intentClarify"
@@ -142,6 +147,14 @@
             <AiAvatarIcon spinning />
             <span class="msg-brand-name">ZR WorkBuddy</span>
           </div>
+          <!-- 写码确认卡已内嵌本轮进度时，流式气泡不再重复展示 -->
+          <CodingPlanCard
+            v-if="streamCodingPlan.length && !activeCursorDevMsg?.cursorDevPick"
+            :steps="streamCodingPlan"
+            heading="本轮进度"
+            :collapsible="false"
+            :default-collapsed="false"
+          />
           <ProcessPanel
             v-if="streamProcess.length"
             :items="streamProcess"
@@ -305,7 +318,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob } from '../api.js'
+import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob, fetchLocalDevStatus, fetchLocalWorkspacePref, saveLocalWorkspacePref, createLocalDevJob, streamLocalDevJob, cancelLocalDevJob, checkLocalDevWorkspace } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 import IdeWorkspacePickCard from '../components/IdeWorkspacePickCard.vue'
@@ -315,9 +328,18 @@ import CursorDevRepoPickCard from '../components/CursorDevRepoPickCard.vue'
 import CursorDevMergeGuideCard from '../components/CursorDevMergeGuideCard.vue'
 import CursorDevRepoAnchorCard from '../components/CursorDevRepoAnchorCard.vue'
 import CursorDevOptionsCard from '../components/CursorDevOptionsCard.vue'
+import CodingPlanCard from '../components/CodingPlanCard.vue'
 import ScreenshotIntentCard from '../components/ScreenshotIntentCard.vue'
 import AiAvatarIcon from '../components/AiAvatarIcon.vue'
 import { getUsername, getUserId, authHeaders } from '../auth.js'
+import { renderMarkdown } from '../markdown.js'
+import {
+  cursorDevSpeedLabel,
+  formatCursorDevUserError,
+  formatPickFailureSummary,
+  inferChannelFromEvent,
+  pickPatchFromJobStatus,
+} from '../cursorDevUx.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -328,6 +350,7 @@ const streaming = ref(false)
 const streamAbort = ref(null)
 const streamContent = ref('')
 const streamProcess = ref([])
+const streamCodingPlan = ref([])
 const streamProcessCollapsed = ref(false)
 const streamDurationText = ref('')
 const streamStartedAt = ref(0)
@@ -429,6 +452,8 @@ const activeCursorDevJobId = ref('')
 const activeCursorDevMsg = ref(null)
 const cursorDevWatchTimer = ref(null)
 let activeRequestId = 0
+/** 组件仍挂载；thread 切换会销毁实例，异步 loadSession 收尾需检查 */
+let chatViewAlive = true
 let copiedTimer = null
 
 // 首页快捷问法：平台介绍 / 审核 / MES / 写码 / PCB
@@ -809,7 +834,15 @@ async function stopStreaming() {
   // 写码旁路：必须 cancel 服务端任务，并把确认卡落到可重试态（避免卡在 running）
   if (cursorJobId) {
     try {
-      await cancelCursorDevJob(cursorJobId, '用户停止')
+      if (
+        String(cursorJobId).startsWith('ldj-') ||
+        cursorMsg?.cursorDevPick?.target === 'local' ||
+        cursorMsg?.cursorDevPick?.channel === 'local_sandbox'
+      ) {
+        await cancelLocalDevJob(cursorJobId, '用户停止')
+      } else {
+        await cancelCursorDevJob(cursorJobId, '用户停止')
+      }
     } catch {
       /* ignore */
     }
@@ -822,7 +855,7 @@ async function stopStreaming() {
         ...pickMsg.cursorDevPick,
         status: 'failed',
         phase: 'failed',
-        error: '已停止写码。可点「重试写码」用同一需求再跑，或继续对话改需求后再确认。',
+        error: formatPickFailureSummary('已停止写码', { userStopped: true }),
         jobId: cursorJobId,
         userStopped: true,
         progressText: '',
@@ -845,7 +878,7 @@ async function stopStreaming() {
     if (stable) finalContent = stable
   }
   const stoppedNote = cursorJobId
-    ? '（已停止写码。可在上方确认卡点「重试写码」。）'
+    ? `（已停止写码）\n下一步：在上方确认卡点「重试写码」。`
     : '（已停止生成）'
   if (finalContent) {
     finalContent = `${finalContent}\n\n${stoppedNote}`
@@ -1039,6 +1072,7 @@ function persistableMessages() {
     ...(m.cursorDevAnchor ? { cursorDevAnchor: m.cursorDevAnchor } : {}),
     ...(m.mergeGuide ? { mergeGuide: m.mergeGuide } : {}),
     ...(m.intentClarify ? { intentClarify: m.intentClarify } : {}),
+    ...(Array.isArray(m.codingPlan) && m.codingPlan.length ? { codingPlan: m.codingPlan } : {}),
     // 截图/附件：保留 path 供视觉与写码；预览只留短 dataURL（过大则丢，靠 path）
     ...(Array.isArray(m.files) && m.files.length
       ? {
@@ -1103,17 +1137,34 @@ async function persistSession({ required = false } = {}) {
 
 function syncThreadQuery(id) {
   if (route.query.thread === id) return
+  // 流式进行中禁止改 thread（App 按 key 重挂载会掐断当前请求）
+  if (streaming.value) return
   router.replace({ path: '/', query: { thread: id } })
 }
 
+/** 保证有会话 id：优先沿用路由上的 thread，避免中途 sync 触发整页重建 */
+function ensureThreadId() {
+  if (threadId.value) return threadId.value
+  const fromRoute = route.query.thread
+  if (typeof fromRoute === 'string' && fromRoute) {
+    threadId.value = fromRoute
+    return fromRoute
+  }
+  const id = createThreadId()
+  threadId.value = id
+  syncThreadQuery(id)
+  return id
+}
+
 async function loadSession(id) {
-  activeRequestId += 1
+  const requestId = (activeRequestId += 1)
   try {
     streamAbort.value?.abort()
   } catch {
     /* ignore */
   }
   streamAbort.value = null
+  clearActiveCursorDev()
   loadingSession.value = true
   threadId.value = id
   streamContent.value = ''
@@ -1121,12 +1172,15 @@ async function loadSession(id) {
   streamConfirms.value = []
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
+  streamAnswerPending.value = false
+  streamCodingPlan.value = []
   attachedFiles.value = []
   streaming.value = false
   editingFromIndex.value = -1
   copiedIndex.value = -1
   try {
     const resp = await getHistoryDetail(id)
+    if (!chatViewAlive || requestId !== activeRequestId) return
     messages.value = (resp.data.messages || []).map(m => {
       let content = m.content || ''
       const confirms = (m.confirms || [])
@@ -1154,21 +1208,31 @@ async function loadSession(id) {
         ...(m.cursorDevAnchor ? { cursorDevAnchor: { ...m.cursorDevAnchor } } : {}),
         ...(m.mergeGuide ? { mergeGuide: { ...m.mergeGuide } } : {}),
         ...(m.intentClarify ? { intentClarify: { ...m.intentClarify } } : {}),
+        ...(Array.isArray(m.codingPlan) && m.codingPlan.length
+          ? { codingPlan: m.codingPlan.map((s) => ({ ...s })) }
+          : {}),
         processCollapsed: true,
       }
     })
     scrollToBottom()
   } catch {
+    if (!chatViewAlive || requestId !== activeRequestId) return
     // 新会话或尚未入库：空消息即可继续聊
     messages.value = []
   } finally {
-    loadingSession.value = false
-    nextTick(() => inputEl.value?.focus())
-    await attachPendingConfirms(id)
-    await loadWriteAudit(id)
-    // 刷新/重进会话时：修正「写码进行中」假状态，或重新挂上仍在跑的 job
-    void resumeOrReconcileCursorDevAfterLoad()
+    if (chatViewAlive && requestId === activeRequestId) {
+      loadingSession.value = false
+    }
   }
+  // App 按 thread 重挂载时，旧实例的异步收尾不得再挂写码流
+  if (!chatViewAlive || requestId !== activeRequestId) return
+  nextTick(() => inputEl.value?.focus())
+  await attachPendingConfirms(id)
+  if (!chatViewAlive || requestId !== activeRequestId) return
+  await loadWriteAudit(id)
+  if (!chatViewAlive || requestId !== activeRequestId) return
+  // 刷新/重进会话时：修正「写码进行中」假状态，或重新挂上仍在跑的 job
+  void resumeOrReconcileCursorDevAfterLoad()
 }
 
 async function loadWriteAudit(tid) {
@@ -1241,6 +1305,7 @@ function startNewChat() {
     /* ignore */
   }
   streamAbort.value = null
+  clearActiveCursorDev()
   const id = createThreadId()
   threadId.value = id
   messages.value = []
@@ -1250,6 +1315,7 @@ function startNewChat() {
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
   streamAnswerPending.value = false
+  streamCodingPlan.value = []
   auditOpen.value = false
   auditItems.value = []
   attachedFiles.value = []
@@ -1269,20 +1335,8 @@ async function initFromRoute() {
   }
 }
 
-watch(
-  () => route.query.thread,
-  async (id) => {
-    if (typeof id !== 'string' || !id) return
-    if (id === threadId.value) return
-    // 切换会话时中断当前流式状态，加载目标会话
-    streaming.value = false
-    streamContent.value = ''
-    streamProcess.value = []
-    streamConfirms.value = []
-    await loadSession(id)
-  }
-)
-
+// 会话切换由 App.vue 的 router-view :key="thread" 整页重挂载；
+// 此处不再 watch thread，避免旧实例异步 loadSession 与新实例抢流。
 
 function looksLikeCodeReview(text) {
   const t = String(text || '').trim()
@@ -1620,12 +1674,12 @@ function hasCodingDiscussThread() {
   return false
 }
 
-/** 本线程是否已选过仓（或已进入选项/确认卡）——旧窗续聊不再弹选仓 */
+/** 本线程是否已定点（本机目录或 GitHub 仓，或已进入选项/确认卡） */
 function hasCursorDevRepoSession() {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const m = messages.value[i]
     const a = m?.cursorDevAnchor
-    if (a && a.status === 'confirmed' && a.repo) return true
+    if (a && a.status === 'confirmed' && (a.workspace || a.repo)) return true
     if (m?.cursorDevPick || m?.cursorDevOptions) return true
   }
   return false
@@ -1650,12 +1704,16 @@ function codingDiscussStreamOpts(extra = null) {
   delete fromExtra.workbuddyLane
   delete fromExtra.cursorDevLane
   const repo = String(fromExtra.cursorDevRepo || hit?.anchor?.repo || '').trim()
+  const localWs = String(
+    fromExtra.localWorkspaceRoot || hit?.anchor?.workspace || '',
+  ).trim()
   return {
     ...fromExtra,
     force: true,
     workbuddyLane: 'code_dev',
     cursorDevLane: true,
     ...(repo ? { cursorDevRepo: repo } : {}),
+    ...(localWs ? { localWorkspaceRoot: localWs } : {}),
   }
 }
 
@@ -1663,31 +1721,46 @@ function findConfirmedCursorDevAnchor() {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const m = messages.value[i]
     const a = m?.cursorDevAnchor
-    if (a && a.status === 'confirmed' && a.repo) {
+    if (a && a.status === 'confirmed' && (a.workspace || a.repo)) {
       return { msg: m, anchor: a, index: i }
     }
   }
   return null
 }
 
-/** 本线程锚定仓库后的上下文块（已有项目读仓 / 新项目定仓） */
+/** 本线程锚定后的上下文块（本机目录 / GitHub 已有或新项目） */
 function codingSessionContextBlock() {
   const hit = findConfirmedCursorDevAnchor()
   if (!hit) return ''
   const block = String(hit.anchor.promptBlock || '').trim()
   if (block) return block
+  if (hit.anchor.target === 'local' || hit.anchor.workspace) {
+    const ws = hit.anchor.workspace
+    if (hit.anchor.projectMode === 'new') {
+      return (
+        `【本会话已选定本机新项目目录】\n` +
+        `路径：${ws}\n` +
+        `空目录从零生成；:::cursor_dev_propose 默认 target=local，workspace 填 \`${ws}\`。`
+      )
+    }
+    return (
+      `【本会话已选定本机工程目录】\n` +
+      `路径：${ws}\n` +
+      `按已有工程增量开发；:::cursor_dev_propose 默认 target=local，workspace 填 \`${ws}\`；不要问 GitHub 仓库。`
+    )
+  }
   const repo = hit.anchor.repo
   if (hit.anchor.projectMode === 'new') {
     return (
       `【本会话已选定新项目仓库】\n` +
       `仓库：${repo}\n` +
-      `这是新项目：从头收集需求与技术栈；:::cursor_dev_propose 的 repo 必须填 \`${repo}\`。`
+      `这是新项目：从头收集需求与技术栈；:::cursor_dev_propose 的 target=github、repo 必须填 \`${repo}\`。`
     )
   }
   return (
-    `【本会话已选定仓库】\n` +
+    `【本会话已选定已有仓库】\n` +
     `仓库：${repo}\n` +
-    `请沿用该仓；:::cursor_dev_propose 的 repo 必须填 \`${repo}\`。`
+    `按该仓增量开发；:::cursor_dev_propose 的 target=github、repo 填 \`${repo}\`。`
   )
 }
 
@@ -1768,7 +1841,7 @@ async function reconcileStuckCursorDevPicks() {
         ...pick,
         status: 'failed',
         phase: 'failed',
-        error: '写码任务状态丢失，请点「重试写码」。',
+        error: formatPickFailureSummary('写码任务状态丢失'),
         progressText: '',
       }
       changed = true
@@ -1777,30 +1850,9 @@ async function reconcileStuckCursorDevPicks() {
     if (String(activeCursorDevJobId.value || '') === jobId) continue
     try {
       const resp = await getCursorDevJob(jobId)
-      const st = String(resp?.data?.status || '')
-      const err = String(resp?.data?.error || '').trim()
-      if (st === 'cancelled' || st === 'failed') {
-        m.cursorDevPick = {
-          ...pick,
-          status: 'failed',
-          phase: 'failed',
-          error:
-            err ||
-            (st === 'cancelled'
-              ? '写码已取消（未改完代码）。可点「重试写码」继续。'
-              : '写码失败，可点「重试写码」。'),
-          userStopped: /取消|停止/.test(err) || st === 'cancelled',
-          progressText: '',
-        }
-        changed = true
-      } else if (st === 'idle_for_followup' || st === 'succeeded') {
-        m.cursorDevPick = {
-          ...pick,
-          status: 'confirmed',
-          phase: 'idle_for_followup',
-          error: '',
-          progressText: '写码完成',
-        }
+      const patch = pickPatchFromJobStatus(pick, resp?.data || {})
+      if (patch) {
+        m.cursorDevPick = { ...pick, ...patch, jobId }
         changed = true
       }
     } catch {
@@ -2303,8 +2355,12 @@ function parseCursorDevPropose(text) {
   if (data) {
     const requirement = String(data.requirement || data.summary || '').trim()
     if (requirement) {
+      const rawTarget = String(data.target || 'local').trim().toLowerCase()
+      const target = rawTarget === 'github' || rawTarget === 'cloud' ? 'github' : 'local'
       propose = {
         requirement,
+        target,
+        workspace: String(data.workspace || data.path || data.local_path || '').trim(),
         repo: String(data.repo || '').trim(),
         ref: String(data.ref || '').trim(),
       }
@@ -2344,8 +2400,8 @@ function formatCursorDevAdminGuide(detail = '') {
   const head = d ? `写码车道暂不可用：${d}` : '写码车道暂不可用。'
   return (
     `${head}\n\n` +
-    `请联系管理员处理（检查服务端 CURSOR_API_KEY、仓库白名单、Cursor Team↔GitHub 授权与 Cloud Agents）。` +
-    `同事侧无需自行配置 Cursor/GitHub。`
+    `请到侧栏「系统配置」检查 Cursor API Key、写码开关与仓库白名单；` +
+    `并确认 Cursor Team↔GitHub 授权与 Cloud Agents 可用。`
   )
 }
 
@@ -2375,33 +2431,59 @@ async function buildCursorDevPickFromPropose(propose) {
   let repos = []
   let defaultRepo = ''
   let defaultRef = ''
+  let localAvailable = true
+  let localReason = ''
+  let lastWorkspace = ''
   try {
-    const [stResp, repoResp] = await Promise.all([
-      fetchCursorDevStatus(),
-      fetchCursorDevRepos(),
+    const [stResp, repoResp, localStResp, prefResp] = await Promise.all([
+      fetchCursorDevStatus().catch(() => null),
+      fetchCursorDevRepos().catch(() => null),
+      fetchLocalDevStatus().catch(() => null),
+      fetchLocalWorkspacePref().catch(() => null),
     ])
-    const st = stResp.data || {}
-    const rp = repoResp.data || {}
+    const st = stResp?.data || {}
+    const rp = repoResp?.data || {}
     available = Boolean(st.available) && st.user_allowed !== false
     reason = st.reason || rp.reason || ''
     repos = Array.isArray(rp.repos) ? rp.repos : []
     defaultRepo = st.default_repo || rp.default_repo || repos[0] || ''
     defaultRef = st.starting_ref || rp.starting_ref || ''
+    const lst = localStResp?.data || {}
+    localAvailable = lst.available !== false
+    localReason = lst.reason || ''
+    lastWorkspace = String(prefResp?.data?.path || '').trim()
   } catch (e) {
     reason = e?.response?.data?.detail || e?.message || '无法加载写码配置'
     available = false
   }
+  // 优先用本会话已选目标（本机目录 / GitHub 锚点），再回落到 propose / 默认
   const repo = propose.repo || defaultRepo || ''
-  const ref = propose.ref != null && String(propose.ref).trim() !== ''
-    ? String(propose.ref).trim()
-    : defaultRef
-  // 优先用本会话已选仓（新窗锚点），再回落到 propose / 默认仓
-  const anchored = findConfirmedCursorDevAnchor()?.anchor?.repo || ''
-  const resolvedRepo = propose.repo || anchored || repo
+  const ref =
+    propose.ref != null && String(propose.ref).trim() !== ''
+      ? String(propose.ref).trim()
+      : defaultRef
+  const anchored = findConfirmedCursorDevAnchor()?.anchor || null
+  const anchoredWs = String(anchored?.workspace || '').trim()
+  const anchoredRepo = String(anchored?.repo || '').trim()
+  const resolvedRepo = propose.repo || anchoredRepo || repo
+  const workspace = String(propose.workspace || anchoredWs || lastWorkspace || '').trim()
+  // 会话已锚定本机时，强制默认 local（除非 propose 明确 github）
+  let target = String(propose?.target || 'local').toLowerCase() === 'github' ? 'github' : 'local'
+  if (anchored?.target === 'local' || (anchoredWs && !propose.repo && propose?.target !== 'github')) {
+    target = 'local'
+  }
+  if (anchored?.target === 'github' && propose?.target !== 'local') {
+    target = 'github'
+  }
   const files = codingSessionPendingFiles()
   return {
     id: `cursor-dev-pick-${Date.now()}`,
     status: 'pending',
+    target,
+    workspace,
+    lastWorkspace: lastWorkspace || anchoredWs,
+    localAvailable,
+    localReason: localAvailable ? '' : localReason,
     available,
     reason: available ? '' : formatCursorDevAdminGuide(reason),
     repos,
@@ -3103,7 +3185,7 @@ async function beginCursorDevStream(
         ...msg.cursorDevPick,
         status: 'failed',
         phase: 'failed',
-        error: String(detail),
+        error: formatPickFailureSummary(detail),
         repo,
         ref: String(ref || '').trim(),
         requirement: content,
@@ -3113,7 +3195,9 @@ async function beginCursorDevStream(
     }
     messages.value.push({
       role: 'assistant',
-      content: formatCursorDevAdminGuide(detail),
+      content: /CURSOR_API_KEY|白名单|未开启|不可用/i.test(String(detail))
+        ? formatCursorDevAdminGuide(detail)
+        : formatCursorDevUserError(detail),
     })
     await persistSession()
     return false
@@ -3135,10 +3219,7 @@ async function beginCursorDevStream(
     await nextTick()
   }
 
-  if (!threadId.value) {
-    threadId.value = createThreadId()
-    syncThreadQuery(threadId.value)
-  }
+  ensureThreadId()
 
   const requestId = ++activeRequestId
   const currentThread = threadId.value
@@ -3245,12 +3326,22 @@ async function beginCursorDevStream(
     return stepRevealChain
   }
 
+  const applyChannelMeta = (event) => {
+    if (!msg?.cursorDevPick) return
+    const meta = inferChannelFromEvent(event)
+    if (!meta.channel && !meta.speedHint) return
+    msg.cursorDevPick = { ...msg.cursorDevPick, ...meta }
+  }
+
   const touchProgress = (text) => {
     lastEventAt = Date.now()
     const elapsed = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
     streamDurationText.value = `${elapsed}s`
-    if (msg?.cursorDevPick && text) {
-      msg.cursorDevPick = { ...msg.cursorDevPick, progressText: String(text) }
+    if (!msg?.cursorDevPick) return
+    const speed = cursorDevSpeedLabel(msg.cursorDevPick, { elapsedSec: elapsed })
+    const nextText = speed || String(text || '')
+    if (nextText) {
+      msg.cursorDevPick = { ...msg.cursorDevPick, progressText: nextText }
     }
   }
 
@@ -3313,6 +3404,35 @@ async function beginCursorDevStream(
     streamProcessCollapsed.value = false
     streamDurationText.value = ''
     streamAnswerPending.value = false
+    // 状态可信：收尾时确认卡不得仍停在 running
+    if (msg?.cursorDevPick) {
+      const ph = msg.cursorDevPick.phase
+      if (streamGotError || stopped) {
+        if (ph === 'running' || ph === 'starting') {
+          msg.cursorDevPick = {
+            ...msg.cursorDevPick,
+            status: 'failed',
+            phase: 'failed',
+            error:
+              msg.cursorDevPick.error ||
+              formatPickFailureSummary(stopped ? '已停止写码' : '写码未成功结束', {
+                userStopped: stopped || Boolean(msg.cursorDevPick.userStopped),
+              }),
+            userStopped: stopped || Boolean(msg.cursorDevPick.userStopped),
+            progressText: '',
+          }
+        }
+      } else if (ph === 'running' || ph === 'starting') {
+        msg.cursorDevPick = {
+          ...msg.cursorDevPick,
+          status: 'confirmed',
+          phase: 'idle_for_followup',
+          error: '',
+          progressText:
+            msg.cursorDevPick.channel === 'patch' ? '快速补丁完成' : '写码完成',
+        }
+      }
+    }
     streaming.value = false
     streamAbort.value = null
     clearActiveCursorDev()
@@ -3408,13 +3528,15 @@ async function beginCursorDevStream(
             ...msg.cursorDevPick,
             phase: 'failed',
             status: 'failed',
-            error: String(err),
+            error: formatPickFailureSummary(err, {
+              userStopped: st === 'cancelled' || Boolean(msg.cursorDevPick.userStopped),
+            }),
             jobId,
             progressText: '',
           }
         }
         await finishUi({
-          content: `[错误] ${err}\n可在上方确认卡点「重试写码」。`,
+          content: formatCursorDevUserError(err, { userStopped: st === 'cancelled' }),
           stopped: false,
         })
         try {
@@ -3464,6 +3586,7 @@ async function beginCursorDevStream(
         const type = event?.type
         if (type === 'status') {
           const text = event.text || ''
+          applyChannelMeta(event)
           touchProgress(text || '写码进行中…')
           if (streamProcess.value.some((i) => i.id === 'boot')) {
             streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: text || 'Cursor…' }]
@@ -3475,17 +3598,34 @@ async function beginCursorDevStream(
               state: 'running',
               title: text || `Cursor 仍在执行…`,
             })
+          } else if (event.phase === 'patch' || event.channel === 'patch' || event.speed_hint === 'fast') {
+            await enqueueStep({
+              id: 'cursor-patch',
+              state: /未采用|异常|回退/.test(text) ? 'done' : 'running',
+              title: text || '快速补丁通道…',
+            })
+          } else if (event.speed_hint === 'cold_start' || event.phase === 'agent') {
+            await enqueueStep({
+              id: 'cursor-boot',
+              state: 'running',
+              title: text || 'Cloud 启动中…',
+            })
           }
           scrollToBottom()
         } else if (type === 'step') {
           lastEventAt = Date.now()
+          applyChannelMeta(event)
           streamAnswerPending.value = false
           streamProcessCollapsed.value = false
           await enqueueStep(event)
           if (msg?.cursorDevPick && event.title) {
+            const elapsed = Math.max(1, Math.round((Date.now() - streamStartedAt.value) / 1000))
+            const speed = cursorDevSpeedLabel(msg.cursorDevPick, { elapsedSec: elapsed })
             msg.cursorDevPick = {
               ...msg.cursorDevPick,
-              progressText: event.state === 'done' ? `完成：${event.title}` : String(event.title),
+              progressText:
+                speed ||
+                (event.state === 'done' ? `完成：${event.title}` : String(event.title)),
             }
           }
         } else if (type === 'token') {
@@ -3573,6 +3713,7 @@ async function beginCursorDevStream(
           if (event.merge_guide && typeof event.merge_guide === 'object') {
             mergeGuide = { ...event.merge_guide, merged_to_main: false }
           }
+          applyChannelMeta(event)
           // 终稿到达：先封掉「核对中」心跳，再写正文
           applyStep({
             id: 'cursor-heartbeat',
@@ -3598,23 +3739,30 @@ async function beginCursorDevStream(
             }
           }
           if (msg?.cursorDevPick) {
+            const ch = String(event.channel || msg.cursorDevPick.channel || '')
             msg.cursorDevPick = {
               ...msg.cursorDevPick,
               phase: 'idle_for_followup',
               status: 'confirmed',
+              error: '',
               jobId,
-              progressText: '',
+              progressText: ch === 'patch' ? '快速补丁完成' : '写码完成',
+              ...(ch ? { channel: ch } : {}),
               ...(mergeGuide ? { mergeGuide } : {}),
             }
           }
         } else if (type === 'error') {
           streamGotError = true
+          applyChannelMeta(event)
+          const rawErr = event.message || event.error || '写码失败'
           if (msg?.cursorDevPick) {
             msg.cursorDevPick = {
               ...msg.cursorDevPick,
               status: 'failed',
               phase: 'failed',
-              error: event.message || event.error || '写码失败',
+              error: formatPickFailureSummary(rawErr, {
+                userStopped: Boolean(msg.cursorDevPick.userStopped),
+              }),
               jobId,
               repo: repo || msg.cursorDevPick.repo,
               requirement: content || msg.cursorDevPick.requirement,
@@ -3664,7 +3812,7 @@ async function beginCursorDevStream(
         streamGotError = true
         const errText = typeof err === 'string' ? err : (err?.message || err)
         await finishUi({
-          content: `[错误] Cursor 写码失败：${errText}\n可在上方确认卡点「重试写码」。`,
+          content: formatCursorDevUserError(errText),
           stopped: false,
         })
         if (msg?.cursorDevPick) {
@@ -3672,7 +3820,7 @@ async function beginCursorDevStream(
             ...msg.cursorDevPick,
             phase: 'failed',
             status: 'failed',
-            error: String(errText),
+            error: formatPickFailureSummary(errText),
             jobId,
             progressText: '',
           }
@@ -3698,13 +3846,14 @@ async function beginCursorDevStream(
             ...msg.cursorDevPick,
             status: 'failed',
             phase: 'failed',
-            error: '已停止写码。可点「重试写码」用同一需求再跑，或继续对话改需求后再确认。',
+            error: formatPickFailureSummary('已停止写码', { userStopped: true }),
             jobId,
+            userStopped: true,
             progressText: '',
           }
         }
         await finishUi({
-          content: streamContent.value || '已停止写码任务。可在上方确认卡点「重试写码」。',
+          content: streamContent.value || formatCursorDevUserError('已停止写码', { userStopped: true }),
           stopped: true,
         })
       } else {
@@ -3729,14 +3878,14 @@ async function beginCursorDevStream(
         ...msg.cursorDevPick,
         status: 'failed',
         phase: 'failed',
-        error: e?.message || String(e),
+        error: formatPickFailureSummary(e?.message || String(e)),
         jobId,
         progressText: '',
       }
     }
     messages.value.push({
       role: 'assistant',
-      content: `[错误] 写码流异常：${e?.message || e}`,
+      content: formatCursorDevUserError(e?.message || e),
     })
     await persistSession()
     return false
@@ -3806,7 +3955,7 @@ async function beginCodingDiscussEntry(content, files = []) {
         '- 登录页增加企业编码下拉\n' +
         '- 首页做制造仪表盘\n' +
         '- 给某接口加字段校验\n\n' +
-        '说清楚需求后，我会再请你确认代码仓库并开始写码。',
+        '说清楚需求后，我会再请你确认本机目录（或 GitHub）并开始写码。',
       process: [],
       processCollapsed: true,
     })
@@ -3817,21 +3966,29 @@ async function beginCodingDiscussEntry(content, files = []) {
   if (isFirstCodingIntentInThread(content, files) && !hasCursorDevRepoSession()) {
     let repos = []
     let defaultRepo = ''
+    let lastWorkspace = ''
     try {
-      const rp = await fetchCursorDevRepos()
+      const [rp, pref] = await Promise.all([
+        fetchCursorDevRepos().catch(() => null),
+        fetchLocalWorkspacePref().catch(() => null),
+      ])
       repos = Array.isArray(rp?.data?.repos) ? rp.data.repos : []
       defaultRepo = rp?.data?.default_repo || repos[0] || ''
+      lastWorkspace = String(pref?.data?.path || '').trim()
     } catch {
       /* ignore */
     }
     messages.value.push({
       role: 'assistant',
       content: looksLikeScreenshotUiRedesign(content, files)
-        ? '已理解你要按截图改界面。请先选择要改的代码仓库。'
-        : '请先选择本次要改的代码仓库。已有项目会现场读仓衔接；新项目再从头收集需求。',
+        ? '已理解你要按截图改界面。请先选择本机工程目录（默认），或改走 GitHub。'
+        : '请先选择本次写码目标。默认本机目录（沙箱改码后同步）；也可改走 GitHub。',
       cursorDevAnchor: {
         id: `cursor-dev-anchor-${Date.now()}`,
         status: 'pending',
+        target: 'local',
+        workspace: lastWorkspace,
+        lastWorkspace,
         repos,
         repo: defaultRepo,
         projectMode: 'existing',
@@ -3973,7 +4130,7 @@ async function onCursorDevAnchorResolved(msg, payload) {
     void persistSession()
     messages.value.push({
       role: 'assistant',
-      content: '已取消选仓。重新说明开发需求后，我会再请你选择仓库。',
+      content: '已取消。重新说明开发需求后，我会再请你选择本机目录或 GitHub 仓库。',
       process: [],
       processCollapsed: true,
     })
@@ -3982,6 +4139,11 @@ async function onCursorDevAnchorResolved(msg, payload) {
     return
   }
 
+  const target =
+    String(payload.target || msg.cursorDevAnchor.target || 'local').toLowerCase() === 'github'
+      ? 'github'
+      : 'local'
+  const workspace = String(payload.workspace || '').trim()
   const repo = String(payload.repo || '').trim()
   const projectMode = payload.projectMode === 'new' ? 'new' : 'existing'
   const pendingContent = String(
@@ -3993,9 +4155,103 @@ async function onCursorDevAnchorResolved(msg, payload) {
       ? [...msg.cursorDevAnchor.pendingFiles]
       : []
 
+  // —— 本机目录（默认）——
+  if (target === 'local') {
+    if (!workspace) {
+      messages.value.push({
+        role: 'assistant',
+        content: '本机目录不能为空，请重新选择。',
+        process: [],
+        processCollapsed: true,
+      })
+      await persistSession()
+      return
+    }
+    let checkOk = true
+    let checkEmpty = projectMode === 'new'
+    let checkErr = ''
+    let resolvedWs = workspace
+    try {
+      const resp = await checkLocalDevWorkspace(workspace)
+      const data = resp?.data || {}
+      checkOk = Boolean(data.ok)
+      checkEmpty = Boolean(data.empty)
+      checkErr = data.error || ''
+      if (checkOk && data.path) resolvedWs = String(data.path)
+    } catch (e) {
+      checkOk = false
+      checkErr = e?.response?.data?.detail || e?.message || String(e)
+    }
+    if (!checkOk) {
+      msg.cursorDevAnchor = { ...msg.cursorDevAnchor, status: 'pending' }
+      messages.value.push({
+        role: 'assistant',
+        content: `本机目录不可用：${checkErr || '请检查路径是否存在且可写'}`,
+        process: [],
+        processCollapsed: true,
+      })
+      await persistSession()
+      return
+    }
+    const effectiveMode = checkEmpty ? 'new' : projectMode === 'new' && !checkEmpty ? 'existing' : projectMode
+    const promptBlock =
+      effectiveMode === 'new'
+        ? (
+            `【本会话已选定本机新项目目录】\n` +
+            `路径：${resolvedWs}\n` +
+            `空目录从零生成；:::cursor_dev_propose 默认 target=local，workspace 填 \`${resolvedWs}\`；不要要求 GitHub repo。`
+          )
+        : (
+            `【本会话已选定本机工程目录】\n` +
+            `路径：${resolvedWs}\n` +
+            `按已有工程增量开发；:::cursor_dev_propose 默认 target=local，workspace 填 \`${resolvedWs}\`；不要问技术栈/GitHub 仓库。`
+          )
+    msg.cursorDevAnchor = {
+      ...msg.cursorDevAnchor,
+      status: 'confirmed',
+      target: 'local',
+      workspace: resolvedWs,
+      lastWorkspace: resolvedWs,
+      repo: '',
+      projectMode: effectiveMode,
+      pendingContent,
+      pendingFiles,
+      promptBlock,
+    }
+    try {
+      await saveLocalWorkspacePref(resolvedWs)
+    } catch {
+      /* ignore */
+    }
+    void persistSession()
+    messages.value.push({
+      role: 'assistant',
+      content:
+        effectiveMode === 'new'
+          ? `已选定本机新项目目录 \`${resolvedWs}\`。接下来从头确认技术栈与需求范围。`
+          : `已选定本机工程 \`${resolvedWs}\`。本轮只确认新增范围；写码将经沙箱同步到该目录。`,
+      process: [],
+      processCollapsed: true,
+    })
+    await persistSession()
+    scrollToBottom()
+    const userNeed = pendingContent || '请根据已选本机目录继续澄清写码需求'
+    await startAssistantStream(
+      buildCodingDiscussPrompt(userNeed, promptBlock),
+      pendingFiles,
+      null,
+      null,
+      codingDiscussStreamOpts({ localWorkspaceRoot: resolvedWs }),
+    )
+    return
+  }
+
+  // —— GitHub ——
   msg.cursorDevAnchor = {
     ...msg.cursorDevAnchor,
     status: 'confirmed',
+    target: 'github',
+    workspace: '',
     repo,
     projectMode,
     pendingContent,
@@ -4039,7 +4295,7 @@ async function onCursorDevAnchorResolved(msg, payload) {
       const detail = e?.response?.data?.detail || e?.message || String(e)
       promptBlock =
         `【已选定已有仓库，但现场读取失败】\n仓库：${repo}\n错误：${detail}\n` +
-        `仍请按该仓增量开发；不要重新问技术栈（除非用户要换）；propose.repo 填 \`${repo}\`。`
+        `仍请按该仓增量开发；不要重新问技术栈（除非用户要换）；propose target=github、repo 填 \`${repo}\`。`
       const lastMsg = messages.value[messages.value.length - 1]
       if (lastMsg?.role === 'assistant') {
         lastMsg.content =
@@ -4050,7 +4306,7 @@ async function onCursorDevAnchorResolved(msg, payload) {
     promptBlock =
       `【本会话已选定新项目仓库】\n` +
       `仓库：${repo}\n` +
-      `这是新项目：从头收集需求与技术栈；:::cursor_dev_propose 的 repo 必须填 \`${repo}\`。`
+      `这是新项目：从头收集需求与技术栈；:::cursor_dev_propose 的 target=github、repo 必须填 \`${repo}\`。`
     messages.value.push({
       role: 'assistant',
       content: `已选定新项目仓库 \`${repo}\`。接下来从头确认技术栈与需求范围。`,
@@ -4073,12 +4329,261 @@ async function onCursorDevAnchorResolved(msg, payload) {
   )
 }
 
+async function beginLocalDevStream(msg, { workspace, content }) {
+  if (streaming.value && streamAbort.value) {
+    messages.value.push({
+      role: 'assistant',
+      content: '当前还有进行中的生成任务。请先点停止，再发起本机写码。',
+      process: [],
+      processCollapsed: true,
+    })
+    await persistSession()
+    return false
+  }
+  if (msg?.cursorDevPick) {
+    msg.cursorDevPick = {
+      ...msg.cursorDevPick,
+      status: 'confirmed',
+      target: 'local',
+      workspace: workspace || msg.cursorDevPick.workspace,
+      requirement: content || msg.cursorDevPick.requirement || '',
+      phase: 'starting',
+      progressText: '正在创建本机写码任务…',
+      channel: 'local_sandbox',
+    }
+  }
+
+  let jobId = ''
+  try {
+    try {
+      await checkLocalDevWorkspace(workspace)
+    } catch {
+      /* 创建时后端会再校验 */
+    }
+    const resp = await createLocalDevJob({
+      workspace,
+      message: content,
+      thread_id: threadId.value || '',
+      confirmed: true,
+    })
+    jobId = resp?.data?.id || ''
+    if (!jobId) throw new Error('未返回本机写码任务 id')
+    if (msg?.cursorDevPick) {
+      msg.cursorDevPick = {
+        ...msg.cursorDevPick,
+        jobId,
+        phase: 'running',
+        status: 'confirmed',
+        error: '',
+        progressText: `沙箱写码中 → ${workspace}`,
+      }
+    }
+    void persistSession()
+  } catch (e) {
+    const detail = e?.response?.data?.detail || e?.message || e
+    streaming.value = false
+    clearActiveCursorDev()
+    if (msg?.cursorDevPick) {
+      msg.cursorDevPick = {
+        ...msg.cursorDevPick,
+        status: 'failed',
+        phase: 'failed',
+        error: formatPickFailureSummary(detail),
+        workspace,
+        requirement: content,
+        progressText: '',
+      }
+    }
+    messages.value.push({
+      role: 'assistant',
+      content: formatCursorDevUserError(detail),
+      process: [],
+      processCollapsed: true,
+    })
+    await persistSession()
+    return false
+  }
+
+  const requestId = ++activeRequestId
+  const currentThread = threadId.value
+  streaming.value = true
+  streamAbort.value = new AbortController()
+  activeCursorDevJobId.value = jobId
+  activeCursorDevMsg.value = msg
+  streamStartedAt.value = Date.now()
+  streamContent.value = ''
+  streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: '本机沙箱写码…' }]
+  streamCodingPlan.value = []
+  streamProcessCollapsed.value = false
+  streamAnswerPending.value = false
+
+  const applyLocalStep = (event) => {
+    const id = event?.id || `step-${Date.now()}`
+    const title = event?.title || ''
+    const state = event?.state || 'running'
+    const idx = streamProcess.value.findIndex((i) => i.id === id)
+    const item = { id, type: 'step', state, title }
+    if (idx >= 0) streamProcess.value[idx] = { ...streamProcess.value[idx], ...item }
+    else streamProcess.value = [...streamProcess.value, item]
+  }
+
+  const applyCodingPlan = (steps) => {
+    if (!Array.isArray(steps)) return
+    streamCodingPlan.value = steps.map((s, i) => ({
+      id: String(s?.id ?? i),
+      title: String(s?.title || '').trim(),
+      state: s?.state || 'pending',
+    }))
+    if (msg) msg.codingPlan = [...streamCodingPlan.value]
+  }
+
+  try {
+    await streamLocalDevJob(
+      jobId,
+      async (event) => {
+        if (requestId !== activeRequestId || threadId.value !== currentThread) return
+        const type = event?.type
+        if (type === 'plan' && Array.isArray(event.steps)) {
+          applyCodingPlan(event.steps)
+          scrollToBottom()
+        } else if (type === 'plan_progress') {
+          if (Array.isArray(event.steps)) applyCodingPlan(event.steps)
+          else if (event.index != null && streamCodingPlan.value.length) {
+            const next = streamCodingPlan.value.map((s, i) =>
+              i === Number(event.index)
+                ? { ...s, state: event.state || s.state }
+                : event.state === 'running' && s.state === 'running'
+                  ? { ...s, state: 'done' }
+                  : s,
+            )
+            streamCodingPlan.value = next
+            if (msg) msg.codingPlan = [...next]
+          }
+          scrollToBottom()
+        } else if (type === 'status') {
+          const text = event.text || ''
+          if (msg?.cursorDevPick) {
+            msg.cursorDevPick = { ...msg.cursorDevPick, progressText: text || '本机写码进行中…' }
+          }
+          if (streamProcess.value.some((i) => i.id === 'boot')) {
+            streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: text || '本机沙箱…' }]
+          }
+          scrollToBottom()
+        } else if (type === 'step') {
+          streamAnswerPending.value = false
+          streamProcessCollapsed.value = false
+          applyLocalStep(event)
+          if (msg?.cursorDevPick && event.title) {
+            msg.cursorDevPick = {
+              ...msg.cursorDevPick,
+              progressText: event.state === 'done' ? `完成：${event.title}` : String(event.title),
+            }
+          }
+        } else if (type === 'token') {
+          const text = event.text != null ? event.text : event.token
+          if (!text) return
+          streamAnswerPending.value = true
+          streamContent.value += String(text)
+          scrollToBottom()
+        } else if (type === 'replace_text' && event.text != null) {
+          streamContent.value = String(event.text)
+          scrollToBottom()
+        } else if (type === 'done') {
+          const summary = String(event.text || streamContent.value || '本机写码已完成')
+          streamContent.value = summary
+          const synced = Array.isArray(event.changed_files) ? event.changed_files : []
+          if (streamCodingPlan.value.length) {
+            streamCodingPlan.value = streamCodingPlan.value.map((s) => ({
+              ...s,
+              state: s.state === 'error' ? 'error' : 'done',
+            }))
+          }
+          if (msg?.cursorDevPick) {
+            msg.cursorDevPick = {
+              ...msg.cursorDevPick,
+              phase: 'idle_for_followup',
+              status: 'confirmed',
+              progressText: '',
+              workspace: event.workspace || workspace,
+              syncedFiles: synced,
+              previewUrl: String(event.preview_url || '').trim(),
+              preview: event.preview && typeof event.preview === 'object' ? event.preview : null,
+              channel: 'local_sandbox',
+              mergeGuide: null,
+            }
+          }
+          applyLocalStep({ id: 'boot', state: 'done', title: '本机写码已同步' })
+          scrollToBottom()
+        } else if (type === 'error') {
+          const err = event.message || '本机写码失败'
+          if (msg?.cursorDevPick) {
+            msg.cursorDevPick = {
+              ...msg.cursorDevPick,
+              status: 'failed',
+              phase: 'failed',
+              error: formatPickFailureSummary(err),
+              progressText: '',
+            }
+          }
+          messages.value.push({
+            role: 'assistant',
+            content: formatCursorDevUserError(err),
+            process: [],
+            processCollapsed: true,
+          })
+        }
+      },
+      null,
+      null,
+      streamAbort.value.signal,
+    )
+  } catch (e) {
+    if (msg?.cursorDevPick && msg.cursorDevPick.phase !== 'idle_for_followup') {
+      msg.cursorDevPick = {
+        ...msg.cursorDevPick,
+        status: 'failed',
+        phase: 'failed',
+        error: formatPickFailureSummary(e?.message || e),
+        progressText: '',
+      }
+    }
+  } finally {
+    if (requestId === activeRequestId) {
+      streaming.value = false
+      streamAbort.value = null
+      clearActiveCursorDev()
+      // 把流式正文落到消息
+      if (msg && streamContent.value) {
+        msg.content = streamContent.value
+        msg.process = [...(streamProcess.value || [])]
+        if (streamCodingPlan.value.length) {
+          msg.codingPlan = [...streamCodingPlan.value]
+        }
+      } else if (msg && streamCodingPlan.value.length) {
+        msg.codingPlan = [...streamCodingPlan.value]
+      }
+      streamContent.value = ''
+      streamProcess.value = []
+      streamCodingPlan.value = []
+      void persistSession()
+      scrollToBottom()
+    }
+  }
+  return true
+}
+
 async function onCursorDevPickResolved(msg, payload) {
   if (!msg?.cursorDevPick || !payload) return
   const prevStatus = msg.cursorDevPick.status || 'pending'
-  if (prevStatus && prevStatus !== 'pending' && prevStatus !== 'failed') return
+  const allowFromConfirmed = ['force_stop', 'reattach', 'retry'].includes(payload.status)
+  if (prevStatus && prevStatus !== 'pending' && prevStatus !== 'failed' && !allowFromConfirmed) return
   if (prevStatus === 'failed' && payload.status !== 'retry' && payload.status !== 'cancelled') return
 
+  const target =
+    String(payload.target || msg.cursorDevPick.target || 'local').toLowerCase() === 'github'
+      ? 'github'
+      : 'local'
+  const workspace = String(payload.workspace || msg.cursorDevPick.workspace || '').trim()
   const repo = payload.repo || msg.cursorDevPick.repo || ''
   const ref = String(payload.ref ?? msg.cursorDevPick.ref ?? '').trim()
   let requirement = String(
@@ -4118,6 +4623,8 @@ async function onCursorDevPickResolved(msg, payload) {
       ...msg.cursorDevPick,
       status: 'cancelled',
       phase: 'cancelled',
+      target,
+      workspace,
       repo,
       ref,
       requirement,
@@ -4144,7 +4651,11 @@ async function onCursorDevPickResolved(msg, payload) {
     }
     if (jobId) {
       try {
-        await cancelCursorDevJob(jobId, '用户强制结束')
+        if (target === 'local' || String(jobId).startsWith('ldj-')) {
+          await cancelLocalDevJob(jobId, '用户强制结束')
+        } else {
+          await cancelCursorDevJob(jobId, '用户强制结束')
+        }
       } catch {
         /* ignore */
       }
@@ -4153,10 +4664,12 @@ async function onCursorDevPickResolved(msg, payload) {
       ...msg.cursorDevPick,
       status: 'failed',
       phase: 'failed',
-      error: '已强制结束写码。可点「重试写码」用同一需求再跑。',
+      error: formatPickFailureSummary('已强制结束写码', { userStopped: true }),
       jobId,
       userStopped: true,
       progressText: '',
+      target,
+      workspace,
       repo,
       ref,
       requirement,
@@ -4165,12 +4678,61 @@ async function onCursorDevPickResolved(msg, payload) {
     void persistSession()
     messages.value.push({
       role: 'assistant',
-      content: '已强制结束本轮写码。可在上方确认卡点「重试写码」。',
+      content: formatCursorDevUserError('已强制结束写码', { userStopped: true }),
       process: [],
       processCollapsed: true,
     })
     await persistSession()
     scrollToBottom()
+    return
+  }
+
+  // 本机目标：确认 / 重试走沙箱写码（reattach 对本机无意义）
+  if (target === 'local' && (payload.status === 'confirmed' || payload.status === 'retry')) {
+    if (!workspace) {
+      msg.cursorDevPick = {
+        ...msg.cursorDevPick,
+        status: 'failed',
+        phase: 'failed',
+        error: '请填写本机工程绝对路径',
+        progressText: '',
+      }
+      void persistSession()
+      return
+    }
+    if (!requirement || isVagueCodeDevIntent(requirement)) {
+      msg.cursorDevPick = { ...msg.cursorDevPick, status: 'cancelled', phase: 'cancelled' }
+      messages.value.push({
+        role: 'assistant',
+        content: '需求摘要还不够具体，已取消启动。请再补充功能细节后，我会重新弹出确认卡。',
+        process: [],
+        processCollapsed: true,
+      })
+      await persistSession()
+      return
+    }
+    msg.cursorDevPick = {
+      ...msg.cursorDevPick,
+      target: 'local',
+      workspace,
+      requirement,
+      pendingContent: requirement,
+      phase: 'running',
+      status: 'confirmed',
+      progressText: '正在启动本机沙箱写码…',
+      error: '',
+      userStopped: false,
+    }
+    void persistSession()
+    const prevJobId = String(payload.jobId || msg.cursorDevPick.jobId || '').trim()
+    if (payload.status === 'retry' && prevJobId) {
+      try {
+        await cancelLocalDevJob(prevJobId, '重试本机写码，结束旧任务')
+      } catch {
+        /* ignore */
+      }
+    }
+    await beginLocalDevStream(msg, { workspace, content: requirement })
     return
   }
 
@@ -4181,7 +4743,7 @@ async function onCursorDevPickResolved(msg, payload) {
         ...msg.cursorDevPick,
         status: 'failed',
         phase: 'failed',
-        error: '缺少任务 id，无法挂接。请点「重试写码」。',
+        error: formatPickFailureSummary('缺少任务 id，无法挂接'),
         progressText: '',
       }
       void persistSession()
@@ -4315,6 +4877,7 @@ async function onCursorDevPickResolved(msg, payload) {
   msg.cursorDevPick = {
     ...msg.cursorDevPick,
     status: 'confirmed',
+    target: 'github',
     repo,
     ref,
     requirement,
@@ -4395,10 +4958,7 @@ async function send(text) {
   if (files.some((f) => f.status === 'error')) return
   if (hasPendingIdePick() || hasPendingGitPick() || hasPendingCodeReviewPick() || hasPendingCursorDevPick() || hasPendingCursorDevOptions() || hasPendingCursorDevAnchor() || hasPendingScreenshotIntent()) return
 
-  if (!threadId.value) {
-    threadId.value = createThreadId()
-    syncThreadQuery(threadId.value)
-  }
+  ensureThreadId()
 
   // 编辑重发：截断该条及之后的消息，再作为新一轮发送
   if (editingFromIndex.value >= 0) {
@@ -4565,10 +5125,7 @@ async function startAssistantStream(
       streaming.value = false
     }
   }
-  if (!threadId.value) {
-    threadId.value = createThreadId()
-    syncThreadQuery(threadId.value)
-  }
+  ensureThreadId()
 
   const requestId = ++activeRequestId
   const currentThread = threadId.value
@@ -4587,12 +5144,16 @@ async function startAssistantStream(
     Boolean(opts && opts.cursorDevLane) || workbuddyLane === 'code_dev'
   const cursorDevRepo = String((opts && opts.cursorDevRepo) || '').trim()
   const cursorDevJobId = String((opts && opts.cursorDevJobId) || '').trim()
+  const localWorkspaceRoot = String((opts && opts.localWorkspaceRoot) || '').trim()
   const isCodeReviewLane =
     workbuddyLane === 'code_review' || Boolean(ideWorkspaceRoot) || Boolean(gitRepoUrl)
   const isPasteCodeLane = workbuddyLane === 'paste_code'
   const isCodeDevLane =
     !isPasteCodeLane &&
-    (workbuddyLane === 'code_dev' || cursorDevLane || Boolean(cursorDevRepo))
+    (workbuddyLane === 'code_dev' ||
+      cursorDevLane ||
+      Boolean(cursorDevRepo) ||
+      Boolean(localWorkspaceRoot))
 
   streamProcess.value = [{
     id: 'boot',
@@ -4607,7 +5168,11 @@ async function startAssistantStream(
         : isCodeReviewLane && gitRepoUrl
           ? '正在审核公开 Git 仓库…'
           : isCodeDevLane
-            ? (cursorDevRepo ? `写码讨论：${cursorDevRepo}` : '写码需求讨论…')
+            ? (localWorkspaceRoot
+              ? `写码讨论：本机 ${localWorkspaceRoot}`
+              : cursorDevRepo
+                ? `写码讨论：${cursorDevRepo}`
+                : '写码需求讨论…')
             : '分析问题…',
   }]
   streamProcessCollapsed.value = false
@@ -4732,6 +5297,7 @@ async function startAssistantStream(
       }
       if (cursorDevRepo) extraPageContext.cursor_dev_repo = cursorDevRepo
       if (cursorDevJobId) extraPageContext.cursor_dev_job_id = cursorDevJobId
+      if (localWorkspaceRoot) extraPageContext.local_workspace_root = localWorkspaceRoot
     } else if (isPasteCodeLane) {
       extraPageContext = {
         workbuddy_lane: 'paste_code',
@@ -4865,10 +5431,15 @@ async function startAssistantStream(
           if (wantCodingCard && !hasCursorDevRepoSession()) {
             let repos = []
             let defaultRepo = ''
+            let lastWorkspace = ''
             try {
-              const rp = await fetchCursorDevRepos()
+              const [rp, pref] = await Promise.all([
+                fetchCursorDevRepos().catch(() => null),
+                fetchLocalWorkspacePref().catch(() => null),
+              ])
               repos = Array.isArray(rp?.data?.repos) ? rp.data.repos : []
               defaultRepo = rp?.data?.default_repo || repos[0] || ''
+              lastWorkspace = String(pref?.data?.path || '').trim()
             } catch {
               /* ignore */
             }
@@ -4884,10 +5455,13 @@ async function startAssistantStream(
               }
             }
             if (!pendingFiles.length) pendingFiles = codingSessionPendingFiles()
-            finalContent = '请先选择本次要改的代码仓库。已有项目会现场读仓衔接；新项目再从头收集需求。'
+            finalContent = '请先选择本次写码目标。默认本机目录（沙箱改码后同步）；也可改走 GitHub。'
             cursorDevAnchor = {
               id: `cursor-dev-anchor-${Date.now()}`,
               status: 'pending',
+              target: 'local',
+              workspace: lastWorkspace,
+              lastWorkspace,
               repos,
               repo: defaultRepo,
               projectMode: 'existing',
@@ -5354,64 +5928,6 @@ async function handleFileUpload(e) {
   e.target.value = ''
 }
 
-function renderMarkdown(text) {
-  if (!text) return ''
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-  html = html.replace(/([\w\-~.:/\\]+[\\/])([\w\-]+\.(xlsx|csv|json))/g, (match, dir, filename) => {
-    return `<a class="file-link" href="/api/download/${encodeURIComponent(filename)}" download target="_blank">${match}</a>`
-  })
-
-  html = html.replace(/```(\w*)\r?\n([\s\S]*?)```/g, (_, lang, code) => {
-    const label = (lang || '').trim()
-    const langHtml = label
-      ? `<span class="code-lang">${label}</span>`
-      : '<span class="code-lang"></span>'
-    return (
-      `<div class="code-block-wrap">` +
-      `<div class="code-block-bar">${langHtml}` +
-      `<button type="button" class="code-copy-btn" data-code-copy title="复制代码">复制</button>` +
-      `</div>` +
-      `<pre class="code-block"><code>${code}</code></pre>` +
-      `</div>`
-    )
-  })
-  html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>')
-  html = html.replace(/^## (.+)$/gm, '<h2 class="md-h2">$1</h2>')
-  html = html.replace(/^# (.+)$/gm, '<h1 class="md-h1">$1</h1>')
-
-  html = html.replace(/^\|(.+)\|$/gm, (match) => {
-    const cells = match.split('|').filter(c => c.trim())
-    const isHeader = /^[-:\s|]+$/.test(match.replace(/\|/g, ''))
-    if (isHeader) return ''
-    return `<tr>${cells.map(c => {
-      const isBold = /^\*\*(.+)\*\*$/.test(c.trim())
-      const text = c.trim().replace(/\*\*/g, '')
-      return isBold ? `<th>${text}</th>` : `<td>${text}</td>`
-    }).join('')}</tr>`
-  })
-  html = html.replace(/(<tr>.*?<\/tr>)\n(<tr>)/g, '$1$2')
-  html = html.replace(/(<tr>[\s\S]*?<\/tr>)/g, (match) => {
-    if (match.includes('<table')) return match
-    return `<table class="md-table">${match}</table>`
-  })
-  html = html.replace(/<\/table>\s*<table[^>]*>/g, '')
-
-  html = html.replace(/^- (.+)$/gm, '<li class="md-li">$1</li>')
-  html = html.replace(/(<li class="md-li">[\s\S]*?<\/li>)/g, (match) => {
-    if (match.includes('<ul')) return match
-    return `<ul class="md-ul">${match}</ul>`
-  })
-  html = html.replace(/^---$/gm, '<hr class="md-hr">')
-  html = html.replace(/\n/g, '<br>')
-  return html
-}
-
 onMounted(async () => {
   window.addEventListener('keydown', onLightboxKeydown)
   await initFromRoute()
@@ -5419,8 +5935,19 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  chatViewAlive = false
   window.removeEventListener('keydown', onLightboxKeydown)
   closeImageLightbox()
+  // 会话切换会整页重挂载：必须停掉流式请求与写码轮询，否则旧定时器继续改 DOM 导致点击无响应
+  activeRequestId += 1
+  try {
+    streamAbort.value?.abort()
+  } catch {
+    /* ignore */
+  }
+  streamAbort.value = null
+  clearActiveCursorDev()
+  streaming.value = false
 })
 </script>
 

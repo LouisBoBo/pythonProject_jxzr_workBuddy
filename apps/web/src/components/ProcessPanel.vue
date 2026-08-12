@@ -28,6 +28,11 @@
         </div>
         <div class="process-card">
           <div class="process-card-head">
+            <span class="process-status-icon" aria-hidden="true">
+              <span v-if="isRunningItem(item)" class="process-spinner" />
+              <span v-else-if="isDoneItem(item)">✅</span>
+              <span v-else-if="isErrorItem(item)">❌</span>
+            </span>
             <span class="process-badge">{{ statusLabel(item) }}</span>
             <div class="process-item-title">{{ itemLabel(item) }}</div>
           </div>
@@ -151,6 +156,23 @@ function statusLabel(item) {
   if (item.state === 'done' || item.phase === 'end') return '完成'
   if (item.type === 'status') return '状态'
   return '步骤'
+}
+
+function isRunningItem(item) {
+  return (
+    item?.phase === 'generating' ||
+    item?.phase === 'waiting' ||
+    item?.state === 'running' ||
+    item?.state === 'waiting'
+  )
+}
+
+function isDoneItem(item) {
+  return item?.state === 'done' || item?.phase === 'end'
+}
+
+function isErrorItem(item) {
+  return item?.state === 'error' || item?.ok === false
 }
 </script>
 
@@ -300,6 +322,33 @@ function statusLabel(item) {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+}
+
+.process-status-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.process-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: process-spin 0.7s linear infinite;
+}
+
+@keyframes process-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .process-badge {

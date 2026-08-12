@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ChatView from './views/ChatView.vue'
 import FileManager from './views/FileManager.vue'
+import SettingsView from './views/SettingsView.vue'
 import LoginView from './views/LoginView.vue'
 import { isLoggedIn } from './auth.js'
 
@@ -9,6 +10,7 @@ const routes = [
   { path: '/', name: 'chat', component: ChatView, meta: { title: '对话' } },
   { path: '/dev-agent', redirect: '/' },
   { path: '/files', name: 'files', component: FileManager, meta: { title: '文件' } },
+  { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '系统配置' } },
   { path: '/history', redirect: '/' },
 ]
 
@@ -26,6 +28,14 @@ router.beforeEach((to) => {
   }
   if (!isLoggedIn()) {
     return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  // 对话页始终带 thread，避免 chat:boot → startNewChat 再 replace 造成双挂载
+  if ((to.name === 'chat' || to.path === '/') && !to.query.thread) {
+    return {
+      path: '/',
+      query: { ...to.query, thread: `session-${Date.now()}` },
+      replace: true,
+    }
   }
   return true
 })

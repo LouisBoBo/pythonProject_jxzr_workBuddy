@@ -502,6 +502,8 @@ def build_first_turn_prompt(
             "- 不要因为工具要求 `cursor/` 前缀分支就改分支名或强行开 PR。\n"
             "- 只把代码 push 到固定工作分支；合入 main 由用户稍后手动处理。\n"
             "- 结束摘要不要写「已创建 PR」；可写分支名与 commit，并提示用户自行合 main。"
+            "- 结束摘要禁止写「ERP 已上线 / 本机已可见 / 界面已部署」；"
+            "须写明：仅工作分支有代码，本机/ERP 需合入后 pull 并重启才可见。"
         )
     tier = (task_tier or "").strip().lower() or classify_task_tier(
         raw_msg, has_images=effective_images
@@ -535,6 +537,7 @@ def build_first_turn_prompt(
         "首轮需求：\n"
         f"{user_message}\n"
         "验收：css_layout 无需补测套件；无权限的依赖不要伪造；不要修改与需求无关的配置密钥。"
+        "落地声明（摘要必须含）：仅推到工作分支；未合入 main；未部署 ERP/本机演示环境。"
         + (
             " 视觉对齐以对照截图为准，未对齐前不要宣称完成。"
             if strong_replica

@@ -1,0 +1,41 @@
+---
+description: 后端 API 接口必须有中文注释（OpenAPI/Swagger）
+alwaysApply: true
+---
+
+# 后端 API 中文注释（强制）
+
+凡编写或改动后端服务 API（FastAPI / Flask / Express / Spring 等），**必须**为接口文档提供易读易懂的**中文**说明，不得只留英文 summary。
+
+## 必须包含
+
+- **接口分组 tags**：中文（如「设备点检」「工单管理」）
+- **summary**：一句话中文说明做什么
+- **description**（推荐）：补充适用页面、筛选条件、状态流转等
+- **查询参数 / 路径参数 / 请求体字段**：关键项用中文 description（或等价注解）
+
+## FastAPI 示例
+
+```python
+router = APIRouter(prefix="/api/inspection", tags=["设备点检"])
+
+@router.get(
+    "/plans",
+    summary="点检计划列表",
+    description="分页查询点检计划；点检计划管理页数据来自本接口。",
+)
+def list_plans(
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    name: str | None = Query(None, description="计划名称（模糊匹配）"),
+):
+    ...
+```
+
+## 反例
+
+- `summary="List Plans"` / `tags=["inspection"]`（仅英文）
+- 只写路由、不写 summary/description
+
+## 范围
+
+新建接口、补齐接口、改动已有接口签名时，同步更新中文文档；与前端页面对应的数据接口不得缺文档。

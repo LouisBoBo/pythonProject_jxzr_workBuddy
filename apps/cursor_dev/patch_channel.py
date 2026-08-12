@@ -123,21 +123,35 @@ def _llm_patch(
     files: list[dict[str, str]],
 ) -> dict[str, Any]:
     """调用与主 Agent 相同的 LLM；返回 {ok, files, summary, error}。"""
-    api_key = (os.getenv("DEEPSEEK_API_KEY") or os.getenv("SILICONFLOW_API_KEY") or "").strip()
+    try:
+        from config import Config
+
+        Config.reload_runtime()
+        api_key = (Config.LLM_API_KEY or "").strip()
+        model_name = Config.MODEL_NAME
+        base = (Config.LLM_BASE_URL or "").rstrip("/")
+    except Exception:
+        api_key = (
+            os.getenv("LLM_API_KEY")
+            or os.getenv("DEEPSEEK_API_KEY")
+            or os.getenv("SILICONFLOW_API_KEY")
+            or ""
+        ).strip()
+        model_name = os.getenv("MODEL_NAME") or os.getenv("MAIN_MODEL") or "deepseek-chat"
+        base = (
+            os.getenv("LLM_BASE_URL")
+            or os.getenv("DEEPSEEK_BASE_URL")
+            or "https://api.deepseek.com"
+        ).rstrip("/")
     if not api_key:
         return {"ok": False, "error": "无可用 LLM Key，跳过补丁通道"}
-    if os.getenv("DEEPSEEK_API_KEY"):
-        base = (os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
-        model = os.getenv("MODEL_NAME") or os.getenv("MAIN_MODEL") or "deepseek-chat"
-        if not base.endswith("/v1"):
-            url = base + "/v1/chat/completions"
-        else:
-            url = base + "/chat/completions"
+    model = model_name or "deepseek-chat"
+    if not base:
+        base = "https://api.openai.com/v1"
+    if not base.endswith("/v1"):
+        url = base + "/v1/chat/completions"
     else:
-        base = "https://api.siliconflow.cn/v1"
-        model = os.getenv("MODEL_NAME") or "deepseek-ai/DeepSeek-V3"
         url = base + "/chat/completions"
-
     file_blocks = []
     for f in files:
         file_blocks.append(

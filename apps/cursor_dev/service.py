@@ -71,13 +71,17 @@ def _build_merge_guide(
         title = "写码完成 · 已开 PR（尚未合入 main）"
         summary = (
             f"代码在工作分支 `{wb}`，并已开 PR。**main 尚未合入**；"
-            f"请审核 PR 后再合并。同窗可继续补充需求续聊改码。"
+            f"本机 ERP / 演示环境不会自动更新。"
+            f"请审核 PR 合并后，在本机仓库 pull 并重启前后端，才能看到新界面。"
+            f"同窗可继续补充需求续聊改码。"
         )
     else:
         title = "写码完成 · 请自行合入 main"
         summary = (
-            f"本轮改动已推到工作分支 `{wb}`，**没有自动合入 `{base}`**。"
-            f"请在 GitHub 对比后自行 merge，或点「用网页开 PR」。"
+            f"本轮改动已推到工作分支 `{wb}`，**没有自动合入 `{base}`**，"
+            f"**本机 ERP 也不会自动更新**。"
+            f"请在 GitHub 对比后自行 merge（或开 PR），再在本机 `git pull` 并重启前后端，"
+            f"浏览器里才能看到新页面。"
             f"同窗可继续补充需求，仍会写到 `{wb}`。"
         )
     return {
@@ -92,6 +96,10 @@ def _build_merge_guide(
         "compare_url": urls["compare_url"],
         "new_pr_url": urls["new_pr_url"],
         "merged_to_main": False,
+        "erp_note": (
+            "ERP/本机演示仓需合入目标分支后自行 pull 并重启；"
+            "仅 GitHub 工作分支有代码 ≠ 浏览器已上线。"
+        ),
     }
 
 
@@ -569,8 +577,10 @@ def run_job(
                 sink,
                 {
                     "type": "status",
-                    "text": "检测到纯样式/溢出修复，尝试快速补丁通道（不重新拉仓）…",
+                    "text": "检测到纯样式/溢出修复 → 走「快速补丁」通道（通常几十秒，不重新拉仓）",
                     "phase": "patch",
+                    "channel": "patch",
+                    "speed_hint": "fast",
                 },
             )
             hints = extract_page_search_hints(last_user_msg)
@@ -614,6 +624,8 @@ def run_job(
                         "id": "cursor-boot",
                         "state": "done",
                         "title": "快速补丁完成（未拉 Cloud 仓）",
+                        "channel": "patch",
+                        "speed_hint": "fast",
                     },
                 )
                 _emit(sink, {"type": "replace_text", "text": summary})
@@ -626,6 +638,7 @@ def run_job(
                         "text": summary,
                         "summary": summary,
                         "channel": "patch",
+                        "speed_hint": "fast",
                         "suggest_code_review": False,
                     },
                 )
@@ -634,8 +647,10 @@ def run_job(
                 sink,
                 {
                     "type": "status",
-                    "text": f"快速补丁未采用（{patch.get('error') or '未知'}），回退 Cursor Cloud…",
+                    "text": f"快速补丁未采用（{patch.get('error') or '未知'}）→ 改走 Cursor Cloud（首次拉仓常见 1–3 分钟）",
                     "phase": "patch",
+                    "channel": "cloud",
+                    "speed_hint": "fallback",
                 },
             )
     except Exception as patch_exc:  # noqa: BLE001
@@ -643,8 +658,10 @@ def run_job(
             sink,
             {
                 "type": "status",
-                "text": f"快速补丁异常，回退 Cloud：{type(patch_exc).__name__}",
+                "text": f"快速补丁异常，改走 Cloud：{type(patch_exc).__name__}（首次拉仓常见 1–3 分钟）",
                 "phase": "patch",
+                "channel": "cloud",
+                "speed_hint": "fallback",
             },
         )
 
@@ -654,7 +671,9 @@ def run_job(
             "type": "step",
             "id": "cursor-boot",
             "state": "running",
-            "title": f"Cursor Cloud 写码：{repo}@{work_branch}",
+            "title": f"Cursor Cloud 写码：{repo}@{work_branch}（冷启动常见 1–3 分钟）",
+            "channel": "cloud",
+            "speed_hint": "cold_start",
         },
     )
 
@@ -733,6 +752,7 @@ def run_job(
     # P0：同 job 已有 agent_id 时先 resume（免重新 clone）；失败再 create
     resume_id = str(job.get("agent_id") or "").strip()
     tried_resume = False
+    used_resume = False
 
     try:
         for round_i in range(1, max_rounds + 1):
@@ -748,8 +768,10 @@ def run_job(
                         sink,
                         {
                             "type": "status",
-                            "text": f"复用已有 Cloud Agent（免重新拉仓）：{resume_id}",
+                            "text": f"复用已有 Cloud Agent（免重新拉仓，一般更快）：{resume_id}",
                             "phase": "agent",
+                            "channel": "resume",
+                            "speed_hint": "resume",
                         },
                     )
                     try:
@@ -758,16 +780,20 @@ def run_job(
                             AgentOptions(api_key=cfg.api_key, model=cfg.model),
                         )
                         opened_via_resume = True
+                        used_resume = True
                     except Exception as resume_err:  # noqa: BLE001
+                        used_resume = False
                         _emit(
                             sink,
                             {
                                 "type": "status",
                                 "text": (
-                                    f"Agent resume 失败，改为新建（将拉仓）："
+                                    f"Agent resume 失败，改为新建（首次拉仓常见 1–3 分钟）："
                                     f"{type(resume_err).__name__}"
                                 ),
                                 "phase": "retry",
+                                "channel": "cloud",
+                                "speed_hint": "cold_start",
                             },
                         )
                         resume_id = ""
@@ -780,8 +806,14 @@ def run_job(
                         sink,
                         {
                             "type": "status",
-                            "text": f"启动 Cursor（第 {round_i}/{max_rounds} 轮，ref={starting or 'default'}）…",
+                            "text": (
+                                f"启动 Cursor Cloud（第 {round_i}/{max_rounds} 轮，"
+                                f"ref={starting or 'default'}；"
+                                f"{'重试中…' if round_i > 1 else '首次拉仓常见 1–3 分钟'}）"
+                            ),
                             "phase": "retry" if round_i > 1 else "agent",
+                            "channel": "cloud",
+                            "speed_hint": "cold_start",
                         },
                     )
                     agent_cm = Agent.create(model=cfg.model, api_key=cfg.api_key, cloud=cloud)
@@ -1003,6 +1035,7 @@ def run_job(
                         resume_id = ""
                         job_store.update_job(data_dir, job_id, agent_id=None, run_id=None)
                         agent_id = None
+                        used_resume = False
                         final_text = ""
                         pr_url = None
                         if agent_cm is not None:
@@ -1138,12 +1171,15 @@ def run_job(
     if want_pr and pr_url:
         review_hint = (
             f"本轮写码已完成并已开 PR（工作分支 `{work_branch}`）。"
-            f"**尚未合入 `{merge_base}`**；请审核 PR 后再合并。可继续补充需求做续聊改码。"
+            f"**尚未合入 `{merge_base}`**，本机 ERP 不会自动变。"
+            f"请审核合并后在本机 pull + 重启前后端再打开浏览器验收。"
+            f"可继续补充需求做续聊改码。"
         )
     else:
         review_hint = (
             f"本轮写码已完成，代码在工作分支 `{work_branch}`（未开 PR）。"
-            f"**没有自动合入 `{merge_base}`**；请在 GitHub 自行对比/merge，或用网页开 PR。"
+            f"**没有自动合入 `{merge_base}`，本机/ERP 演示环境也不会自动更新**。"
+            f"请在 GitHub 自行对比/merge，再于本机 `git pull` 并重启前后端后验收界面。"
             f"同窗可继续补充需求续聊改码。"
         )
     merge_guide = _build_merge_guide(
@@ -1153,7 +1189,7 @@ def run_job(
         create_pr=want_pr,
         pr_url=pr_url,
     )
-    _emit(sink, {"type": "step", "id": "cursor-run", "state": "done", "title": "Cursor 本轮完成"})
+    _emit(sink, {"type": "step", "id": "cursor-run", "state": "done", "title": "Cursor 本轮完成", "channel": "cloud"})
     _emit(
         sink,
         {
@@ -1184,6 +1220,8 @@ def run_job(
             "merge_guide": merge_guide,
             "work_branch": work_branch,
             "base_branch": merge_base,
+            "channel": "cloud",
+            "speed_hint": "resume" if used_resume else "cold_start",
         },
     )
     return updated or job_store.get_job(data_dir, job_id) or job
