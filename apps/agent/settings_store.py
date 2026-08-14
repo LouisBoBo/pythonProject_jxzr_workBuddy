@@ -12,10 +12,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
-# apps/agent/settings_store.py → 仓库根
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from bundle_root import resolve_repo_root
 
-# P0 白名单（对话模型 + 视觉模型 + 写码车道）
+# 仓库根（桌面冻结时走 bundle_root，勿写死 parents）
+_REPO_ROOT = resolve_repo_root()
+
+# P0 白名单（对话模型 + 视觉模型 + 写码车道 + ERP 地址）
 ALLOWED_KEYS: frozenset[str] = frozenset(
     {
         # 通用 OpenAI 兼容对话模型
@@ -30,6 +32,8 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "VISION_MODEL",
         "ZHIPU_API_KEY",
         "ZHIPU_BASE_URL",
+        # ERP / 平台（桌面同事必配；网页也可覆盖 .env）
+        "PLATFORM_BASE_URL",
         # 兼容旧字段（仍可从 .env / 历史 settings 解析）
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
@@ -42,6 +46,9 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "CURSOR_DEV_WORK_BRANCH",
         "CURSOR_DEV_AUTO_PR",
         "CURSOR_DEV_BRANCH_PREFIX",
+        # Git 审码拉仓：HTTPS 镜像前缀（国内加速；可逗号分隔多个）
+        "IDE_GIT_HTTPS_MIRROR",
+        "IDE_GIT_MIRROR_FIRST",
     }
 )
 

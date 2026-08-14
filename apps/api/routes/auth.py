@@ -77,14 +77,29 @@ def _username_from_jwt(payload: dict[str, Any]) -> str | None:
 
 
 def _login_base_urls() -> list[str]:
-    """登录目标：主 ERP → 本地探活沙箱（仅当不同且已配置）。"""
-    primary = (AgentConfig.PLATFORM_BASE_URL or "").rstrip("/")
+    """登录目标：主 ERP → 本地探活沙箱（仅当不同且已配置）。
+
+    PLATFORM_BASE_URL 每次现场解析（settings.json 覆盖优先），避免保存配置后仍打旧地址。
+    """
+    primary = ""
+    try:
+        from settings_store import resolve_setting
+
+        primary = (resolve_setting("PLATFORM_BASE_URL", "") or "").rstrip("/")
+    except Exception:
+        primary = ""
+    if not primary:
+        primary = (AgentConfig.PLATFORM_BASE_URL or "").rstrip("/")
     sandbox = (os.getenv("API_PROBE_SANDBOX_URL") or "").strip().rstrip("/")
     out: list[str] = []
-    if primary:
-        out.append(primary)
-    if sandbox and sandbox not in out:
-        out.append(sandbox)
+    for candidate in (primary, sandbox):
+        if not candidate or candidate in out:
+            continue
+        low = candidate.lower()
+        if not (low.startswith("http://") or low.startswith("https://")):
+            logger.warning("忽略非法登录基址: %s", candidate[:80])
+            continue
+        out.append(candidate)
     # 再兜底本仓默认沙箱端口，避免未 export 时仍 Connection refused
     fallback = "http://127.0.0.1:8001"
     if fallback not in out:

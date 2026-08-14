@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from routes.auth import require_auth
@@ -68,6 +68,7 @@ _FIELD_META: list[dict[str, str]] = [
         "label": "视觉模型名称",
         "secret": "0",
     },
+    # ERP 平台地址暂不在 UI 展示（仍可用 .env PLATFORM_BASE_URL；登录失败会回落探活沙箱）
     {
         "key": "CURSOR_API_KEY",
         "group": "cursor_dev",
@@ -80,15 +81,28 @@ _FIELD_META: list[dict[str, str]] = [
         "label": "写码车道开关",
         "secret": "0",
     },
+    {
+        "key": "IDE_GIT_HTTPS_MIRROR",
+        "group": "git_review",
+        "label": "Git HTTPS 镜像前缀",
+        "secret": "0",
+    },
+    {
+        "key": "IDE_GIT_MIRROR_FIRST",
+        "group": "git_review",
+        "label": "优先走镜像拉仓",
+        "secret": "0",
+    },
 ]
 
 _GROUP_LABELS = {
     "llm": "对话模型",
     "vision": "视觉模型",
     "cursor_dev": "写码车道",
+    "git_review": "Git 审码拉仓",
 }
 
-_GROUP_ORDER = ("llm", "vision", "cursor_dev")
+_GROUP_ORDER = ("llm", "vision", "cursor_dev", "git_review")
 
 
 class SettingsUpdateBody(BaseModel):
@@ -254,7 +268,7 @@ async def put_local_workspace(
     "",
     summary="获取系统配置",
     description=(
-        "返回整站配置（对话模型 + 写码车道）。密钥仅掩码展示，不返回明文。"
+        "返回整站配置（对话模型 + 写码车道 + Git 审码拉仓）。密钥仅掩码展示，不返回明文。"
         "source 为 ui / env / unset。所有登录用户可访问。"
     ),
 )
@@ -323,6 +337,74 @@ async def put_settings(
     if "MAIN_MODEL" in values and "MODEL_NAME" not in values:
         values = dict(values)
         values["MODEL_NAME"] = values["MAIN_MODEL"]
+
+    if "IDE_GIT_HTTPS_MIRROR" in values:
+        values = dict(values)
+        raw_mirror = values.get("IDE_GIT_HTTPS_MIRROR")
+        if raw_mirror is None:
+            pass
+        elif isinstance(raw_mirror, bool):
+            values["IDE_GIT_HTTPS_MIRROR"] = "1" if raw_mirror else "0"
+        else:
+            text = str(raw_mirror).strip()
+            if text == "":
+                values["IDE_GIT_HTTPS_MIRROR"] = ""
+            elif text.lower() in {"off", "0", "none", "-", "false", "no"}:
+                values["IDE_GIT_HTTPS_MIRROR"] = "off"
+            else:
+                try:
+                    from tools.ide_review.git_review import _sanitize_mirror_prefix
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"镜像校验模块不可用：{exc}",
+                    ) from exc
+                cleaned: list[str] = []
+                for part in text.split(","):
+                    item = _sanitize_mirror_prefix(part)
+                    if item and item not in cleaned:
+                        cleaned.append(item)
+                    if len(cleaned) >= 5:
+                        break
+                if not cleaned:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Git HTTPS 镜像前缀无效：仅允许 https 公网地址"
+                            "（禁止 http / localhost / 内网 IP / 账号密码），"
+                            "或填 off 关闭。"
+                        ),
+                    )
+                values["IDE_GIT_HTTPS_MIRROR"] = ",".join(cleaned)
+
+    if "PLATFORM_BASE_URL" in values:
+        values = dict(values)
+        raw_plat = values.get("PLATFORM_BASE_URL")
+        if raw_plat is None:
+            pass
+        elif str(raw_plat).strip() == "":
+            values["PLATFORM_BASE_URL"] = ""
+        else:
+            from urllib.parse import urlparse
+
+            text = str(raw_plat).strip().rstrip("/")
+            try:
+                parsed = urlparse(text)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"PLATFORM_BASE_URL 无效：{exc}") from exc
+            if (parsed.scheme or "").lower() not in {"http", "https"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="PLATFORM_BASE_URL 仅允许 http/https",
+                )
+            if parsed.username or parsed.password:
+                raise HTTPException(
+                    status_code=400,
+                    detail="PLATFORM_BASE_URL 请勿内嵌账号或密码",
+                )
+            if not parsed.netloc:
+                raise HTTPException(status_code=400, detail="PLATFORM_BASE_URL 缺少主机名")
+            values["PLATFORM_BASE_URL"] = text
 
     update_settings(values)
     # 不在日志打印 values（可能含密钥）

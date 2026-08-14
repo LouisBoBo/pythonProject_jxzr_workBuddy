@@ -192,14 +192,114 @@ async def debug_llm():
     return out
 
 
+def _mount_web_dist_if_configured(application: FastAPI) -> None:
+    """仅当 WEB_DIST_DIR 指向有效 dist 时挂载静态前端（桌面同 origin；dev.sh 不设此变量）。
+
+    约束：必须在全部 API 路由注册之后调用，保证 /api、/health、/exports、/docs 优先。
+    """
+    raw = (os.getenv("WEB_DIST_DIR") or "").strip()
+    if not raw:
+        return
+    dist = Path(raw).expanduser().resolve()
+    index_file = dist / "index.html"
+    if not dist.is_dir() or not index_file.is_file():
+        print(f"[warn] WEB_DIST_DIR 无效，跳过静态托管: {dist}")
+        return
+
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    assets = dist / "assets"
+    if assets.is_dir():
+        application.mount("/assets", StaticFiles(directory=str(assets)), name="web-assets")
+
+    # SPA 常见根文件（favicon 等）；不在此列的路径回落 index.html
+    _spa_root_files = {
+        "favicon.ico",
+        "robots.txt",
+        "manifest.webmanifest",
+        "manifest.json",
+    }
+
+    def _safe_file_under_dist(rel: str) -> Path | None:
+        if not rel or "\x00" in rel:
+            return None
+        parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".")]
+        if any(p == ".." for p in parts):
+            return None
+        # 禁止从 dist 直接吐出敏感文件名（即使被误打进包）
+        base_name = parts[-1].lower() if parts else ""
+        if base_name in {".env", ".env.local", ".env.production", ".pem", ".key"} or base_name.endswith(
+            (".pem", ".key")
+        ):
+            return None
+        if base_name.startswith(".env"):
+            return None
+        candidate = (dist.joinpath(*parts)).resolve()
+        try:
+            candidate.relative_to(dist)
+        except ValueError:
+            return None
+        return candidate if candidate.is_file() else None
+
+    @application.get(
+        "/",
+        include_in_schema=False,
+        summary="桌面/打包前端首页",
+        description="仅 WEB_DIST_DIR 启用时提供；开发态请用 Vite :5180。",
+    )
+    async def spa_index():
+        return FileResponse(index_file)
+
+    @application.get(
+        "/{full_path:path}",
+        include_in_schema=False,
+        summary="SPA 路由回落",
+        description="非 API/静态资源路径返回 index.html，供 Vue Router history 模式。",
+    )
+    async def spa_fallback(full_path: str):
+        # 绝不可吞掉已有服务路径（即便路由表未命中也应 404，勿回落 HTML）
+        first = (full_path or "").split("/", 1)[0]
+        if first in {
+            "api",
+            "health",
+            "exports",
+            "docs",
+            "redoc",
+            "openapi.json",
+            "assets",
+        } or full_path in {"openapi.json", "docs", "redoc"}:
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        if full_path in _spa_root_files or "/" not in full_path:
+            hit = _safe_file_under_dist(full_path)
+            if hit is not None:
+                return FileResponse(hit)
+
+        # 子路径若真实存在（如 public 拷贝），直接返回文件
+        hit = _safe_file_under_dist(full_path)
+        if hit is not None:
+            return FileResponse(hit)
+
+        return FileResponse(index_file)
+
+    flag = "desktop" if os.getenv("WORKBUDDY_DESKTOP", "").strip() in ("1", "true", "yes") else "packaged"
+    print(f"[info] WEB_DIST_DIR 已挂载 ({flag}): {dist}")
+
+
+_mount_web_dist_if_configured(app)
+
+
 if __name__ == "__main__":
     import uvicorn
 
+    # 桌面壳默认关闭 uvicorn reload，避免子进程双开抢端口
+    _reload_default = "false" if os.getenv("WORKBUDDY_DESKTOP", "").lower() in ("1", "true", "yes") else "true"
     uvicorn.run(
         "main:app",
         host=os.getenv("MES_SERVER_HOST", "0.0.0.0"),
         port=SERVER_PORT,
-        reload=os.getenv("MES_RELOAD", "true").lower() in ("1", "true", "yes"),
+        reload=os.getenv("MES_RELOAD", _reload_default).lower() in ("1", "true", "yes"),
         # 监听 agent 变更以便开发热重载
         reload_dirs=[
             str(Path(__file__).resolve().parent),

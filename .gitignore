@@ -11,6 +11,12 @@ apps/web/node_modules/
 apps/web/dist/
 apps/web/.npm-cache/
 apps/web/.vite/
+desktop/node_modules/
+desktop/release/
+desktop/runtime/
+desktop/py/_pyi_work/
+desktop/py/*.spec
+
 
 # Runtime
 .run/

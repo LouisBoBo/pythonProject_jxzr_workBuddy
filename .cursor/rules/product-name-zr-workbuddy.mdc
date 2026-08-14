@@ -1,0 +1,10 @@
+---
+description: 桌面打包与对外产品名固定为 ZR WorkBuddy
+alwaysApply: true
+---
+
+# 产品名称
+
+- 对外 / 安装包 / Electron 窗口标题统一使用：**ZR WorkBuddy**
+- 打包配置：`desktop/package.json` 的 `build.productName` 必须为 `ZR WorkBuddy`
+- 勿改回单独的 `WorkBuddy` 作为安装包显示名（代码仓库目录名可继续叫 workbuddy）

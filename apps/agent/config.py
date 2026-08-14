@@ -8,8 +8,10 @@ import platform
 from pathlib import Path
 from dotenv import load_dotenv
 
-# apps/agent/config.py → 仓库根
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from bundle_root import resolve_repo_root
+
+# 仓库根（源码 / 桌面冻结 / WORKBUDDY_REPO_ROOT）
+REPO_ROOT = resolve_repo_root()
 load_dotenv(REPO_ROOT / ".env")
 # 兼容：若仍把 .env 放在 apps/agent 下也能读到
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -122,8 +124,8 @@ class Config:
     )
     LLM_PROVIDER = _resolve("LLM_PROVIDER", "") or "openai_compatible"
 
-    # --- 平台连接配置 ---
-    PLATFORM_BASE_URL = os.getenv("PLATFORM_BASE_URL", "http://localhost:8000")
+    # --- 平台连接配置（UI settings 可覆盖，供桌面同事配置）---
+    PLATFORM_BASE_URL = _resolve("PLATFORM_BASE_URL", "http://localhost:8000")
     USE_ERP = os.getenv("USE_ERP", "").lower() in ("true", "1", "yes")
 
     ERP_USERNAME = os.getenv("ERP_USERNAME", "")
@@ -183,6 +185,7 @@ class Config:
         cls.VISION_API_KEY = _effective_vision_api_key()
         cls.VISION_BASE_URL = _effective_vision_base_url()
         cls.VISION_MODEL = _effective_vision_model()
+        cls.PLATFORM_BASE_URL = _resolve("PLATFORM_BASE_URL", "http://localhost:8000")
 
     @classmethod
     def summary(cls) -> str:

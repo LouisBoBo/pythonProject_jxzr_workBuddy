@@ -1,7 +1,7 @@
-"""IDE 代码审核（M0/M1）。
+"""IDE / Git 代码审核工具。
 
-默认不挂到 Agent；仅当 Config.IDE_REVIEW_ENABLED 时由 create_agent 追加工具。
-本机文件经 Bridge 读取：list → 分批 read → review / git_review。
+- request_git_*：默认挂到 Agent（公开 HTTPS 仓审核；桌面不依赖 IDE_REVIEW_ENABLED）
+- request_ide_*：仅当 Config.IDE_REVIEW_ENABLED 时由 create_agent 追加（VS Code Bridge）
 """
 from tools.ide_review.review import DEFAULT_REVIEW_PATHS, run_ide_review
 from tools.ide_review.tool import (

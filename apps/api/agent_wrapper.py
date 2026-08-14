@@ -15,12 +15,23 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+try:
+    _boot = Path(__file__).resolve().parents[1] / "agent"
+    if str(_boot) not in sys.path:
+        sys.path.insert(0, str(_boot))
+    from bundle_root import resolve_repo_root
+
+    REPO_ROOT = resolve_repo_root()
+except Exception:  # noqa: BLE001
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
 AGENT_PATH = REPO_ROOT / "apps" / "agent"
 APPS_PATH = REPO_ROOT / "apps"
+if not AGENT_PATH.is_dir():
+    AGENT_PATH = Path(__file__).resolve().parents[1] / "agent"
 if str(AGENT_PATH) not in sys.path:
     sys.path.insert(0, str(AGENT_PATH))
-if str(APPS_PATH) not in sys.path:
+if APPS_PATH.is_dir() and str(APPS_PATH) not in sys.path:
     sys.path.insert(0, str(APPS_PATH))
 
 from agents.agent import create_agent, build_model  # noqa: E402
@@ -768,7 +779,7 @@ class AgentRunner:
 
     _instance = None
     # 工具集变更时 bump，避免热更新后仍复用旧 Agent（缺 request_git_*_batch）
-    _TOOLS_SIG = "ide+git-batch-v5-host-path-guard"
+    _TOOLS_SIG = "git-review-default-v7-no-resuppress-after-done"
 
     def __new__(cls):
         if cls._instance is None:
@@ -926,8 +937,9 @@ class AgentRunner:
                     f"仓库：{_git or '见消息【Git仓库已确认】'}\n"
                     "必须严格按序：\n"
                     "1) request_git_list_source_files\n"
-                    "2) request_git_read_batch(batch_index=0)…直至 done_after=true\n"
-                    "3) 仅此时输出「## 🔍 代码审核报告」\n"
+                    "2) request_git_read_batch(batch_index=0,1,2…按序)直至 done_after=true；"
+                    "禁止跳批、禁止末批后再回补漏批\n"
+                    "3) 仅此时输出「## 🔍 代码审核报告」，禁止再调任何取码工具\n"
                     "禁止：request_git_review 抽样结案；禁止 request_ide_*；"
                     "禁止 :::cursor_dev_* 写码确认卡；禁止中途输出报告或英文过渡句。\n"
                 )
@@ -1097,6 +1109,10 @@ class AgentRunner:
         ide_report_buf = ""
         # 末批 done_after 后置位：禁止后续 request_ide_read_files 再次压制终稿输出
         ide_batches_done = False
+        # 本轮模型调用是否已通过 stream 吐出正文（用于 on_chat_model_end 去重兜底）
+        model_streamed_chars = 0
+        # 一旦向用户放出过审核终稿 token，就不再用「未生成报告」兜底（工具轮次会清 generating_sent）
+        ide_report_emitted = False
 
         # 与昨天 ab15a1e 相同：直接 async for。
         # 禁止对 __anext__ 使用 wait_for 超时——超时会 Cancel 底层读，
@@ -1112,9 +1128,13 @@ class AgentRunner:
 
                 kind = event.get("event", "")
 
+                if kind == "on_chat_model_start":
+                    model_streamed_chars = 0
+                    continue
+
                 if kind == "on_tool_start":
                     saw_tool = True
-                    generating_sent = False  # 新工具轮次，取消生成态
+                    generating_sent = False  # 新工具轮次，取消生成态（勿清 ide_report_emitted）
                     name = _tool_name(event)
                     if name in ("import_file_to_platform", "import_platform_data"):
                         saw_write_tool = True
@@ -1269,7 +1289,12 @@ class AgentRunner:
                                 ),
                                 "phase": "waiting",
                             }
-                            suppress_ide_report_tokens = True
+                            # 末批已过后禁止再压制：模型偶发重调 list 会把终稿整段吞掉
+                            if not ide_batches_done:
+                                suppress_ide_report_tokens = True
+                            else:
+                                suppress_ide_report_tokens = False
+                                ide_await_report_header = True
                         elif name in (
                             "request_ide_read_batch",
                             "request_git_read_batch",
@@ -1293,6 +1318,16 @@ class AgentRunner:
                                     "text": "各批已完成，正在汇总完整审核报告…",
                                     "phase": "generating",
                                 }
+                            elif ide_batches_done:
+                                # 末批 done_after 后回补漏批：只允许读码，禁止重新压制终稿输出
+                                suppress_ide_report_tokens = False
+                                ide_await_report_header = True
+                                if not active_runs:
+                                    yield {
+                                        "type": "status",
+                                        "text": "补读完成，正在汇总完整审核报告…",
+                                        "phase": "generating",
+                                    }
                             else:
                                 suppress_ide_report_tokens = True
                         else:
@@ -1409,6 +1444,45 @@ class AgentRunner:
                         generating_sent = True
                         yield {"type": "status", "text": "正在组织最终回答…", "phase": "generating"}
 
+                    model_streamed_chars += len(text)
+                    if ide_batches_done:
+                        ide_report_emitted = True
+                    yield {"type": "token", "text": text, "token": text}
+                    continue
+
+                # 部分模型/网关不走 token 流，只在 end 给整段 content；stream 为空时兜底放出
+                if kind == "on_chat_model_end":
+                    if active_runs or suppress_ide_report_tokens:
+                        continue
+                    if model_streamed_chars > 0:
+                        continue
+                    if saw_tool and not tool_ended:
+                        continue
+                    data = event.get("data") or {}
+                    text = _chunk_text(data.get("output")) or _chunk_text(
+                        (data.get("output") or {}).get("content")
+                        if isinstance(data.get("output"), dict)
+                        else None
+                    )
+                    if not text.strip():
+                        continue
+                    if ide_await_report_header:
+                        ide_report_buf += text
+                        idx = _find_ide_report_start(ide_report_buf)
+                        if idx >= 0:
+                            text = ide_report_buf[idx:]
+                        else:
+                            text = _drop_leading_english_aside(ide_report_buf)
+                        ide_report_buf = ""
+                        ide_await_report_header = False
+                        if not text.strip():
+                            continue
+                    if not generating_sent:
+                        generating_sent = True
+                        yield {"type": "status", "text": "正在组织最终回答…", "phase": "generating"}
+                    model_streamed_chars += len(text)
+                    if ide_batches_done:
+                        ide_report_emitted = True
                     yield {"type": "token", "text": text, "token": text}
                     continue
         except asyncio.CancelledError:
@@ -1453,8 +1527,10 @@ class AgentRunner:
             if leftover.strip():
                 if not generating_sent:
                     yield {"type": "status", "text": "正在组织最终回答…", "phase": "generating"}
+                if ide_batches_done:
+                    ide_report_emitted = True
                 yield {"type": "token", "text": leftover, "token": leftover}
-        elif ide_batches_done and not generating_sent:
+        elif ide_batches_done and not ide_report_emitted and not generating_sent:
             # 末批已完成但模型未吐出任何可见正文
             yield {
                 "type": "token",

@@ -1,5 +1,6 @@
-"""Agent 工具：本机代码审核 / 读文件（仅 IDE_REVIEW_ENABLED 时挂载）。
+"""Agent 工具：本机 IDE 审核 / 公开 Git 审核。
 
+挂载策略见 create_agent：git 工具默认挂载；ide 工具需 IDE_REVIEW_ENABLED。
 本机工程文件必须经 Bridge/VS Code 扩展读取，禁止用服务端 read_file 读
 /Users/... 等本机绝对路径（会报 File not found）。
 """
@@ -597,6 +598,9 @@ def request_git_read_batch(
         result["next_step"] = (
             f"第 {bi + 1}/{bc} 批（最后一批）已读完。"
             "合并此前各批问题，立刻输出完整「🔍 代码审核报告」。"
+            "第一行必须是「## 🔍 代码审核报告」。"
+            "禁止再调用 request_git_read_batch / request_git_list_source_files 补读或回补漏批；"
+            "漏批内容已在上下文中则直接写入终稿。"
             "每条问题必须含：问题描述、问题代码、修复建议、修复代码（完整相对路径）。"
         )
         # 不在此释放 clone：报告生成/短确认续审可能仍需工作区；由 TTL 回收
@@ -604,7 +608,8 @@ def request_git_read_batch(
         nxt = result.get("next_batch_index")
         result["next_step"] = (
             f"第 {bi + 1}/{bc} 批已读完：静默记下 P0/P1/P2（含问题代码摘录），"
-            f"立刻 request_git_read_batch(batch_index={nxt})；禁止输出终稿。"
+            f"立刻 request_git_read_batch(batch_index={nxt})；"
+            "必须按 batch_index 顺序推进，禁止跳批；禁止输出终稿。"
         )
     return _trim_file_contents(result, max_chars=100_000)
 

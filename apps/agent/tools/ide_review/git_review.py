@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from tools.ide_review.enrich import augment_findings_from_contents
 from tools.ide_review.local_files import read_workspace_files
@@ -188,98 +190,99 @@ def _prepare_workspace(
     td = tempfile.mkdtemp(prefix="wb-git-review-")
     root = Path(td)
     timeout_sec = float(os.getenv("IDE_GIT_CLONE_TIMEOUT_SEC", "300") or "300")
-    # 浅克隆 + 单分支，加快公开仓拉取；禁止交互式要密码（避免假死）
-    cmd = [
-        "git",
-        "-c",
-        "credential.helper=",
-        "-c",
-        "http.version=HTTP/1.1",
-        "clone",
-        "--depth",
-        "1",
-        "--single-branch",
-    ]
-    if ref.strip():
-        cmd.extend(["--branch", ref.strip()])
-    cmd.extend([url, str(root)])
+    # 浅克隆 + 单分支；禁止交互式要密码（避免假死）
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_ASKPASS"] = "echo"
     env["GCM_INTERACTIVE"] = "never"
 
     last_err: BaseException | None = None
-    for attempt in range(2):
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-                env=env,
-            )
-            last_err = None
-            break
-        except subprocess.TimeoutExpired as e:
-            last_err = e
-            shutil.rmtree(td, ignore_errors=True)
-            if attempt == 0:
-                td = tempfile.mkdtemp(prefix="wb-git-review-")
-                root = Path(td)
-                cmd[-1] = str(root)
-                continue
-            raise RuntimeError(
-                f"克隆公开仓库超时（>{int(timeout_sec)}s）。"
-                "请检查本机到 GitHub 的网络/代理/VPN，或稍后点「重新开始审核」。"
-                f"仓库：{url}"
-            ) from e
-        except subprocess.CalledProcessError as e:
-            shutil.rmtree(td, ignore_errors=True)
-            err = (e.stderr or e.stdout or str(e)).strip()[:500]
-            low = err.lower()
-            if any(
-                k in low
-                for k in (
-                    "authentication failed",
-                    "could not read username",
-                    "permission denied",
-                    "repository not found",
-                    "access denied",
-                    "403",
-                    "401",
+    last_detail = ""
+    used_url = url
+    candidates = _clone_url_candidates(url)
+    for ci, url_try in enumerate(candidates):
+        used_url = url_try
+        # 多候选时前几个缩短超时，避免直连 GitHub 卡满再试镜像
+        is_last = ci >= len(candidates) - 1
+        try_timeout = timeout_sec if is_last else min(timeout_sec, 90.0)
+        for attempt in range(2):
+            cmd_try = [
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "http.version=HTTP/1.1",
+                "clone",
+                "--depth",
+                "1",
+                "--single-branch",
+            ]
+            if ref.strip():
+                cmd_try.extend(["--branch", ref.strip()])
+            cmd_try.extend([url_try, str(root)])
+            try:
+                subprocess.run(
+                    cmd_try,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=try_timeout,
+                    env=env,
                 )
-            ):
-                raise RuntimeError(
-                    f"无法克隆仓库（可能是私有仓或不存在）。{_HTTPS_ONLY_HINT} 详情: {err}"
-                ) from e
-            # 网络类错误：重试一次
-            if attempt == 0 and any(
-                k in low
-                for k in (
-                    "could not resolve",
-                    "failed to connect",
-                    "connection timed out",
-                    "ssl",
-                    "network",
-                    "early eof",
-                    "rpc failed",
-                )
-            ):
+                last_err = None
+                last_detail = ""
+                break
+            except subprocess.TimeoutExpired as e:
                 last_err = e
+                last_detail = f"超时（>{int(try_timeout)}s）"
+                shutil.rmtree(td, ignore_errors=True)
                 td = tempfile.mkdtemp(prefix="wb-git-review-")
                 root = Path(td)
-                cmd[-1] = str(root)
-                continue
-            raise RuntimeError(f"git clone 失败: {err}") from e
-        except Exception:
-            shutil.rmtree(td, ignore_errors=True)
-            raise
+                if attempt == 0:
+                    continue
+                break
+            except subprocess.CalledProcessError as e:
+                shutil.rmtree(td, ignore_errors=True)
+                err = (e.stderr or e.stdout or str(e)).strip()[:500]
+                low = err.lower()
+                last_err = e
+                last_detail = err
+                if any(
+                    k in low
+                    for k in (
+                        "authentication failed",
+                        "could not read username",
+                        "permission denied",
+                        "repository not found",
+                        "access denied",
+                        "403",
+                        "401",
+                    )
+                ):
+                    # 仅原地址鉴权失败视为私有仓；镜像 401/403 继续试下一候选
+                    if url_try == url:
+                        raise RuntimeError(
+                            f"无法克隆仓库（可能是私有仓或不存在）。{_HTTPS_ONLY_HINT} 详情: {err}"
+                        ) from e
+                    td = tempfile.mkdtemp(prefix="wb-git-review-")
+                    root = Path(td)
+                    break
+                td = tempfile.mkdtemp(prefix="wb-git-review-")
+                root = Path(td)
+                if attempt == 0 and _is_network_clone_error(low):
+                    continue
+                break
+            except Exception:
+                shutil.rmtree(td, ignore_errors=True)
+                raise
+        if last_err is None:
+            break
 
     if last_err is not None:
-        # 防御：循环应已 raise；避免留下空临时目录
         shutil.rmtree(td, ignore_errors=True)
-        raise RuntimeError(f"git clone 失败: {last_err}") from last_err
+        raise RuntimeError(
+            f"git clone 失败: {last_detail or last_err}。{_network_hint(url)}"
+        ) from last_err
 
     def cleanup() -> None:
         shutil.rmtree(td, ignore_errors=True)
@@ -288,12 +291,172 @@ def _prepare_workspace(
         root,
         {
             "mode": "git_clone",
+            # 对外仍报用户原始仓地址；实际拉取 URL 单独记录
             "repo_url": url,
+            "clone_url": used_url,
             "ref": ref or "default",
             "workspace_root": str(root),
         },
         cleanup,
     )
+
+
+def _is_network_clone_error(low: str) -> bool:
+    return any(
+        k in low
+        for k in (
+            "could not resolve",
+            "failed to connect",
+            "connection timed out",
+            "ssl",
+            "network",
+            "early eof",
+            "rpc failed",
+            "empty reply",
+            "recv failure",
+            "connection reset",
+            "unable to access",
+        )
+    )
+
+
+def _network_hint(repo_url: str) -> str:
+    return (
+        "本机当前访问不了该 Git 托管站（国内直连 github.com 很常见）。"
+        "已内置 GitHub HTTPS 镜像回退；也可在「系统配置 → Git 审码拉仓」填写镜像前缀，"
+        "或开系统代理/VPN 后点「重新开始审核」。"
+        f"仓库：{repo_url}"
+    )
+
+
+# 仅作 github.com 默认回退；第三方镜像可能变更，可用系统配置覆盖或填 off 关闭
+_DEFAULT_GITHUB_MIRRORS = (
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+)
+_MAX_MIRROR_PREFIXES = 5
+_MAX_MIRROR_PREFIX_LEN = 200
+
+
+def _resolve_git_setting(key: str, default: str = "") -> str:
+    try:
+        from settings_store import resolve_setting
+
+        return str(resolve_setting(key, default) or "").strip()
+    except Exception:
+        return str(os.getenv(key) or default or "").strip()
+
+
+def _is_github_https_repo(repo_url: str) -> bool:
+    """主机名须为 github.com（防 github.com.evil.com 误触发默认镜像）。"""
+    try:
+        parsed = urlparse((repo_url or "").strip())
+    except Exception:
+        return False
+    if (parsed.scheme or "").lower() != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "github.com" or host.endswith(".github.com")
+
+
+def _is_blocked_mirror_host(hostname: str) -> bool:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return True
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    if host.endswith(".local") or host.endswith(".internal") or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return bool(
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        )
+    except ValueError:
+        return False
+
+
+def _sanitize_mirror_prefix(prefix: str) -> str | None:
+    """只允许无凭证的 https 公网前缀，防 SSRF / 内网探测。"""
+    raw = (prefix or "").strip()
+    if not raw or len(raw) > _MAX_MIRROR_PREFIX_LEN:
+        return None
+    if any(ch.isspace() for ch in raw):
+        return None
+    if not raw.endswith("/"):
+        raw += "/"
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if (parsed.scheme or "").lower() != "https":
+        return None
+    if parsed.username or parsed.password:
+        return None
+    if parsed.query or parsed.fragment:
+        return None
+    host = parsed.hostname
+    if not host or _is_blocked_mirror_host(host):
+        return None
+    # 规范化：强制 https + host + path，去掉多余净荷
+    path = parsed.path or "/"
+    if not path.endswith("/"):
+        path += "/"
+    return f"https://{host.lower()}{path}"
+
+
+def _mirror_prefixes(repo_url: str) -> list[str]:
+    """解析镜像前缀：系统配置 / 环境变量优先；未配时对 github.com 启用内置默认。"""
+    raw = _resolve_git_setting("IDE_GIT_HTTPS_MIRROR", "")
+    if raw.lower() in {"off", "0", "none", "-", "false", "no"}:
+        return []
+    prefixes: list[str] = []
+    if raw:
+        for part in raw.split(","):
+            cleaned = _sanitize_mirror_prefix(part)
+            if cleaned and cleaned not in prefixes:
+                prefixes.append(cleaned)
+            if len(prefixes) >= _MAX_MIRROR_PREFIXES:
+                break
+        return prefixes
+    # 未配置：仅对 GitHub 公开 HTTPS 启用内置镜像（避免误伤 Gitee / 内网 Git）
+    if _is_github_https_repo(repo_url):
+        out: list[str] = []
+        for item in _DEFAULT_GITHUB_MIRRORS:
+            cleaned = _sanitize_mirror_prefix(item)
+            if cleaned and cleaned not in out:
+                out.append(cleaned)
+        return out
+    return []
+
+
+def _clone_url_candidates(repo_url: str) -> list[str]:
+    """原地址 + HTTPS 镜像前缀候选（可优先镜像，适合国内）。"""
+    mirrored: list[str] = []
+    for prefix in _mirror_prefixes(repo_url):
+        candidate = prefix + repo_url
+        if candidate not in mirrored and candidate != repo_url:
+            mirrored.append(candidate)
+    mirror_first = _resolve_git_setting("IDE_GIT_MIRROR_FIRST", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if mirror_first and mirrored:
+        ordered = mirrored + [repo_url]
+    else:
+        ordered = [repo_url] + mirrored
+    out: list[str] = []
+    for u in ordered:
+        if u not in out:
+            out.append(u)
+    return out
 
 
 def _ws_key(thread_id: str) -> str:

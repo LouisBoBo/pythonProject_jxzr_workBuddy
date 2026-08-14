@@ -51,6 +51,7 @@ description: >-
 
 - 新建页面：**独立路由 + 独立视图组件**；不要 `import Home` 或复用首页 SFC 当业务页。  
 - 抽公共的只有：布局壳、侧栏、主题 token；**业务卡片构图按页设计**。  
+- **相对 import 层数**：`views/子目录/X.vue` → `src/api` 用 `../../api/...`（或仓库已有的 `@/api`），禁止少写一层 `../api`（Vite 会直接 Failed to resolve）。  
 - `requirement` / 实现摘要须写清：  
   - 本页视觉身份（与首页差异点）  
   - 首屏模块与层级  

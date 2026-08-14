@@ -6,9 +6,21 @@ import os
 import sys
 from pathlib import Path
 
-# 仓库根：apps/api/routes_config.py → parents[2]
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# 仓库根：优先 bundle_root（桌面冻结），否则源码 parents[2]
+try:
+    _agent_boot = Path(__file__).resolve().parents[1] / "agent"
+    if str(_agent_boot) not in sys.path:
+        sys.path.insert(0, str(_agent_boot))
+    from bundle_root import resolve_repo_root
+
+    REPO_ROOT = resolve_repo_root()
+except Exception:  # noqa: BLE001
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
 AGENT_PATH = REPO_ROOT / "apps" / "agent"
+if not AGENT_PATH.is_dir():
+    # 冻结扁平：agent 包已在 sys.path
+    AGENT_PATH = Path(__file__).resolve().parents[1] / "agent"
 if str(AGENT_PATH) not in sys.path:
     sys.path.insert(0, str(AGENT_PATH))
 

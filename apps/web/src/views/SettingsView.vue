@@ -62,6 +62,14 @@
             </p>
           </div>
 
+          <div v-if="group.id === 'git_review'" class="preset-row">
+            <p class="preset-hint">
+              审核公开 GitHub 仓时默认走内置 HTTPS 镜像（ghfast / gh-proxy），再回退直连。
+              仅支持 <code>https://</code> 公网前缀（可逗号分隔），禁止 localhost / 内网 IP / 带账号密码；
+              填 <code>off</code> 关闭。这不是 VPN，系统代理仍由本机自行配置。
+            </p>
+          </div>
+
           <div class="fields">
             <div v-for="field in group.fields" :key="field.key" class="field-row">
               <div class="field-label">
@@ -191,7 +199,7 @@ const selectedVisionPreset = ref('')
 /** 密钥字段：显式标记清除覆盖 */
 const clearSecrets = ref({})
 
-const BOOL_KEYS = new Set(['CURSOR_DEV_ENABLED'])
+const BOOL_KEYS = new Set(['CURSOR_DEV_ENABLED', 'IDE_GIT_MIRROR_FIRST'])
 
 function isBoolField(key) {
   return BOOL_KEYS.has(key)

@@ -1,0 +1,63 @@
+{
+  "name": "zr-workbuddy-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZR WorkBuddy 桌面壳：内置 Python 运行时 + API + 前端，安装后配置 Key 即可使用",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.zr.workbuddy.desktop",
+    "productName": "ZR WorkBuddy",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../apps/web/dist",
+        "to": "web-dist",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "runtime/bin",
+        "to": "runtime/bin",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "runtime/python",
+        "to": "runtime/python",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "runtime/app",
+        "to": "runtime/app",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"],
+      "identity": null
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

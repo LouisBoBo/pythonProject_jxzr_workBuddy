@@ -10,6 +10,7 @@ from typing import Any, Callable
 from . import jobs as job_store
 from .config import LocalDevConfig, get_config
 from .dev_runtime import ensure_dev_preview
+from .import_check import find_broken_relative_imports, format_repair_prompt
 from .prompts import SYSTEM_PROMPT, TOOL_SPECS, build_user_prompt, parse_plan_steps_from_text
 from .sandbox import prepare_sandbox, sync_changed_to_target
 from .tools_fs import SandboxFS
@@ -141,6 +142,123 @@ def _dispatch_tool(
     return {"ok": False, "error": f"未知工具：{name}"}
 
 
+def _run_llm_tool_loop(
+    *,
+    client: Any,
+    model: str,
+    messages: list[dict[str, Any]],
+    fs: SandboxFS,
+    plan: _PlanTracker,
+    sink: Sink | None,
+    data_dir: Path,
+    job_id: str,
+    max_steps: int,
+    step: Callable[..., None],
+    stream_tokens: bool,
+    loop_sid: str,
+) -> str:
+    """跑若干轮 tool-calling；返回最后一轮助手正文。"""
+    assistant_text = ""
+    last_emitted_norm = ""
+    for _ in range(max(1, int(max_steps))):
+        if job_store.is_cancel_requested(data_dir, job_id):
+            raise RuntimeError("任务已取消")
+
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=TOOL_SPECS,
+            tool_choice="auto",
+            temperature=0.2,
+        )
+        choice = resp.choices[0]
+        msg = choice.message
+        tool_calls = list(msg.tool_calls or [])
+        content = (msg.content or "").strip()
+        if content:
+            assistant_text = content
+            if not plan.steps:
+                parsed = parse_plan_steps_from_text(content)
+                if len(parsed) >= 2:
+                    plan.set_steps(parsed)
+                    content = re.sub(
+                        r"(?m)^\s*第\s*[一二三四五六七八九十百零〇\d]+\s*步.*$",
+                        "",
+                        content,
+                    ).strip()
+                    content = re.sub(r"\n{3,}", "\n\n", content)
+            should_stream = stream_tokens and bool(content) and not tool_calls
+            if should_stream:
+                norm = re.sub(r"\s+", "", content)
+                if norm and norm != last_emitted_norm and not (
+                    last_emitted_norm and (norm in last_emitted_norm or last_emitted_norm in norm)
+                ):
+                    _emit(
+                        sink,
+                        {
+                            "type": "token",
+                            "text": content if not last_emitted_norm else ("\n" + content),
+                        },
+                    )
+                    last_emitted_norm = norm
+
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+        if tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+                for tc in tool_calls
+            ]
+        messages.append(assistant_msg)
+
+        if not tool_calls:
+            step("模型已结束工具调用", sid=loop_sid, state="done")
+            break
+
+        for tc in tool_calls:
+            name = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            result = _dispatch_tool(fs, plan, name, args)
+            if name in {"set_plan", "update_plan_step"}:
+                title = (
+                    f"计划已更新（{result.get('count')} 步）"
+                    if name == "set_plan" and result.get("ok")
+                    else (
+                        f"步骤 {int(args.get('index', -1)) + 1} → {args.get('state')}"
+                        if name == "update_plan_step"
+                        else f"{name} 失败"
+                    )
+                )
+                step(title, sid=f"tool-{tc.id}", state="done")
+            else:
+                title = f"{name}({args.get('path') or '.'})"
+                if result.get("ok"):
+                    step(title, sid=f"tool-{tc.id}", state="done")
+                else:
+                    step(f"{title} 失败：{result.get('error')}", sid=f"tool-{tc.id}", state="done")
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+    else:
+        step("达到最大步数，停止", sid=loop_sid, state="done")
+    return assistant_text
+
+
 def run_job(
     data_dir: Path,
     job: dict[str, Any],
@@ -219,101 +337,60 @@ def run_job(
         ]
 
         step("模型在沙箱内改码…", sid="agent-loop")
-        assistant_text = ""
-        last_emitted_norm = ""
-        for i in range(cfg.max_agent_steps):
-            if job_store.is_cancel_requested(data_dir, job_id):
-                raise RuntimeError("任务已取消")
+        assistant_text = _run_llm_tool_loop(
+            client=client,
+            model=model,
+            messages=messages,
+            fs=fs,
+            plan=plan,
+            sink=sink,
+            data_dir=data_dir,
+            job_id=job_id,
+            max_steps=cfg.max_agent_steps,
+            step=step,
+            stream_tokens=True,
+            loop_sid="agent-loop",
+        )
 
-            resp = client.chat.completions.create(
+        # 相对 import 闸门：破损则强制再修，避免同步后 Vite 红屏
+        for repair_i in range(2):
+            issues = find_broken_relative_imports(sandbox_path, fs.changed_files())
+            if not issues:
+                if repair_i == 0:
+                    step("相对 import 校验通过", sid="import-gate", state="done")
+                else:
+                    step("相对 import 已修复", sid="import-gate", state="done")
+                break
+            step(
+                f"相对 import 闸门：{len(issues)} 处无法解析，强制修复（第 {repair_i + 1} 轮）…",
+                sid="import-gate",
+            )
+            messages.append({"role": "user", "content": format_repair_prompt(issues)})
+            repaired = _run_llm_tool_loop(
+                client=client,
                 model=model,
                 messages=messages,
-                tools=TOOL_SPECS,
-                tool_choice="auto",
-                temperature=0.2,
+                fs=fs,
+                plan=plan,
+                sink=sink,
+                data_dir=data_dir,
+                job_id=job_id,
+                max_steps=min(10, cfg.max_agent_steps),
+                step=step,
+                stream_tokens=False,
+                loop_sid=f"import-repair-{repair_i + 1}",
             )
-            choice = resp.choices[0]
-            msg = choice.message
-            tool_calls = list(msg.tool_calls or [])
-            content = (msg.content or "").strip()
-            if content:
-                assistant_text = content
-                # 正文若含「第N步」清单且尚未 set_plan：兜底生成计划卡，避免纯文本无状态
-                if not plan.steps:
-                    parsed = parse_plan_steps_from_text(content)
-                    if len(parsed) >= 2:
-                        plan.set_steps(parsed)
-                        # 有结构化计划后不再把长清单刷进正文
-                        content = re.sub(
-                            r"(?m)^\s*第\s*[一二三四五六七八九十百零〇\d]+\s*步.*$",
-                            "",
-                            content,
-                        ).strip()
-                        content = re.sub(r"\n{3,}", "\n\n", content)
-                # 有工具调用时进度在计划卡/步骤里，不把每轮旁白拼进气泡（避免「现在追加…」重复）
-                should_stream = bool(content) and not tool_calls
-                if should_stream:
-                    norm = re.sub(r"\s+", "", content)
-                    if norm and norm != last_emitted_norm and not (
-                        last_emitted_norm and (norm in last_emitted_norm or last_emitted_norm in norm)
-                    ):
-                        _emit(sink, {"type": "token", "text": content if not last_emitted_norm else ("\n" + content)})
-                        last_emitted_norm = norm
-
-            assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
-            if tool_calls:
-                assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments or "{}",
-                        },
-                    }
-                    for tc in tool_calls
-                ]
-            messages.append(assistant_msg)
-
-            if not tool_calls:
-                step("模型已结束工具调用", sid="agent-loop", state="done")
-                break
-
-            for tc in tool_calls:
-                name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                if not isinstance(args, dict):
-                    args = {}
-                result = _dispatch_tool(fs, plan, name, args)
-                if name in {"set_plan", "update_plan_step"}:
-                    title = (
-                        f"计划已更新（{result.get('count')} 步）"
-                        if name == "set_plan" and result.get("ok")
-                        else (
-                            f"步骤 {int(args.get('index', -1)) + 1} → {args.get('state')}"
-                            if name == "update_plan_step"
-                            else f"{name} 失败"
-                        )
-                    )
-                    step(title, sid=f"tool-{tc.id}", state="done")
-                else:
-                    title = f"{name}({args.get('path') or '.'})"
-                    if result.get("ok"):
-                        step(title, sid=f"tool-{tc.id}", state="done")
-                    else:
-                        step(f"{title} 失败：{result.get('error')}", sid=f"tool-{tc.id}", state="done")
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
+            if repaired:
+                assistant_text = repaired
         else:
-            step("达到最大步数，停止", sid="agent-loop", state="done")
+            leftover = find_broken_relative_imports(sandbox_path, fs.changed_files())
+            if leftover:
+                detail = "; ".join(
+                    f"{x['file']} ← {x['import']}" for x in leftover[:8]
+                )
+                raise RuntimeError(
+                    "相对 import 校验未通过，已中止同步（避免 Vite 红屏）：" + detail
+                )
 
         plan.mark_all_done()
         changed = fs.changed_files()

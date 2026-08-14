@@ -53,8 +53,12 @@ from tools.api_log_tool.api_health import (
     analyze_api_errors_from_logs,
 )
 
-# apps/agent
-AGENT_ROOT = Path(__file__).resolve().parents[1]
+try:
+    from bundle_root import resolve_agent_root
+
+    AGENT_ROOT = resolve_agent_root()
+except Exception:  # noqa: BLE001 — 兜底源码布局
+    AGENT_ROOT = Path(__file__).resolve().parents[1]
 # 相对 FilesystemBackend root 的 POSIX 路径（须以 / 开头的虚拟路径）
 SKILL_SOURCES = ["/skills/"]
 
@@ -200,7 +204,8 @@ _GIT_REVIEW_PROMPT = """
 - **必须**走 Skill「git-code-review」：
   1) request_git_list_source_files → 记下 total / batch_count
   2) i=0..batch_count-1：request_git_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
-  3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」
+     （必须按序，禁止跳批；末批 done_after 后禁止再回补漏批工具调用）
+  3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」（禁止再调取码工具）
 - **禁止**只用 request_git_review 抽样结案；**禁止** request_ide_*；**禁止** :::cursor_dev_*。
 - **禁止** SSH；一期仅公开 HTTPS。
 - 【输出纪律】分批过程中禁止向用户输出任何正文；终稿第一行「## 🔍 代码审核报告」。
@@ -280,9 +285,6 @@ def create_agent(model=None, checkpointer=None):
     )
     if Config.IDE_REVIEW_ENABLED:
         from tools.ide_review import (
-            request_git_list_source_files,
-            request_git_read_batch,
-            request_git_review,
             request_ide_list_source_files,
             request_ide_read_batch,
             request_ide_read_files,
@@ -293,10 +295,19 @@ def create_agent(model=None, checkpointer=None):
         tools.append(request_ide_read_batch)
         tools.append(request_ide_review)
         tools.append(request_ide_read_files)
-        tools.append(request_git_list_source_files)
-        tools.append(request_git_read_batch)
-        tools.append(request_git_review)
-        system_prompt = system_prompt + _GIT_REVIEW_PROMPT + _IDE_REVIEW_PROMPT
+        system_prompt = system_prompt + _IDE_REVIEW_PROMPT
+
+    # 公开 Git 仓审核与 VS Code Bridge 解耦：桌面默认不开 IDE_REVIEW 也能审公开仓
+    from tools.ide_review import (
+        request_git_list_source_files,
+        request_git_read_batch,
+        request_git_review,
+    )
+
+    tools.append(request_git_list_source_files)
+    tools.append(request_git_read_batch)
+    tools.append(request_git_review)
+    system_prompt = system_prompt + _GIT_REVIEW_PROMPT
 
     return create_deep_agent(
         model=model,

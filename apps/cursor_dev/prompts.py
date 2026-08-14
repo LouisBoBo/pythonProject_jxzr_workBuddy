@@ -367,6 +367,17 @@ def _ui_fidelity_rules(user_message: str, *, has_images: bool = False) -> str:
     return base
 
 
+def _frontend_import_rules() -> str:
+    """相对 import 层数算错会直接 Vite 红屏（高频 P0）。"""
+    return (
+        "【前端 import · P0】\n"
+        "- 相对路径从**当前文件所在目录**起算 `../` 层数；"
+        "`src/views/kanban/X.vue` → `src/api/y` 必须是 `../../api/y`，禁止 `../api/y`。\n"
+        "- 仓库已有 `@/api` / `@/views` 别名时优先用别名，避免手算层数。\n"
+        "- 提交前确认 import 目标文件已存在；不要留下 Failed to resolve import。\n"
+    )
+
+
 def _ui_product_design_rules(user_message: str, *, tier: str = "default") -> str:
     """页面/仪表盘产品设计：禁止照抄首页与通用 Admin 模板（Skill ui-product-design）。"""
     if (tier or "").strip().lower() == "css_layout":
@@ -534,6 +545,7 @@ def build_first_turn_prompt(
         f"{speed_rules}"
         f"{ui_rules}"
         f"{design_rules}"
+        f"{_frontend_import_rules()}"
         "首轮需求：\n"
         f"{user_message}\n"
         "验收：css_layout 无需补测套件；无权限的依赖不要伪造；不要修改与需求无关的配置密钥。"
@@ -611,6 +623,7 @@ def build_followup_prompt(
         f"{speed_rules}"
         f"{ui_rules}"
         f"{design_rules}"
+        f"{_frontend_import_rules()}"
         f"{prior_block}"
         "本轮用户补充：\n"
         f"{user_message}\n"
