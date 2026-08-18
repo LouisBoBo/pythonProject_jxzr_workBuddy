@@ -131,6 +131,11 @@ def _is_cursor_dev_coding_lane(message: str = "", ctx: dict | None = None) -> bo
 # 工具 → 中文短标题（过程区只显示这些，不 dump 原始内容）
 _TOOL_LABELS = {
     "query_platform_data": "查询平台数据",
+    "summarize_platform_data": "汇总平台数据分组",
+    "list_query_metrics": "列出指标口径",
+    "query_metric": "按指标口径查询",
+    "list_ops_scenes": "列出运维场景",
+    "run_ops_scene": "执行运维值班场景",
     "list_platform_entities": "列出可查实体",
     "get_platform_summary": "汇总平台数据",
     "describe_entity": "查看实体结构",
@@ -157,6 +162,8 @@ _TOOL_LABELS = {
     "list_platform_capabilities": "人话能力地图",
     "describe_platform_capability": "能力模块详情",
     "list_platform_glossary": "术语小抄",
+    "compare_schema_vs_catalog": "对照表结构与接口目录",
+    "mes_change_preflight": "改功能前置清单",
     "build_api_catalog": "构建接口目录",
     "list_api_catalog": "列出接口目录",
     "query_api_call_log": "查询接口调用日志",
@@ -355,9 +362,17 @@ def _input_detail(name: str, inp: Any) -> str:
         return text[:240] + ("…" if len(text) > 240 else "") if text else ""
 
     lines: list[str] = []
-    if name == "query_platform_data":
+    if name in ("query_platform_data", "summarize_platform_data", "query_metric", "run_ops_scene"):
         if data.get("entity"):
             lines.append(f"实体：{data['entity']}")
+        if data.get("name") and name == "query_metric":
+            lines.append(f"口径：{data['name']}")
+        if data.get("scene") and name == "run_ops_scene":
+            lines.append(f"场景：{data['scene']}")
+        if data.get("export") is not None and name == "run_ops_scene":
+            lines.append(f"导出：{data['export']}")
+        if data.get("group_by"):
+            lines.append(f"分组：{data['group_by']}")
         if data.get("filters"):
             try:
                 lines.append(f"筛选：{json.dumps(data['filters'], ensure_ascii=False)}")
@@ -729,7 +744,14 @@ def _tool_name(event: dict) -> str:
 def _tool_label(name: str, inp: Any = None) -> str:
     base = _TOOL_LABELS.get(name, name)
     hint = _entity_hint(inp)
-    if hint and name in ("query_platform_data", "import_file_to_platform", "export_platform_data"):
+    if hint and name in (
+        "query_platform_data",
+        "summarize_platform_data",
+        "query_metric",
+        "run_ops_scene",
+        "import_file_to_platform",
+        "export_platform_data",
+    ):
         return f"{base} · {hint}"
     if hint and name == "read_file":
         low = hint.lower()
@@ -892,6 +914,19 @@ class AgentRunner:
                 )
         except Exception:
             prefix = ""
+
+        try:
+            from middleware.request_context import get_page_context as _gpc_mes
+
+            _lane_mes = resolve_workbuddy_lane(message or "", _gpc_mes() or {})
+            if _lane_mes not in (LANE_CODE_DEV, LANE_CODE_REVIEW, LANE_PASTE_CODE):
+                from tools.schema_tool.profile_readiness import format_mes_context_block
+
+                mes_block = (format_mes_context_block() or "").strip()
+                if mes_block:
+                    prefix = f"{prefix}{mes_block}\n\n" if prefix else f"{mes_block}\n\n"
+        except Exception:
+            pass
 
         body = message
         # 写码 / 审核：对等互斥分支。仅按本轮意图注入对应强制路由，无「谁优先」。

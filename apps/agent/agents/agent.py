@@ -20,9 +20,13 @@ from tools.write_audit_query import query_write_audit
 from tools.query_tool.platform_query import (
     list_platform_entities,
     query_platform_data,
+    summarize_platform_data,
     describe_entity,
     get_platform_summary,
+    list_query_metrics,
+    query_metric,
 )
+from tools.query_tool.ops_playbook import list_ops_scenes, run_ops_scene
 from tools.schema_tool.schema_query import (
     list_schema_domains,
     list_schema_tables,
@@ -40,6 +44,9 @@ from tools.schema_tool.capability_map import (
     describe_platform_capability,
     list_platform_glossary,
 )
+from tools.schema_tool.schema_diff import compare_schema_vs_catalog
+from tools.schema_tool.profile_readiness import inspect_mes_profile
+from tools.query_tool.dev_preflight import mes_change_preflight
 from tools.api_log_tool.api_health import (
     build_api_catalog,
     list_api_catalog,
@@ -69,6 +76,11 @@ TOOLS = [
     get_platform_summary,
     describe_entity,
     query_platform_data,
+    summarize_platform_data,
+    list_query_metrics,
+    query_metric,
+    list_ops_scenes,
+    run_ops_scene,
     import_file_to_platform,
     export_platform_data,
     transform_file,
@@ -86,6 +98,9 @@ TOOLS = [
     list_platform_capabilities,
     describe_platform_capability,
     list_platform_glossary,
+    compare_schema_vs_catalog,
+    inspect_mes_profile,
+    mes_change_preflight,
     # API：文档接口测试一律默认沙箱探活再分析；live 仅明确要生产只读时
     build_api_catalog,
     list_api_catalog,

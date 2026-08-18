@@ -50,6 +50,51 @@ class OpenApiToEntitiesTests(unittest.TestCase):
         self.assertEqual(out["meta"].get("login_paths"), ["/api/v1/auth/login"])
         self.assertEqual(out["meta"].get("path_prefix"), "/api/v1")
 
+    def test_response_columns_from_item_schema(self) -> None:
+        doc = {
+            "paths": {
+                "/api/work-orders": {
+                    "get": {
+                        "summary": "查询工单列表",
+                        "responses": {
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "items": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "order_no": {
+                                                                "type": "string",
+                                                                "title": "工单号",
+                                                            },
+                                                            "status": {
+                                                                "type": "string",
+                                                                "description": "状态",
+                                                            },
+                                                        },
+                                                    },
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        out = openapi_to_entities(doc)
+        wo = out["entities"][0]
+        cols = {c["name"]: c["label"] for c in wo.get("columns") or []}
+        self.assertEqual(cols.get("order_no"), "工单号")
+        self.assertEqual(cols.get("status"), "状态")
+
     def test_plain_api_prefix_without_v1(self) -> None:
         doc = {
             "info": {"title": "ERP"},

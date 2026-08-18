@@ -11,11 +11,14 @@ import pandas as pd
 
 from config import Config
 from tools.platform_api import get_client
+from tools.query_tool.entity_catalog import get_entity, resolve_entity_id
 
 
 def import_file_to_platform(
     file_path: Annotated[str, "本地文件的绝对路径（如 /Users/xxx/data/orders.csv）"],
-    target_entity: Annotated[str, "平台目标实体英文 id（如 work-orders、production-plans）"],
+    target_entity: Annotated[
+        str, "平台目标实体英文 id（必须来自当前可查对象目录；换平台后目录会变，不要沿用其它 MES 的 id）"
+    ],
     file_type: Annotated[
         Literal["csv", "excel", "json"] | None,
         "文件类型；不传则按扩展名自动判断",
@@ -94,11 +97,13 @@ def import_file_to_platform(
 
 
 def export_platform_data(
-    entity: Annotated[str, "平台实体英文 id 或中文别名"],
+    entity: Annotated[str, "平台实体英文 id 或中文别名（来自当前可查对象目录）"],
     output_format: Annotated[
         Literal["csv", "excel", "json"], "导出格式：csv / excel / json"
     ] = "csv",
-    filters: Annotated[dict | None, '可选过滤条件，如 {"status": "生产中"}'] = None,
+    filters: Annotated[
+        dict | None, "可选过滤条件；字段名以当前目录 / describe_entity 为准，会发给 MES"
+    ] = None,
     output_dir: Annotated[str | None, "输出目录；默认使用配置的 EXPORT_DIR"] = None,
 ) -> dict:
     """从平台导出指定实体的数据到本地文件。"""
@@ -111,6 +116,10 @@ def export_platform_data(
     if not data:
         return {"error": f"实体 '{entity}' 没有数据可导出"}
 
+    eid = resolve_entity_id(entity) or entity
+    meta = get_entity(eid) or {}
+    applied = {k: v for k, v in (filters or {}).items() if v is not None and v != ""}
+
     # 确定输出目录
     out_dir = output_dir or Config.EXPORT_DIR
     os.makedirs(out_dir, exist_ok=True)
@@ -118,25 +127,31 @@ def export_platform_data(
     # 生成文件名：格式别名 excel 统一输出为 .xlsx 扩展名
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     ext = "xlsx" if output_format in ("excel", "xlsx") else output_format
-    filename = f"{entity}_{ts}.{ext}"
+    safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(eid)) or "export"
+    filename = f"{safe_id}_{ts}.{ext}"
     file_path = os.path.join(out_dir, filename)
 
     # 写入文件
     df = pd.DataFrame(data)
+    sheet = str(meta.get("label") or eid)[:31] or "data"
 
     if output_format == "csv":
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
     elif output_format in ("excel", "xlsx"):
-        df.to_excel(file_path, index=False, sheet_name=entity[:31], engine="openpyxl")
+        df.to_excel(file_path, index=False, sheet_name=sheet, engine="openpyxl")
     elif output_format == "json":
         df.to_json(file_path, orient="records", force_ascii=False, indent=2)
 
     return {
         "status": "ok",
+        "entity": eid,
+        "label": meta.get("label") or eid,
         "file": file_path,
         "format": output_format,
         "rows": len(data),
         "columns": list(df.columns),
+        "filters_applied": applied,
+        "hint": "请把绝对路径 file 和行数 rows 原样告诉用户；不要编造路径或条数。",
     }
 
 

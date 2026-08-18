@@ -2,7 +2,7 @@
 name: query-mes-data
 description: >-
   查询 MES/ERP 平台数据时使用。实体与别名以当前资料包可查对象目录为准
-  （通常由接口文档生成）。用户说「查一下」「看看有哪些」「统计」MES/业务数据时启用。
+  （通常由接口文档生成）。用户说「查一下」「看看有哪些」「统计」「各多少」MES/业务数据时启用。
   未配置资料包时须提示先去系统配置接入。
   注意：用户说「平台/系统能干什么」指 WorkBuddy，不是本 Skill。
 ---
@@ -11,17 +11,23 @@ description: >-
 
 ## 何时使用
 
-- 用户要查业务列表/明细（工单、设备、看板等——以当前目录为准）
+- 用户要查业务列表/明细（以当前目录为准，不要写死工单/排产）
 - 需要先弄清平台有哪些可查对象再查询
 - 查询结果为空或失败，需要排查是否选错实体
+- 用户要「按状态各多少」一类轻量汇总
+- 用户问「在制」「未完工」「紧急单」「当日完工」等指标口径
 
 ## 工具选用
 
-1. 不确定实体时：先 `list_platform_entities` 或 `get_platform_summary`
-2. 查数据：`query_platform_data(entity="<英文id>", filters=?, limit=?)`
-3. 看字段：`describe_entity(entity="<英文id>")`
+1. 不确定实体、刚换平台、或资料是否齐全：先 `inspect_mes_profile(user_intent=用户原话)`
+2. `missing` 挡住查数时：告诉用户去系统配置补接口文档/MES 接口账号，**不要编造列表或条数**
+3. `can_answer_now=true` 后再 `list_platform_entities` / `query_platform_data`
+4. 查列表：`query_platform_data(entity="<英文id>", filters=?, limit=?)`
+5. 看字段：`describe_entity(entity="<英文id>")`（`filter_fields` 才是可下发的筛选名）
+6. 轻量汇总：`summarize_platform_data(entity="<英文id>", group_by=?, filters=?)`
+7. 指标口径：先 `list_query_metrics`，再 `query_metric`；「紧急工单/急单」用 `query_metric("紧急未完工")` 或 `run_ops_scene("urgent-backlog")`，**不要**只传 `filters={"priority":"urgent"}`
 
-`entity` **必须用英文 id**（来自当前目录），不要传中文。
+`entity` **必须用英文 id**（来自当前目录），不要传中文。口径名用中文或 id 均可，**禁止**把其它 MES 的实体 id 写进口径查询。
 
 ## 实体对照
 
@@ -31,19 +37,24 @@ description: >-
 
 ## 筛选
 
-带状态/优先级等条件时传 `filters`（字段名以 `describe_entity` 为准），不要全量拉取后假装过滤。
-
-更多运维话术见 Skill `ops-query-playbook`（以当前目录实体为准）。
+带条件时传 `filters`（字段名以 `describe_entity.filter_fields` 为准，取值用用户原话或样例里出现过的值）。
+工具会把 filters 作为 MES API 的 query 参数下发；**禁止**全量拉取后口头过滤，也**禁止**套用其它 MES 的字段名/状态值。
 
 ## 推荐回复结构
 
-1. 说明查的是哪个实体（可用用户原话 + 英文 id）
-2. 条数与关键字段
-3. 如需汇总，按真实返回字段分组，不要臆造字段
+1. 说明查的是哪个对象：用户原话 + 中文 label + 英文 id
+2. 条数：`total` / `returned`；有 `filters_applied` 须复述条件
+3. 用工具返回的 `markdown_table`（或 `display_rows`）展示，列名用中文
+4. 「各多少 / 按状态汇总」用 `summarize_platform_data` 的 `groups`，不要臆造字段或分组值
+5. 「在制 / 未完工 / 紧急未完工 / 当日完工」用 `query_metric`，先复述工具返回的 `definition` 与 `filter_sets`；绑不上就如实说，不要套 pending/work-orders
+6. 用户要导出时走 `export_platform_data`，报绝对路径 `file` 和行数 `rows`
 
 ## 自检
 
-- [ ] 目录非空；为空则提示配置 MES 接入
+- [ ] 目录非空；为空或缺 MES 接口账号则提示配置，不编造
+- [ ] 换平台后是否按当前目录作答（未沿用上一套实体 id）
 - [ ] entity 是否与用户意图一致
 - [ ] 是否调用了查询工具（不要空口编数据）
-- [ ] 带筛选条件时是否传了 filters
+- [ ] 带筛选条件时是否传了 filters（看工具返回的 filters_applied）
+- [ ] 回复是否有中文列名、条数，而不是只贴原始 JSON
+- [ ] 「紧急工单/急单」是否走了 `query_metric("紧急未完工")` / `run_ops_scene("urgent-backlog")`，而不是只筛 `priority=urgent`

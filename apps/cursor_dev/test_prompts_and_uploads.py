@@ -84,6 +84,23 @@ class VisualIntentTests(unittest.TestCase):
         self.assertIn("按截图修改", p)
         self.assertNotIn("禁止赶工", p)
 
+    def test_add_column_requires_data_stack_chain(self):
+        p = build_first_turn_prompt(
+            user_message="给工单列表加一列实际开始时间",
+            repo="org/demo",
+            work_branch="hebo",
+        )
+        self.assertIn("完整链路", p)
+        self.assertIn("库表", p)
+
+    def test_css_layout_skips_data_stack_chain(self):
+        p = build_first_turn_prompt(
+            user_message="【任务档位：css_layout】去掉横向滚动",
+            repo="org/demo",
+            work_branch="hebo",
+        )
+        self.assertNotIn("完整链路", p)
+
 
 class UploadPathSecurityTests(unittest.TestCase):
     def setUp(self):

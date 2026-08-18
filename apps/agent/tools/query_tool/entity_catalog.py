@@ -139,12 +139,19 @@ def catalog_summary() -> list[dict[str, Any]]:
     rows = []
     for e in load_catalog():
         fields = e.get("fields") or []
+        columns = e.get("columns") or []
+        labels: dict[str, str] = {}
+        for item in list(columns) + list(fields):
+            if isinstance(item, dict) and item.get("name"):
+                labels.setdefault(str(item["name"]), str(item.get("label") or item["name"]))
         rows.append({
             "entity": e["id"],
             "label": e.get("label", e["id"]),
             "aliases": e.get("aliases") or [],
             "ops": e.get("ops") or ["query"],
             "fields": [f["name"] if isinstance(f, dict) else f for f in fields],
+            "columns": [f["name"] if isinstance(f, dict) else f for f in columns],
+            "field_labels": labels,
         })
     return rows
 
@@ -195,6 +202,14 @@ def build_system_prompt() -> str:
         "- 不要把「MES系统能干什么」答成助手查数清单；那是在问 MES 业务能力。",
         "- 导入/写入确认文案里若出现「写入平台」，实际含义是 **写入 MES/ERP 数据**，与产品名无关。",
         "",
+        "## 换平台再学习（硬约束）",
+        "",
+        "- 当前 MES 以「系统配置 → MES 接入」的**最新资料包**为准：表结构、接口文档、平台名称、MES 接口账号。",
+        "- 涉及 MES 摸底/查数/运维时：本轮先 `inspect_mes_profile(user_intent=用户原话)`（会重读配置）。",
+        "- **只根据本轮 known / 工具结果回答**。会话里出现过、但当前目录或表结构没有的实体/表名，视为未知。",
+        "- **已知**：按 next_tool 做下一步（摸底或查数）。**未知/missing 挡住本问**：停止编造，把 missing.action 告诉用户去系统配置补齐。",
+        "- 禁止沿用另一套 MES 的实体 id、路径前缀、表名或状态值充数。",
+        "",
         "## 工具类能力（与闲聊并列，不要混）",
         "",
         "1. **MES 业务能力（表结构摸底）**：依据**当前配置**的表结构文档，说明 MES 业务上能管什么"
@@ -224,6 +239,7 @@ def build_system_prompt() -> str:
         "调用工具时，entity / target_entity 必须使用下方「实体 id」（英文）。",
         "用户说法不统一很正常：同一实体的别名都指向同一个 id，尽量灵活理解，不要纠结用词。",
         "同义说法都查同一个实体；查空或失败时如实说明，**勿改查别的实体充数**。",
+        "**换平台后本目录会变**：禁止沿用其它 MES 习惯的实体 id（例如目录里没有就不要用 work-orders）。不确定时先 list_platform_entities 或 inspect_mes_profile。",
         "回答「平台/系统能干什么」（WorkBuddy）时：介绍助手能力，**不要**用本目录或 MES 表结构冒充。",
         "回答「MES系统能干什么」时：走表结构摸底，**不要**只用本目录冒充 MES 全量能力。",
         "",
@@ -254,7 +270,16 @@ def build_system_prompt() -> str:
                         field_parts.append(f"{f['name']}（{f.get('label', f['name'])}）")
                     else:
                         field_parts.append(str(f))
-                lines.append(f"- 字段：{', '.join(field_parts)}")
+                lines.append(f"- 可筛选字段（filters 英文名）：{', '.join(field_parts)}")
+            columns = e.get("columns") or []
+            if columns:
+                col_parts = []
+                for f in columns:
+                    if isinstance(f, dict):
+                        col_parts.append(f"{f['name']}（{f.get('label', f['name'])}）")
+                    else:
+                        col_parts.append(str(f))
+                lines.append(f"- 结果列（中文名优先）：{', '.join(col_parts)}")
             lines.append("")
 
     lines.extend([
@@ -293,9 +318,20 @@ def build_system_prompt() -> str:
         "### 查看 MES 业务数据",
         "- 先确认可查对象目录非空；为空则提示用户去系统配置接入 MES",
         "- 不确定说法对应哪个实体时，先 list_platform_entities，对照 aliases 选择",
-        "- 需要字段结构时调用 describe_entity",
-        "- 带状态/优先级等条件时务必传 filters，不要全量拉取后假装过滤",
-        "- 实施高频话术详见 Skill `ops-query-playbook`（以当前目录实体为准）",
+        "- 需要字段结构时调用 describe_entity；filters 只用 filter_fields 的英文名",
+        "- 带状态/优先级等条件时务必传 filters（会作为 MES API 参数下发），不要全量拉取后假装过滤",
+        "- query_platform_data 成功时用返回的 markdown_table / display_rows 展示；"
+        "回复须含：中文实体名 + 英文 id、条数（total/returned）、关键列中文名；有 filters_applied 须复述",
+        "- 「各有多少 / 按状态汇总」调用 summarize_platform_data，按 groups 回复；"
+        "分组字段必须是本次返回记录里真实存在的列，不要臆造",
+        "- 「在制 / 未完工 / 紧急未完工 / 当日完工」调用 query_metric（可先 list_query_metrics）；"
+        "口径随当前目录绑定，禁止套用其它 MES 的实体 id 或状态值；绑不上或日期筛不了要如实说",
+        "- **运维值班**：紧急工单/急单堆积 **必须** `run_ops_scene('urgent-backlog')` 或 `query_metric('紧急未完工')`；"
+        "禁止只用 `priority=urgent`（口径含紧急+高优先级且未完工）。"
+        "谁导入了/导入失败/接口通不通/401 → list_ops_scenes / run_ops_scene；"
+        "查不到数据/故障排查 → run_ops_scene('ops-diagnose')；值班简报 → run_ops_scene('ops-daily-brief')；"
+        "写操作必须确认卡；探活默认沙箱禁止默认 live。",
+        "- 实施高频话术详见 Skill `ops-query-playbook`（以当前目录实体为准，禁止写死演示工单/排产）",
         "",
         "### 文件导入",
         "用户说「把这批数据导入」时：",
@@ -316,6 +352,7 @@ def build_system_prompt() -> str:
         "### 数据导出",
         "用户说「把 XX 导出来」时：",
         "- export_platform_data，entity 填英文 id，可选 format（csv/excel/json）",
+        "- 回复必须给出工具返回的绝对路径 file 和行数 rows，不要编造",
         "",
         "### 文件格式转换",
         "- 使用 transform_file 或 preview_file",
@@ -323,11 +360,19 @@ def build_system_prompt() -> str:
         "### 根据表结构分析 MES 业务能力",
         "用户问「MES系统能干什么」「MES 有哪些功能」「根据表结构分析」「某张表什么意思」时：",
         "- 若未上传表结构：提示先去系统配置上传，不要编造模块清单",
-        "- 优先 list_platform_capabilities（人话总览），再 describe_platform_capability",
-        "- 术语：list_platform_glossary；场景表包：list_business_scenarios / get_scenario_table_pack",
+        "- 优先 list_platform_capabilities（人话总览；无 capability_map.json 时按当前表结构域自动生成），再 describe_platform_capability",
+        "- 术语：list_platform_glossary；场景表包：list_business_scenarios / get_scenario_table_pack（按当前文档表名/中文匹配）",
+        "- 换平台/资料包配好了吗：inspect_mes_profile（分 A 摸底 / B 查数，不要混谈）",
         "- 导出摸底报告：export_schema_survey_report；告知文件路径",
+        "- 文档 vs 接口是否对得上：compare_schema_vs_catalog（默认不抽检现场数据）",
         "- **MES 能力结论只谈表结构业务模块**",
         "- 用户若要查业务数据，再走上方可查对象目录的 query/import/export",
+        "",
+        "### 改 MES 相关页面/接口（写码前）",
+        "- 仅当用户要改 MES 功能时调用 mes_change_preflight(user_intent=原话)",
+        "- 把返回的当前目录实体 id、acceptance_hints、stack_chain 写进 propose.requirement",
+        "- 列表/表单加字段必须走完整链路：界面 → 接口 → 库表 → 业务写入 → 旧数据；禁止只加空列",
+        "- 纯 UI 复刻、无关 MES 的写码不要调用，以免打断正常写码确认卡",
         "",
         "### API 接口健康分析（文档×日志，非表结构摸底）",
         "**硬性约定：**",

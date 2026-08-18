@@ -76,6 +76,8 @@ COPY_SKIP_DIR_NAMES = frozenset(
         ".vscode",
         "target",
         "out",
+        ".vite",
+        ".dev-logs",
     }
 )
 

@@ -17,6 +17,10 @@ from typing import Annotated, Any
 
 from mes_profile import resolve_capability_map_path
 from tools.schema_tool.mes_schema_parser import build_index
+from tools.schema_tool.schema_infer import (
+    infer_capabilities_from_index,
+    infer_glossary_from_index,
+)
 
 _BOUNDARY = (
     "本结果只反映「当前已配置表结构文档中的 MES 系统业务能力」。"
@@ -54,6 +58,31 @@ def reload_capability_map() -> None:
     global _map_cache, _map_key
     _map_cache = None
     _map_key = None
+
+
+def _schema_index() -> dict[str, Any]:
+    try:
+        return build_index()
+    except Exception:
+        return {"tables": [], "domains": []}
+
+
+def _resolved_map() -> dict[str, Any]:
+    """资料包有能力地图则用之；否则按当前表结构域推断，换平台不必手写 JSON。"""
+    raw = dict(_load_map_raw() or {})
+    caps = list(raw.get("capabilities") or [])
+    gloss = list(raw.get("glossary") or [])
+    index = _schema_index()
+    map_source = "profile"
+    if not caps:
+        caps = infer_capabilities_from_index(index)
+        map_source = "inferred_from_schema"
+    if not gloss:
+        gloss = infer_glossary_from_index(index)
+    raw["capabilities"] = caps
+    raw["glossary"] = gloss
+    raw["map_source"] = map_source
+    return raw
 
 
 def _table_meta() -> dict[str, dict[str, Any]]:
@@ -123,21 +152,21 @@ def list_platform_capabilities() -> dict[str, Any]:
     不要用本工具回答「帮我查业务数据」——那是可查对象目录上的查询工具。
     """
     reload_capability_map()
-    raw = _load_map_raw()
+    raw = _resolved_map()
     caps = raw.get("capabilities") or []
+    _path, src = resolve_capability_map_path()
     if not caps:
-        path, src = resolve_capability_map_path()
         return {
             "capabilities": [],
             "capability_count": 0,
             "summary": {"schema_backed": [], "other": []},
             "scope": "schema_only",
             "scope_note": _BOUNDARY,
+            "map_source": raw.get("map_source") or "empty",
             "note": (
-                "当前资料包尚未提供 capability_map.json（能力地图为空）。"
-                "请改用 list_schema_domains / analyze_schema_capabilities 依据已上传表结构回答；"
-                "或在资料包中补充能力地图。"
-                + (f" 期望路径：{path}" if path else " 请先在「系统配置 → MES 接入」上传表结构。")
+                "当前没有可推断的表结构模块。"
+                "请先在「系统配置 → MES 接入」上传表结构（.md）；"
+                "也可在资料包放 capability_map.json 覆盖自动推断。"
             ),
             "source": src,
         }
@@ -174,12 +203,21 @@ def list_platform_capabilities() -> dict[str, Any]:
             for c in enriched
         ],
         "glossary_count": len(raw.get("glossary") or []),
+        "map_source": raw.get("map_source") or "profile",
         "demo_note": (
             "另：助手里「查数/导入导出」依据可查对象目录，"
             "与本 MES 能力地图无关，请勿在「MES系统能干什么」的结论里当成真实 MES 全量能力。"
             "用户问「平台/系统」时请介绍 ZR WorkBuddy，不要用本结果回答。"
         ),
-        "note": _BOUNDARY + " 详情用 describe_platform_capability；场景路径用 get_scenario_table_pack。",
+        "note": (
+            _BOUNDARY
+            + " 详情用 describe_platform_capability；场景路径用 get_scenario_table_pack。"
+            + (
+                " 本轮能力地图由当前表结构域自动生成（资料包未提供 capability_map.json）。"
+                if raw.get("map_source") == "inferred_from_schema"
+                else ""
+            )
+        ),
     }
 
 
@@ -215,7 +253,7 @@ def describe_platform_capability(
             "scope_note": _BOUNDARY,
         }
 
-    raw = _load_map_raw()
+    raw = _resolved_map()
     caps = raw.get("capabilities") or []
     table_meta = _table_meta()
     q_l = q.lower()
@@ -292,7 +330,7 @@ def list_platform_glossary(
 ) -> dict[str, Any]:
     """列出平台常见术语的人话解释（工单/排产/IPQC 等）。"""
     reload_capability_map()
-    raw = _load_map_raw()
+    raw = _resolved_map()
     items = list(raw.get("glossary") or [])
     if keyword:
         k = keyword.strip()

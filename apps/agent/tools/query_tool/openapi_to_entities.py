@@ -317,6 +317,78 @@ def _list_keys_from_op(op: dict[str, Any], doc: dict[str, Any]) -> list[str]:
     return keys[:6]
 
 
+def _schema_object(doc: dict[str, Any], schema: Any) -> dict[str, Any]:
+    if not isinstance(schema, dict):
+        return {}
+    if "$ref" in schema:
+        return _resolve_ref(doc, str(schema.get("$ref") or "")) or {}
+    return schema
+
+
+def _item_schema_from_op(op: dict[str, Any], doc: dict[str, Any]) -> dict[str, Any]:
+    """从 200 响应推断列表元素 object schema，用于中文列名。"""
+    resp = (op.get("responses") or {}).get("200") or (op.get("responses") or {}).get("201")
+    if not isinstance(resp, dict):
+        return {}
+    content = resp.get("content")
+    schema: Any = None
+    if isinstance(content, dict):
+        for body in content.values():
+            if isinstance(body, dict) and isinstance(body.get("schema"), dict):
+                schema = body["schema"]
+                break
+    if schema is None and isinstance(resp.get("schema"), dict):
+        schema = resp["schema"]
+    schema = _schema_object(doc, schema)
+    if not schema:
+        return {}
+    if schema.get("type") == "array" or isinstance(schema.get("items"), dict):
+        return _schema_object(doc, schema.get("items"))
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return {}
+    for key in ("items", "records", "data", "results", "list", "rows"):
+        if key not in props:
+            continue
+        spec = _schema_object(doc, props[key])
+        if spec.get("type") == "array" or isinstance(spec.get("items"), dict):
+            return _schema_object(doc, spec.get("items"))
+        nested = spec.get("properties")
+        if isinstance(nested, dict):
+            for nk in ("items", "records", "list", "rows"):
+                if nk not in nested:
+                    continue
+                inner = _schema_object(doc, nested[nk])
+                if inner.get("type") == "array" or isinstance(inner.get("items"), dict):
+                    return _schema_object(doc, inner.get("items"))
+    return {}
+
+
+def _response_fields_from_op(op: dict[str, Any], doc: dict[str, Any]) -> list[dict[str, str]]:
+    item = _item_schema_from_op(op, doc)
+    props = item.get("properties")
+    if not isinstance(props, dict):
+        return []
+    fields: list[dict[str, str]] = []
+    for name, spec in props.items():
+        key = str(name or "").strip()
+        if not key:
+            continue
+        resolved = spec if isinstance(spec, dict) else {}
+        if "$ref" in resolved:
+            resolved = _resolve_ref(doc, str(resolved.get("$ref") or "")) or resolved
+        label = str(
+            resolved.get("title")
+            or resolved.get("description")
+            or (spec.get("description") if isinstance(spec, dict) else "")
+            or key
+        ).strip()
+        fields.append({"name": key, "label": (label[:40] or key)})
+        if len(fields) >= 16:
+            break
+    return fields
+
+
 def _looks_like_login(path: str, ops: dict[str, dict[str, Any]]) -> bool:
     if "post" not in ops:
         return False
@@ -453,6 +525,9 @@ def openapi_to_entities(doc: dict[str, Any]) -> dict[str, Any]:
             "ops": op_list,
             "fields": _fields_from_op(path_item, get_op),
         }
+        columns = _response_fields_from_op(get_op, doc)
+        if columns:
+            rec["columns"] = columns
         if paging:
             rec["paging"] = paging
         if list_keys:

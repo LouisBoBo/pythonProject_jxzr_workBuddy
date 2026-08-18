@@ -12,7 +12,7 @@
     <div class="wc-meta" v-if="hasMeta">
       <div class="wc-meta-item" v-if="preview.target_entity">
         <span class="wc-k">实体</span>
-        <span class="wc-v">{{ preview.target_entity }}</span>
+        <span class="wc-v">{{ entityDisplay }}</span>
       </div>
       <div class="wc-meta-item" v-if="preview.file">
         <span class="wc-k">文件</span>
@@ -95,6 +95,13 @@ const nowTs = ref(Date.now() / 1000)
 let timer = null
 
 const preview = computed(() => props.card?.preview || {})
+
+const entityDisplay = computed(() => {
+  const id = preview.value?.target_entity || ''
+  const label = String(preview.value?.target_label || preview.value?.label || '').trim()
+  if (label && id && label !== id) return `${label}（${id}）`
+  return label || id
+})
 
 const hasMeta = computed(
   () =>

@@ -26,6 +26,7 @@ _PROFILE_ID_RE = re.compile(
 SCHEMA_FILENAME = "schema.md"
 ENTITIES_FILENAME = "entities.json"
 CAPABILITY_FILENAME = "capability_map.json"
+METRICS_FILENAME = "metrics.json"
 OPENAPI_FILENAME = "openapi.json"
 PROFILE_META_FILENAME = "profile.json"
 
@@ -155,6 +156,16 @@ def resolve_capability_map_path() -> tuple[Path | None, str]:
     pdir = profile_dir()
     if pdir is not None:
         candidate = (pdir / CAPABILITY_FILENAME).resolve()
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate, "profile"
+    return None, "none"
+
+
+def resolve_metrics_path() -> tuple[Path | None, str]:
+    """资料包可选 metrics.json，按 id 覆盖内置口径模板。"""
+    pdir = profile_dir()
+    if pdir is not None:
+        candidate = (pdir / METRICS_FILENAME).resolve()
         if candidate.is_file() and candidate.stat().st_size > 0:
             return candidate, "profile"
     return None, "none"

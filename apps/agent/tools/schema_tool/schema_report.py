@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 import pandas as pd
 
 from config import Config
-from tools.schema_tool.business_scenarios import _SCENARIOS, get_scenario_table_pack
+from tools.schema_tool.business_scenarios import get_scenario_table_pack, load_business_scenarios
 from tools.schema_tool.mes_schema_parser import build_index, find_table_full, schema_doc_path
 from tools.schema_tool.schema_query import _PREFIX_CAPABILITY
 
@@ -130,7 +130,7 @@ def _build_report_payload(
                     )
 
     scenarios_brief = []
-    for s in _SCENARIOS:
+    for s in load_business_scenarios():
         pack = get_scenario_table_pack(s["id"], expand_relations=False)
         if pack.get("error"):
             continue
@@ -155,6 +155,7 @@ def _build_report_payload(
         "field_summary_rows": field_rows,
         "scenarios": scenarios_brief,
         "live_queryable_entities": _live_entities(),
+        "schema_vs_catalog": _schema_vs_catalog_brief(),
         "disclaimer": (
             "本报告由当前已配置的 MES 表结构文档推断，用于实施摸底对齐；"
             "不是实时数据库快照，也不代表 WorkBuddy 已对接全部 REST。"
@@ -162,9 +163,27 @@ def _build_report_payload(
     }
 
 
+def _schema_vs_catalog_brief() -> dict[str, Any]:
+    try:
+        from tools.schema_tool.schema_diff import compare_schema_vs_catalog
+
+        diff = compare_schema_vs_catalog(sample_live=False)
+    except Exception:
+        return {}
+    if diff.get("error"):
+        return {"error": diff.get("error")}
+    return {
+        "matched_count": diff.get("matched_count"),
+        "schema_only_count": diff.get("schema_only_count"),
+        "catalog_only_count": diff.get("catalog_only_count"),
+        "matched": (diff.get("matched") or [])[:8],
+        "note": "名称启发式对照，默认未抽检现场数据。",
+    }
+
+
 def _write_markdown(payload: dict[str, Any], path: str) -> None:
     lines: list[str] = [
-        "# 中软 MES 表结构摸底报告",
+        "# MES 表结构摸底报告",
         "",
         f"- 生成时间：{payload.get('built_at')}",
         f"- 来源：`{payload.get('source')}`",
@@ -196,13 +215,30 @@ def _write_markdown(payload: dict[str, Any], path: str) -> None:
         lines.append(f"- 路径：{s.get('path_summary')}")
         lines.append("")
 
+    diff = payload.get("schema_vs_catalog") or {}
+    if diff and not diff.get("error"):
+        lines.extend(
+            [
+                "## 3b. 表结构 vs 接口目录（启发式）",
+                "",
+                f"- 对得上约 {diff.get('matched_count')} 对；仅文档有 {diff.get('schema_only_count')}；仅接口有 {diff.get('catalog_only_count')}",
+                f"- {diff.get('note') or ''}",
+                "",
+            ]
+        )
+        for m in diff.get("matched") or []:
+            lines.append(
+                f"- `{m.get('table')}` ↔ `{m.get('entity')}`（{m.get('entity_label') or ''}）"
+            )
+        lines.append("")
+
     live = payload.get("live_queryable_entities") or []
     if live:
         lines.extend(
             [
                 "## 4. 助手模拟演示实体（非平台能力背书）",
                 "",
-                "> 以下来自 entities.json，仅表示助手可演示的查/导能力，**不是**中软 MES 表结构平台能力清单。",
+                "> 以下来自当前资料包可查对象目录，仅表示助手能查/导哪些接口对象，**不是**表结构能力清单。",
                 "",
             ]
         )

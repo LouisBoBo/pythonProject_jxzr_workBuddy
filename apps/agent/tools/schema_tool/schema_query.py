@@ -1,7 +1,5 @@
 """
-中软 MES 表结构分析工具（只读文档，不影响 ERP 查询/导入）。
-
-供 Agent 调用：列出业务域、检索表、查看单表、汇总业务能力。
+当前资料包表结构分析工具（只读文档，不影响 ERP 查询/导入）。
 """
 from __future__ import annotations
 
@@ -41,9 +39,9 @@ _PREFIX_CAPABILITY = {
 
 
 def list_schema_domains() -> dict[str, Any]:
-    """列出中软 MES 数据字典中的业务域（章节）及每域表数量。
+    """列出当前资料包表结构文档中的业务域（章节）及每域表数量。
 
-    用于回答「平台有哪些业务模块/域」；不读 ERP，只解析本地表结构文档。
+    用于回答「MES 有哪些业务模块/域」；不读 ERP，只解析本地表结构文档。
     """
     try:
         index = build_index()

@@ -27,7 +27,7 @@ description: >-
 
 1. 确认实体 id
 2. `export_platform_data(entity=..., output_format="csv"|"excel"|"json")`
-3. 告知导出路径与行数
+3. 必须把工具返回的绝对路径 `file` 和行数 `rows` 告诉用户；不要编造
 
 ### 仅转换格式
 

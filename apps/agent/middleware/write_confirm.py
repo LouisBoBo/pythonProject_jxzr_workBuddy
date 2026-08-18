@@ -115,12 +115,22 @@ def _preview_import(args: dict[str, Any]) -> dict[str, Any]:
     columns = pv.get("columns") or []
     sample = pv.get("preview") or []
     file_name = pv.get("file") or os.path.basename(file_path)
-    summary = f"将导入 {row_count} 行到「{target_entity}」（文件 {file_name}）"
+    target_label = target_entity
+    try:
+        from tools.query_tool.entity_catalog import get_entity, resolve_entity_id
+
+        eid = resolve_entity_id(target_entity) or target_entity
+        meta = get_entity(eid) or {}
+        target_label = str(meta.get("label") or eid)
+    except Exception:
+        target_label = target_entity
+    summary = f"将导入 {row_count} 行到「{target_label}」（文件 {file_name}）"
     return {
         "tool": "import_file_to_platform",
         "file": file_name,
         "file_path": file_path,
         "target_entity": target_entity,
+        "target_label": target_label,
         "row_count": row_count,
         "columns": columns,
         "sample_rows": sample[:5],

@@ -378,6 +378,19 @@ def _frontend_import_rules() -> str:
     )
 
 
+def _data_stack_chain_rules(user_message: str, *, task_tier: str = "") -> str:
+    """列表/表单新字段必须前后端+库表一起改；纯样式不套。"""
+    if (task_tier or "").strip().lower() == "css_layout":
+        return ""
+    try:
+        from local_dev.stack_chain import DATA_STACK_CHAIN_RULES, looks_like_data_ui_change
+    except Exception:
+        return ""
+    if looks_like_data_ui_change(user_message or ""):
+        return DATA_STACK_CHAIN_RULES + "\n"
+    return ""
+
+
 def _ui_product_design_rules(user_message: str, *, tier: str = "default") -> str:
     """页面/仪表盘产品设计：禁止照抄首页与通用 Admin 模板（Skill ui-product-design）。"""
     if (tier or "").strip().lower() == "css_layout":
@@ -546,6 +559,7 @@ def build_first_turn_prompt(
         f"{ui_rules}"
         f"{design_rules}"
         f"{_frontend_import_rules()}"
+        f"{_data_stack_chain_rules(raw_msg, task_tier=tier)}"
         "首轮需求：\n"
         f"{user_message}\n"
         "验收：css_layout 无需补测套件；无权限的依赖不要伪造；不要修改与需求无关的配置密钥。"
@@ -624,6 +638,7 @@ def build_followup_prompt(
         f"{ui_rules}"
         f"{design_rules}"
         f"{_frontend_import_rules()}"
+        f"{_data_stack_chain_rules(raw_msg, task_tier=tier)}"
         f"{prior_block}"
         "本轮用户补充：\n"
         f"{user_message}\n"

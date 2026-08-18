@@ -13,6 +13,8 @@ from .dev_runtime import ensure_dev_preview
 from .import_check import find_broken_relative_imports, format_repair_prompt
 from .prompts import SYSTEM_PROMPT, TOOL_SPECS, build_user_prompt, parse_plan_steps_from_text
 from .sandbox import prepare_sandbox, sync_changed_to_target
+from .stack_chain import looks_like_data_ui_change
+from .stack_chain_gate import format_gate_summary, run_stack_chain_gate
 from .tools_fs import SandboxFS
 from .workspace import validate_workspace
 
@@ -414,6 +416,21 @@ def run_job(
         synced = sync_changed_to_target(sandbox_path, target, changed, cfg=cfg)
         step(f"已同步 {len(synced)} 个文件", sid="sync", state="done")
 
+        gate_result: dict[str, Any] = {"skipped": True, "actions": []}
+        if looks_like_data_ui_change(requirement):
+            step("数据链路闸门：补列并回填空值…", sid="stack-gate")
+            try:
+                gate_result = run_stack_chain_gate(target, requirement=requirement)
+                n_act = len(gate_result.get("actions") or [])
+                if n_act:
+                    step(f"数据链路闸门已处理 {n_act} 项", sid="stack-gate", state="done")
+                else:
+                    step("数据链路闸门已检查，无需回填", sid="stack-gate", state="done")
+            except Exception as gate_exc:  # noqa: BLE001
+                err_name = type(gate_exc).__name__
+                gate_result = {"skipped": False, "actions": [], "error": err_name}
+                step(f"数据链路闸门未完全执行（{err_name}）", sid="stack-gate", state="done")
+
         if job_store.is_cancel_requested(data_dir, job_id):
             raise RuntimeError("任务已取消")
 
@@ -462,11 +479,14 @@ def run_job(
                 f"同步已完成，预览未自动就绪："
                 f"{preview.get('notes') or '请手动启动该工程前后端'}\n"
             )
+        gate_md = format_gate_summary(gate_result)
+        gate_block = f"{gate_md}\n\n" if gate_md else ""
         summary = (
             f"## 已完成本机写码\n\n"
             f"已写入目标目录：`{target}`\n\n"
             f"变更文件（{len(synced)}）：\n{files_md}\n\n"
             f"{preview_md}\n"
+            f"{gate_block}"
             f"沙箱 id：`{job_id}`\n\n"
             f"本机写码不经 GitHub / Cursor Cloud。\n"
         )

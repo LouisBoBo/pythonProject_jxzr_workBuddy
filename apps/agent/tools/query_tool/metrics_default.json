@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "note": "通用指标口径模板。实体/字段/取值在运行时绑定当前资料包；换平台可在资料包放 metrics.json 按 id 覆盖。不要把某一套 MES 的实体 id 写进本文件。",
+  "metrics": [
+    {
+      "id": "wip",
+      "label": "在制",
+      "aliases": ["在制", "在制工单", "进行中", "生产中"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "definition": "状态属于进行中/在制（已开工、尚未完工），不含待开工与已完工。",
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
+          "include_values": ["in_progress", "processing", "producing", "wip", "running", "进行中", "在制", "生产中"]
+        }
+      ]
+    },
+    {
+      "id": "pending",
+      "label": "待处理",
+      "aliases": ["待处理", "待开工", "未开始", "pending"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "definition": "状态属于待处理/待开工，尚未开始生产。",
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
+          "include_values": ["pending", "draft", "released", "created", "open", "待处理", "待开工", "未开始"]
+        }
+      ]
+    },
+    {
+      "id": "unfinished",
+      "label": "未完工",
+      "aliases": ["未完工", "未完成", "还没完"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "definition": "状态不属于已完工/已关闭。",
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
+          "include_values": ["pending", "in_progress", "processing", "producing", "wip", "draft", "进行中", "待处理", "在制"],
+          "exclude_values": ["completed", "closed", "done", "finished", "cancelled", "已完成", "已关闭", "完工"]
+        }
+      ]
+    },
+    {
+      "id": "urgent-unfinished",
+      "label": "紧急未完工",
+      "aliases": ["紧急未完工", "紧急单", "急单", "高优先级未完工", "紧急工单", "紧急工单有哪些"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "definition": "优先级为紧急/高，且状态尚未完工/关闭。",
+      "clauses": [
+        {
+          "field_role": "priority",
+          "field_hints": ["priority", "pri", "urgency", "priorityLevel", "urgentLevel", "优先级"],
+          "include_values": ["urgent", "high", "critical", "紧急", "高"]
+        },
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
+          "include_values": ["pending", "in_progress", "processing", "producing", "wip", "draft", "进行中", "待处理", "在制"],
+          "exclude_values": ["completed", "closed", "done", "finished", "cancelled", "已完成", "已关闭", "完工"]
+        }
+      ]
+    },
+    {
+      "id": "completed",
+      "label": "已完工",
+      "aliases": ["已完工", "已完成", "完工"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "definition": "状态属于已完工/已完成。",
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
+          "include_values": ["completed", "done", "finished", "complete", "已完成", "完工", "已完工"]
+        }
+      ]
+    },
+    {
+      "id": "completed-today",
+      "label": "当日完工",
+      "aliases": ["当日完工", "今天完工", "今日完工"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "definition": "已完工，且接口支持日期筛选时限定当天；否则只按完工状态查并注明未能限定当日。",
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
+          "include_values": ["completed", "done", "finished", "complete", "已完成", "完工", "已完工"]
+        },
+        {
+          "field_role": "date",
+          "field_hints": ["end_date", "finished_at", "completed_at", "complete_date", "finish_date", "endTime", "actual_end_time"],
+          "relative": "today"
+        }
+      ]
+    }
+  ]
+}

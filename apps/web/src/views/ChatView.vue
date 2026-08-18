@@ -5677,13 +5677,6 @@ const IMPORT_COL_LABELS = {
   assignee: '负责人',
 }
 
-const ENTITY_LABELS = {
-  'work-orders': '工单',
-  'production-plans': '生产计划',
-  products: '产品',
-  devices: '设备',
-}
-
 /**
  * 固定导入预览正文为「图二」格式：
  * 文件预览：N 条XX记录，字段与 `entity` 实体匹配。
@@ -5694,7 +5687,7 @@ function buildImportSummaryMarkdown(preview) {
   if (!preview || typeof preview !== 'object') return ''
   const file = preview.file || ''
   const entity = preview.target_entity || ''
-  const entityLabel = ENTITY_LABELS[entity] || '记录'
+  const entityLabel = String(preview.target_label || preview.label || '').trim()
   const rowCount = preview.row_count
   const n = rowCount != null ? Number(rowCount) : null
   const sample = Array.isArray(preview.sample_rows)
@@ -5708,8 +5701,8 @@ function buildImportSummaryMarkdown(preview) {
         : []
   ).slice(0, 8)
 
-  const recordWord = entityLabel === '记录' ? '记录' : `${entityLabel}记录`
-  const countWord = entityLabel === '记录' ? '记录' : entityLabel
+  const recordWord = entityLabel ? `${entityLabel}记录` : '记录'
+  const countWord = entityLabel || '记录'
 
   let md = ''
   if (n != null && entity) {
@@ -5725,7 +5718,7 @@ function buildImportSummaryMarkdown(preview) {
   if (n != null) summaryBits.push(`共 **${n} 条${countWord}**`)
   if (entity) {
     summaryBits.push(
-      entityLabel !== '记录'
+      entityLabel
         ? `目标实体 \`${entity}\`（${entityLabel}）`
         : `目标实体 \`${entity}\``
     )

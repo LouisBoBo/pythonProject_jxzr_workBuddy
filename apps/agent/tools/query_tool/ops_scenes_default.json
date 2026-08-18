@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "note": "运维值班场景模板。实体/字段绑当前资料包；换平台可在资料包放 ops_scenes.json 按 id 覆盖。",
+  "scenes": [
+    {
+      "id": "urgent-backlog",
+      "label": "紧急未完工堆积",
+      "aliases": ["紧急工单", "紧急工单有哪些", "紧急未完工", "紧急单", "急单", "急单堆积", "异常紧急单", "高优先级未完工"],
+      "kind": "metric_chain",
+      "metric": "urgent-unfinished",
+      "summarize_group_by": "状态",
+      "exportable": true,
+      "definition": "查紧急/高优先级且未完工清单 → 按状态汇总 → 可选导出。写状态变更须走确认卡，禁止默写。"
+    },
+    {
+      "id": "wip-snapshot",
+      "label": "在制一览",
+      "aliases": ["在制", "在制工单", "在制有多少"],
+      "kind": "metric_chain",
+      "metric": "wip",
+      "summarize_group_by": "优先级",
+      "exportable": true,
+      "definition": "按「在制」口径查清单，可按优先级汇总，可导出。"
+    },
+    {
+      "id": "unfinished-snapshot",
+      "label": "未完工一览",
+      "aliases": ["未完工", "未完成工单", "还没完的单"],
+      "kind": "metric_chain",
+      "metric": "unfinished",
+      "summarize_group_by": "状态",
+      "exportable": true,
+      "definition": "按「未完工」口径查清单并汇总。"
+    },
+    {
+      "id": "status-breakdown",
+      "label": "按状态汇总",
+      "aliases": ["按状态各多少", "状态分布", "工单状态汇总"],
+      "kind": "summarize",
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "work order", "mo"],
+      "group_by": "状态",
+      "definition": "对当前目录匹配的对象按状态分组计数（轻量汇总，非 SQL）。"
+    },
+    {
+      "id": "export-list",
+      "label": "导出业务清单",
+      "aliases": ["导出清单", "导出工单", "导出来", "下载清单"],
+      "kind": "export",
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "work order", "mo"],
+      "definition": "导出当前目录匹配对象的数据；回复绝对路径与行数。"
+    },
+    {
+      "id": "api-health-sandbox",
+      "label": "接口是否可用",
+      "aliases": ["接口通不通", "探活", "接口健康", "swagger 测一下", "API 好不好使"],
+      "kind": "api_health",
+      "definition": "文档接口测试默认沙箱探活，禁止默认打生产；与「MES 查数通不通」区分。"
+    },
+    {
+      "id": "write-audit-who",
+      "label": "谁导入/写了什么",
+      "aliases": ["谁导入了", "导入记录", "谁写过", "写操作记录", "谁改了什么"],
+      "kind": "write_audit",
+      "audit_event": "write_confirmed",
+      "definition": "查助手写操作审计（近 30 天默认），不是 ERP 工单表。"
+    },
+    {
+      "id": "write-audit-failed",
+      "label": "导入/写失败回看",
+      "aliases": ["导入失败", "写入失败", "写失败记录", "为什么导入失败"],
+      "kind": "write_audit",
+      "audit_event": "write_failed",
+      "definition": "查 write_failed 审计；可提示重试须重新走确认卡，禁止默写。"
+    },
+    {
+      "id": "login-mes-auth-help",
+      "label": "登录/Token/查数鉴权",
+      "aliases": ["登录不了", "token 过期", "401", "MES 401", "未授权", "MES 账号", "查数要密码"],
+      "kind": "guidance",
+      "definition": "区分 WorkBuddy 登录与 MES 接口账号；不泄露密钥。"
+    },
+    {
+      "id": "catalog-empty-help",
+      "label": "查不到可查对象",
+      "aliases": ["没有可查对象", "目录为空", "未配置 MES", "怎么接入"],
+      "kind": "guidance",
+      "definition": "引导系统配置 → MES 接入（资料包 + OpenAPI + 接口账号）。"
+    },
+    {
+      "id": "ops-diagnose",
+      "label": "值班故障排查",
+      "aliases": ["查不到数据", "为什么没数据", "故障排查", "排查一下", "接口超时", "实体混了", "怎么回事查不到"],
+      "kind": "diagnose",
+      "definition": "按目录是否为空、鉴权、连通、404、问错对象分支提示。只读日志，不写 MES。"
+    },
+    {
+      "id": "ops-daily-brief",
+      "label": "值班口径简报",
+      "aliases": ["值班简报", "产线日报", "异常日报", "今日简报", "运维简报"],
+      "kind": "daily_brief",
+      "definition": "对当前目录能绑定的指标口径做只读摘要；绑不上则跳过，不套其它 MES。"
+    }
+  ]
+}
