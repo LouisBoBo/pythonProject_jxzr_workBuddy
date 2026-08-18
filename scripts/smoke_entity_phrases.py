@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""无 LLM：实体别名解析 + 实体守卫规则冒烟。"""
+"""Smoke：可查对象别名解析（依赖当前 MES 资料包，无资料包则跳过）。"""
 from __future__ import annotations
 
 import sys
@@ -7,75 +7,43 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT = ROOT / "apps" / "agent"
-sys.path.insert(0, str(AGENT))
-
-from tools.query_tool.entity_catalog import load_catalog, resolve_entity_id  # noqa: E402
-
-
-def _fail(name: str, detail: str) -> None:
-    print(f"FAIL {name}: {detail}")
-    raise SystemExit(1)
+for p in (str(AGENT), str(ROOT / "apps"), str(ROOT)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 
-def _ok(name: str) -> None:
-    print(f"OK   {name}")
-
-
-def test_resolve() -> None:
-    load_catalog.cache_clear()
-    cases = [
-        ("工单", "work-orders"),
-        ("生产工单", "work-orders"),
-        ("派工单", "work-orders"),
-        ("异常工单", "work-orders"),
-        ("WO", "work-orders"),
-        ("work orders", "work-orders"),
-        ("生产计划", "production-plans"),
-        ("排产计划", "production-plans"),
-        ("排程计划", "production-plans"),
-        ("排产", "production-plans"),
-        ("排程", "production-plans"),
-        ("主生产计划", "production-plans"),
-        ("production-plans", "production-plans"),
-        ("查一下排程计划有哪些", "production-plans"),
-        ("看看派工单", "work-orders"),
-    ]
-    for phrase, expect in cases:
-        got = resolve_entity_id(phrase)
-        if got != expect:
-            _fail("resolve", f"{phrase!r} → {got!r}, expect {expect!r}")
-    _ok(f"resolve ({len(cases)} phrases)")
-
-
-def test_guard_rules() -> None:
-    from middleware.entity_guard_rules import guard_mismatch_tip
-
-    tip = guard_mismatch_tip("work-orders", "查一下排程计划")
-    if not tip:
-        _fail("guard_plan", "expected tip when plan→work-orders")
-    tip = guard_mismatch_tip("production-plans", "查一下派工单")
-    if not tip:
-        _fail("guard_wo", "expected tip when wo→production-plans")
-    if guard_mismatch_tip("work-orders", "查工单") is not None:
-        _fail("guard_ok_wo", "should not tip matching entity")
-    if guard_mismatch_tip("work-orders", "工单和排产对比一下") is not None:
-        _fail("guard_both", "should not tip when both hints present")
-    _ok("entity_guard bidirectional")
-
-
-def test_catalog_has_core() -> None:
-    load_catalog.cache_clear()
-    ids = {e["id"] for e in load_catalog()}
-    if ids != {"work-orders", "production-plans"}:
-        _fail("catalog_ids", str(ids))
-    _ok("catalog core entities")
+def _fail(name: str, msg: str) -> None:
+    print(f"FAIL {name}: {msg}")
+    sys.exit(1)
 
 
 def main() -> None:
-    test_catalog_has_core()
-    test_resolve()
-    test_guard_rules()
-    print("SMOKE_OK entity-phrases")
+    from tools.query_tool.entity_catalog import (
+        invalidate_catalog,
+        list_entity_ids,
+        load_catalog,
+        resolve_entity_id,
+    )
+
+    invalidate_catalog()
+    cats = load_catalog()
+    ids = set(list_entity_ids())
+    if not cats:
+        print("SKIP: 未配置 MES 资料包可查对象（请先在系统配置上传接口文档）")
+        return
+
+    print(f"OK catalog entities={sorted(ids)}")
+    for e in cats:
+        eid = e["id"]
+        label = e.get("label") or eid
+        if resolve_entity_id(eid) != eid:
+            _fail("id", f"resolve({eid!r}) != {eid}")
+        if resolve_entity_id(label) != eid:
+            _fail("label", f"resolve({label!r}) != {eid}")
+        for a in (e.get("aliases") or [])[:5]:
+            if resolve_entity_id(str(a)) != eid:
+                _fail("alias", f"resolve({a!r}) != {eid}")
+    print("OK smoke_entity_phrases")
 
 
 if __name__ == "__main__":

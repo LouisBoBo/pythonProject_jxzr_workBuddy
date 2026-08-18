@@ -16,7 +16,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (resp) => resp,
   (err) => {
-    if (err?.response?.status === 401 && !String(err?.config?.url || '').includes('/auth/login')) {
+    if (err?.response?.status === 401 && !String(err?.config?.url || '').includes('/auth/login') && !String(err?.config?.url || '').includes('/auth/exchange')) {
       clearSession()
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
         window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
@@ -270,6 +270,52 @@ export function fetchSettings() {
 
 export function saveSettings(values) {
   return api.put('/settings', { values: values || {} })
+}
+
+/** MES 资料包状态（表结构/实体来源） */
+export function fetchMesProfile() {
+  return api.get('/mes-profile')
+}
+
+export function activateMesProfile(profileId) {
+  return api.put('/mes-profile/active', { profile_id: profileId || '' })
+}
+
+export function uploadMesSchema(profileId, file, activate = true) {
+  const fd = new FormData()
+  fd.append('profile_id', profileId)
+  fd.append('activate', activate ? 'true' : 'false')
+  fd.append('file', file)
+  return api.post('/mes-profile/upload-schema', fd)
+}
+
+export function uploadMesOpenApi(profileId, file, activate = true) {
+  const fd = new FormData()
+  fd.append('profile_id', profileId)
+  fd.append('activate', activate ? 'true' : 'false')
+  fd.append('file', file)
+  return api.post('/mes-profile/upload-openapi', fd, { timeout: 120000 })
+}
+
+/** 从 /docs 或 /openapi.json 地址导入接口文档 */
+export function importMesOpenApiUrl(profileId, url, activate = true) {
+  return api.post(
+    '/mes-profile/import-openapi-url',
+    {
+      profile_id: profileId,
+      url,
+      activate: !!activate,
+    },
+    { timeout: 120000 },
+  )
+}
+
+export function uploadMesEntities(profileId, file, activate = true) {
+  const fd = new FormData()
+  fd.append('profile_id', profileId)
+  fd.append('activate', activate ? 'true' : 'false')
+  fd.append('file', file)
+  return api.post('/mes-profile/upload-entities', fd)
 }
 
 /** 当前用户上次本机写码目录 */

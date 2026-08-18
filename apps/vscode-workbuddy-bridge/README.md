@@ -21,4 +21,4 @@
 - Bridge 离线可用 `request_git_review` 审本机目录 / Git 仓
 - **安全**：任务 `workspace_root` 仅限当前打开/最近工程；拒绝路径穿越与 `.env`/密钥类文件
 
-新人接入见仓库 `docs/IDE代码审核开发者接入手册.md`。
+新人接入见仓库 `docs/写码与审码/IDE代码审核开发者接入手册.md`。

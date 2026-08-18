@@ -1,6 +1,6 @@
 /**
  * 平台嵌入：从 URL 拉起身份与页上下文。
- * 详见 docs/平台嵌入说明.md
+ * 详见 docs/MES业务/平台嵌入说明.md
  */
 import { getSession, setSession } from './auth.js'
 
@@ -65,34 +65,12 @@ function pickContext(params) {
   return Object.keys(ctx).length ? ctx : null
 }
 
-/** 只读 JWT payload（不校验签名）；归属以服务端解析为准。 */
-function decodeJwtPayload(token) {
-  try {
-    const parts = String(token).split('.')
-    if (parts.length < 2) return {}
-    let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-    payload += '='.repeat((4 - (payload.length % 4)) % 4)
-    const json = atob(payload)
-    const data = JSON.parse(json)
-    return data && typeof data === 'object' ? data : {}
-  } catch {
-    return {}
-  }
-}
-
-function jwtDisplayName(payload) {
-  for (const key of ['preferred_username', 'username', 'unique_name', 'name']) {
-    const v = payload?.[key]
-    if (typeof v === 'string' && v.trim()) return v.trim()
-  }
-  return ''
-}
-
 /**
  * 在创建 router 前调用：消费 URL 中的 token / 上下文，并清理敏感 query。
- * @returns {{ embedded: boolean, sessionApplied: boolean }}
+ * 宿主 token 须经 /api/auth/exchange 换成 WorkBuddy 会话，不直接写入。
+ * @returns {Promise<{ embedded: boolean, sessionApplied: boolean }>}
  */
-export function bootstrapEmbedFromUrl() {
+export async function bootstrapEmbedFromUrl() {
   if (typeof window === 'undefined') return { embedded: false, sessionApplied: false }
 
   const url = new URL(window.location.href)
@@ -107,36 +85,7 @@ export function bootstrapEmbedFromUrl() {
   if (embedFlag) setEmbedMode(true)
   if (ctx) setPageContext(ctx)
 
-  let sessionApplied = false
-  if (token) {
-    const prev = getSession() || {}
-    const payload = decodeJwtPayload(token)
-    const jwtName = jwtDisplayName(payload)
-    // 归属键优先 JWT sub；URL user_id 仅作兜底展示，不当最终信任源
-    const user_id =
-      payload.sub != null && String(payload.sub).trim() !== ''
-        ? String(payload.sub).trim()
-        : userIdRaw != null && String(userIdRaw).trim() !== ''
-          ? String(userIdRaw).trim()
-          : prev.user_id ?? null
-    const expires_at =
-      typeof payload.exp === 'number'
-        ? payload.exp
-        : prev.expires_at ?? null
-    setSession({
-      ...prev,
-      access_token: token,
-      // 展示名：JWT > URL > 旧会话；服务端仍以 JWT sub 定归属
-      username: jwtName || username || prev.username || displayName || 'embed-user',
-      display_name: displayName || username || jwtName || prev.display_name || '',
-      user_id,
-      expires_at,
-      from_embed: true,
-    })
-    sessionApplied = true
-  }
-
-  // 去掉敏感与一次性参数，保留 thread 等业务 query
+  // 先去掉地址栏敏感参数，再兑换（避免 token 留在历史记录）
   const strip = [
     'access_token',
     'token',
@@ -158,10 +107,40 @@ export function bootstrapEmbedFromUrl() {
       changed = true
     }
   }
-  // embed=1 可保留，便于刷新仍识别嵌入布局；也可去掉仅靠 sessionStorage
   if (changed) {
     const next = url.pathname + (params.toString() ? `?${params.toString()}` : '') + url.hash
     window.history.replaceState({}, '', next)
+  }
+
+  let sessionApplied = false
+  if (token) {
+    try {
+      const resp = await fetch('/api/auth/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          username,
+          display_name: displayName,
+        }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        const prev = getSession() || {}
+        setSession({
+          ...prev,
+          access_token: data.access_token,
+          username: data.username || username || displayName || prev.username || 'embed-user',
+          display_name: displayName || data.username || prev.display_name || '',
+          user_id: data.user_id != null ? data.user_id : userIdRaw,
+          expires_at: data.expires_at ?? prev.expires_at ?? null,
+          from_embed: true,
+        })
+        sessionApplied = true
+      }
+    } catch {
+      /* 不把未兑换的宿主 token 写入会话 */
+    }
   }
 
   return { embedded: embedFlag || isEmbedMode(), sessionApplied }

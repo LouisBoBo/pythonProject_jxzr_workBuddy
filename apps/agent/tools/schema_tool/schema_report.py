@@ -156,7 +156,7 @@ def _build_report_payload(
         "scenarios": scenarios_brief,
         "live_queryable_entities": _live_entities(),
         "disclaimer": (
-            "本报告由本地《中软MES数据库表结构》推断，用于实施摸底对齐；"
+            "本报告由当前已配置的 MES 表结构文档推断，用于实施摸底对齐；"
             "不是实时数据库快照，也不代表 WorkBuddy 已对接全部 REST。"
         ),
     }
@@ -311,7 +311,7 @@ def export_schema_survey_report(
     try:
         payload = _build_report_payload(focus, include_fields, fields_per_table)
     except Exception as e:
-        return {"error": str(e), "hint": "请确认 docs/中软MES数据库表结构.md 已保存"}
+        return {"error": str(e), "hint": "请在「系统配置 → MES 接入」上传表结构文档"}
 
     out_dir = _ensure_export_dir()
     stamp = _stamp()

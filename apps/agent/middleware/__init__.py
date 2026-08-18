@@ -4,7 +4,7 @@
 Deep Agents 已内置 Skills / Filesystem / Summarization 等中间件；
 这里放「你们业务自己的」横切逻辑（审计、守卫、配额等）。
 
-启用方式见 agents/agent.py 与 docs/DeepAgents-Middleware使用指南.md。
+启用方式见 agents/agent.py 与 docs/Agent开发/DeepAgents-Middleware使用指南.md。
 """
 from __future__ import annotations
 

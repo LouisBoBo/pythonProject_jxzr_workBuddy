@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from routes.auth import require_auth
+from routes.auth import assert_settings_admin, require_auth
 from routes_config import DATA_DIR
 import user_prefs
 from settings_store import (
@@ -68,7 +68,36 @@ _FIELD_META: list[dict[str, str]] = [
         "label": "视觉模型名称",
         "secret": "0",
     },
-    # ERP 平台地址暂不在 UI 展示（仍可用 .env PLATFORM_BASE_URL；登录失败会回落探活沙箱）
+    {
+        "key": "MES_PROFILE_ID",
+        "group": "mes",
+        "label": "MES / ERP 平台名称",
+        "secret": "0",
+    },
+    {
+        "key": "PLATFORM_BASE_URL",
+        "group": "mes",
+        "label": "MES / ERP 平台访问地址",
+        "secret": "0",
+    },
+    {
+        "key": "MES_API_USERNAME",
+        "group": "mes",
+        "label": "MES 接口账号",
+        "secret": "0",
+    },
+    {
+        "key": "MES_API_PASSWORD",
+        "group": "mes",
+        "label": "MES 接口密码",
+        "secret": "1",
+    },
+    {
+        "key": "MES_API_ENTERPRISE_CODE",
+        "group": "mes",
+        "label": "MES 企业编码",
+        "secret": "0",
+    },
     {
         "key": "CURSOR_API_KEY",
         "group": "cursor_dev",
@@ -98,11 +127,12 @@ _FIELD_META: list[dict[str, str]] = [
 _GROUP_LABELS = {
     "llm": "对话模型",
     "vision": "视觉模型",
+    "mes": "MES 接入",
     "cursor_dev": "写码车道",
     "git_review": "Git 审码拉仓",
 }
 
-_GROUP_ORDER = ("llm", "vision", "cursor_dev", "git_review")
+_GROUP_ORDER = ("llm", "vision", "mes", "cursor_dev", "git_review")
 
 
 class SettingsUpdateBody(BaseModel):
@@ -232,6 +262,13 @@ def _apply_runtime_reload() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("reset_agent 失败（下次对话仍可能用旧客户端）: %s", exc)
 
+    try:
+        from mes_profile import invalidate_mes_data_caches
+
+        invalidate_mes_data_caches()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("invalidate_mes_data_caches 失败: %s", exc)
+
     return {
         **_llm_status(Config),
         "cursor_dev_available": cursor_available,
@@ -316,7 +353,11 @@ async def get_settings(_auth: tuple = Depends(require_auth)) -> dict[str, Any]:
             "cursor_dev_available": cursor_available,
             "cursor_dev_reason": cursor_reason,
         },
-        "hint": "对话/视觉模型均支持 OpenAI 兼容协议。截图改需求依赖视觉模型 Key。密钥留空保存不修改。.env 不会被改写。",
+        "hint": (
+            "对话/视觉模型均支持 OpenAI 兼容协议。截图改需求依赖视觉模型 Key。"
+            "未配置 MES 资料包时无法查数/摸底，请先在 MES 接入上传表结构与接口文档。"
+            "密钥留空保存不修改。.env 不会被改写。"
+        ),
     }
 
 
@@ -325,13 +366,16 @@ async def get_settings(_auth: tuple = Depends(require_auth)) -> dict[str, Any]:
     summary="更新系统配置",
     description=(
         "部分更新整站配置并立即热生效（重建对话 Agent、刷新写码配置）。"
-        "空字符串清除对应界面覆盖。不写回 .env。所有登录用户可改。"
+        "空字符串清除对应界面覆盖。不写回 .env。"
+        "若环境变量 SETTINGS_ADMIN_USERS 非空，仅名单内用户可改。"
+        "界面 PLATFORM_BASE_URL 不用于 WorkBuddy 登录。"
     ),
 )
 async def put_settings(
     body: SettingsUpdateBody,
-    _auth: tuple = Depends(require_auth),
+    auth: tuple = Depends(require_auth),
 ) -> dict[str, Any]:
+    assert_settings_admin(auth)
     values = body.values or {}
     # MAIN_MODEL 同步写 MODEL_NAME，避免两处不一致
     if "MAIN_MODEL" in values and "MODEL_NAME" not in values:
@@ -385,26 +429,32 @@ async def put_settings(
         elif str(raw_plat).strip() == "":
             values["PLATFORM_BASE_URL"] = ""
         else:
-            from urllib.parse import urlparse
+            from safe_http import assert_http_url_allowed
 
-            text = str(raw_plat).strip().rstrip("/")
             try:
-                parsed = urlparse(text)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail=f"PLATFORM_BASE_URL 无效：{exc}") from exc
-            if (parsed.scheme or "").lower() not in {"http", "https"}:
+                values["PLATFORM_BASE_URL"] = assert_http_url_allowed(
+                    str(raw_plat), what="PLATFORM_BASE_URL"
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if "MES_PROFILE_ID" in values:
+        values = dict(values)
+        raw_pid = values.get("MES_PROFILE_ID")
+        if raw_pid is None:
+            pass
+        elif str(raw_pid).strip() == "":
+            values["MES_PROFILE_ID"] = ""
+        else:
+            from mes_profile import sanitize_profile_id
+
+            pid = sanitize_profile_id(str(raw_pid))
+            if not pid:
                 raise HTTPException(
                     status_code=400,
-                    detail="PLATFORM_BASE_URL 仅允许 http/https",
+                    detail="系统名称无效：可用中文或英文，勿含空格/斜杠，最长 64 字",
                 )
-            if parsed.username or parsed.password:
-                raise HTTPException(
-                    status_code=400,
-                    detail="PLATFORM_BASE_URL 请勿内嵌账号或密码",
-                )
-            if not parsed.netloc:
-                raise HTTPException(status_code=400, detail="PLATFORM_BASE_URL 缺少主机名")
-            values["PLATFORM_BASE_URL"] = text
+            values["MES_PROFILE_ID"] = pid
 
     update_settings(values)
     # 不在日志打印 values（可能含密钥）
@@ -412,6 +462,13 @@ async def put_settings(
         "settings updated keys=%s",
         sorted(k for k in values if str(k).strip() in ALLOWED_KEYS),
     )
+    if "MES_PROFILE_ID" in values or "MES_SCHEMA_DOC" in values:
+        try:
+            from mes_profile import invalidate_mes_data_caches
+
+            invalidate_mes_data_caches()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mes profile cache invalidate failed: %s", exc)
     status = _apply_runtime_reload()
 
     from config import Config
@@ -445,5 +502,9 @@ async def put_settings(
             **_llm_status(Config),
             **status,
         },
-        "hint": "对话/视觉模型均支持 OpenAI 兼容协议。截图改需求依赖视觉模型 Key。密钥留空保存不修改。.env 不会被改写。",
+        "hint": (
+            "对话/视觉模型均支持 OpenAI 兼容协议。截图改需求依赖视觉模型 Key。"
+            "未配置 MES 资料包时无法查数/摸底，请先在 MES 接入上传表结构与接口文档。"
+            "密钥留空保存不修改。.env 不会被改写。"
+        ),
     }

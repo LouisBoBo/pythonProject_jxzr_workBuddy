@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import threading
@@ -34,6 +37,14 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "ZHIPU_BASE_URL",
         # ERP / 平台（桌面同事必配；网页也可覆盖 .env）
         "PLATFORM_BASE_URL",
+        # MES 查数鉴权（调用已导入业务接口；不是 WorkBuddy 登录）
+        "MES_API_USERNAME",
+        "MES_API_PASSWORD",
+        "MES_API_ENTERPRISE_CODE",
+        # MES 资料包（DATA_DIR/mes_profiles/{id}；空=未配置，不使用仓库演示）
+        "MES_PROFILE_ID",
+        # 可选：显式表结构绝对路径（优先于资料包内 schema.md）
+        "MES_SCHEMA_DOC",
         # 兼容旧字段（仍可从 .env / 历史 settings 解析）
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
@@ -60,11 +71,13 @@ SECRET_KEYS: frozenset[str] = frozenset(
         "DEEPSEEK_API_KEY",
         "SILICONFLOW_API_KEY",
         "CURSOR_API_KEY",
+        "MES_API_PASSWORD",
     }
 )
 
 _lock = threading.Lock()
 _cache: dict[str, str] | None = None
+_ENC_PREFIX = "enc:v1:"
 
 
 def _data_dir() -> Path:
@@ -72,6 +85,72 @@ def _data_dir() -> Path:
     if raw:
         return Path(raw).expanduser().resolve()
     return (_REPO_ROOT / "data").resolve()
+
+
+def _settings_key() -> bytes:
+    explicit = (os.getenv("WORKBUDDY_SETTINGS_KEY") or "").strip()
+    if explicit:
+        return hashlib.sha256(explicit.encode("utf-8")).digest()
+    path = _data_dir() / ".settings_key"
+    if path.is_file():
+        data = path.read_bytes().strip()
+        if data:
+            return hashlib.sha256(data).digest() if len(data) != 32 else data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = os.urandom(32)
+    path.write_bytes(raw)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return raw
+
+
+def _xor_keystream(data: bytes, key: bytes, iv: bytes) -> bytes:
+    out = bytearray()
+    counter = 0
+    seed = key + iv
+    while len(out) < len(data):
+        block = hashlib.sha256(seed + counter.to_bytes(8, "big")).digest()
+        out.extend(block)
+        counter += 1
+    return bytes(a ^ b for a, b in zip(data, out[: len(data)]))
+
+
+def encrypt_secret(plain: str) -> str:
+    text = (plain or "").strip()
+    if not text or text.startswith(_ENC_PREFIX):
+        return text
+    key = _settings_key()
+    iv = os.urandom(16)
+    raw = text.encode("utf-8")
+    ct = _xor_keystream(raw, key, iv)
+    mac = hmac.new(key, iv + ct, hashlib.sha256).digest()
+    blob = base64.urlsafe_b64encode(iv + mac + ct).decode("ascii")
+    return _ENC_PREFIX + blob
+
+
+def decrypt_secret(value: str) -> str:
+    text = (value or "").strip()
+    if not text.startswith(_ENC_PREFIX):
+        return text
+    try:
+        blob = base64.urlsafe_b64decode(text[len(_ENC_PREFIX) :].encode("ascii"))
+        iv, mac, ct = blob[:16], blob[16:48], blob[48:]
+        key = _settings_key()
+        expect = hmac.new(key, iv + ct, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expect):
+            return ""
+        return _xor_keystream(ct, key, iv).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _restrict_file(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def settings_path() -> Path:
@@ -95,6 +174,7 @@ def _load_unlocked() -> dict[str, str]:
         _cache = {}
         return _cache
     out: dict[str, str] = {}
+    migrate = False
     for k, v in raw.items():
         key = str(k).strip()
         if key not in ALLOWED_KEYS:
@@ -104,8 +184,19 @@ def _load_unlocked() -> dict[str, str]:
         s = str(v).strip() if not isinstance(v, bool) else ("1" if v else "0")
         if s == "":
             continue
+        if key in SECRET_KEYS:
+            if s.startswith(_ENC_PREFIX):
+                s = decrypt_secret(s)
+            else:
+                migrate = True
+            if not s:
+                continue
         out[key] = s
     _cache = out
+    if migrate and out:
+        _persist_unlocked(out)
+    else:
+        _restrict_file(path)
     return _cache
 
 
@@ -188,14 +279,23 @@ def update_settings(partial: dict[str, Any]) -> dict[str, str]:
             else:
                 current[key] = s
 
-        path = settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tmp.replace(path)
+        _persist_unlocked(current)
         global _cache
         _cache = current
         return dict(current)
+
+
+def _persist_unlocked(current: dict[str, str]) -> None:
+    disk = dict(current)
+    for key in SECRET_KEYS:
+        if key in disk and disk[key]:
+            disk[key] = encrypt_secret(disk[key])
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(disk, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    _restrict_file(path)

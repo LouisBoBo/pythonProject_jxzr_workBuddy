@@ -45,26 +45,34 @@ def demo():
         print(f"   {d['entity']}: {d['fields']}  ({d['record_count']} 条)")
     print()
 
-    # 3. 创建测试文件并导入
+    # 3. 创建测试文件并导入（需已配置可查对象）
     print("3. 创建测试数据文件并导入到平台...")
+    entities_list = entities.get("details") or []
+    if not entities_list:
+        print("   跳过：未配置 MES 可查对象。请先在系统配置上传接口文档。")
+        print()
+        print("=" * 60)
+        return
 
+    target = entities_list[0]["entity"]
     test_dir = os.path.join(os.path.dirname(__file__), "test_data")
     os.makedirs(test_dir, exist_ok=True)
 
     import pandas as pd
 
-    # 创建测试 CSV
-    test_csv = os.path.join(test_dir, "new_orders.csv")
+    # 创建测试 CSV（字段尽量通用）
+    test_csv = os.path.join(test_dir, "new_rows.csv")
     df = pd.DataFrame([
-        {"order_no": "WO-T001", "product_name": "PCB-8L", "plan_quantity": 150, "status": "pending"},
-        {"order_no": "WO-T002", "product_name": "PCB-4L", "plan_quantity": 300, "status": "in_progress"},
-        {"order_no": "WO-T003", "product_name": "FPC-2L", "plan_quantity": 800, "status": "pending"},
+        {"name": "demo-1", "status": "pending"},
+        {"name": "demo-2", "status": "in_progress"},
+        {"name": "demo-3", "status": "pending"},
     ])
     df.to_csv(test_csv, index=False, encoding="utf-8-sig")
 
-    result = import_file_to_platform(test_csv, "work-orders")
-    print(f"   导入结果: {result['status']}, 导入了 {result['rows_imported']} 条记录")
-    print(f"   文件列: {result['columns']}")
+    result = import_file_to_platform(test_csv, target)
+    print(f"   目标实体: {target}")
+    print(f"   导入结果: {result['status']}, 导入了 {result.get('rows_imported', result.get('rows', '?'))} 条记录")
+    print(f"   文件列: {result.get('columns')}")
     print()
 
     # 4. 预览文件
@@ -77,7 +85,7 @@ def demo():
 
     # 5. 导出数据
     print("5. 导出数据到本地文件：")
-    export_result = export_platform_data("work-orders", output_format="xlsx")
+    export_result = export_platform_data(target, output_format="xlsx")
     print(f"   导出到: {export_result['file']}")
     print(f"   共 {export_result['rows']} 条记录")
     print()

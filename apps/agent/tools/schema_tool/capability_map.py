@@ -2,40 +2,58 @@
 人话能力地图：只用表结构文档说明「MES 系统业务能力」。
 
 范围（务必遵守）：
-- 本模块描述的是中软 MES 数据字典所反映的业务能力
-- 查工单 / 查排产 / 导入导出 属于助手侧「模拟演示」，不并入、不改写 MES 能力
+- 本模块描述的是**当前资料包**表结构文档所反映的业务能力
+- 查数 / 导入导出依据可查对象目录，不并入、不改写 MES 能力结论
 - 用户问「平台/系统能干什么」指 ZR WorkBuddy，不要用本模块的结论去回答
 
-只读本地 capability_map.json + 表结构索引。不连数据库。
+只读资料包内 capability_map.json（若有）+ 表结构索引。不连数据库。
+未配置时返回空能力列表。
 """
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
+from mes_profile import resolve_capability_map_path
 from tools.schema_tool.mes_schema_parser import build_index
 
-_MAP_PATH = Path(__file__).resolve().parent / "capability_map.json"
-
 _BOUNDARY = (
-    "本结果只反映「表结构文档中的 MES 系统业务能力」。"
-    "查工单/排产、导入导出是助手模拟演示，不代表 MES 真实已开放能力，也不应写进 MES 能力结论。"
+    "本结果只反映「当前已配置表结构文档中的 MES 系统业务能力」。"
+    "查数/导入导出依据可查对象目录，不代表 MES 全量能力，也不应写进 MES 能力结论。"
     "若用户问的是「平台/系统」（WorkBuddy），请介绍助手产品能力，不要用本结果冒充。"
 )
 
+_map_cache: dict[str, Any] | None = None
+_map_key: tuple[str, float] | None = None
 
-@lru_cache(maxsize=1)
+
 def _load_map_raw() -> dict[str, Any]:
-    if not _MAP_PATH.exists():
+    global _map_cache, _map_key
+    path, _src = resolve_capability_map_path()
+    if path is None:
         return {"version": 0, "glossary": [], "capabilities": []}
-    return json.loads(_MAP_PATH.read_text(encoding="utf-8"))
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {"version": 0, "glossary": [], "capabilities": []}
+    key = (str(path), mtime)
+    if _map_cache is not None and _map_key == key:
+        return _map_cache
+    if not path.exists():
+        raw = {"version": 0, "glossary": [], "capabilities": []}
+    else:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    _map_cache = raw
+    _map_key = key
+    return raw
 
 
 def reload_capability_map() -> None:
     """文档/配置更新后清缓存（供内部或重建索引时调用）。"""
-    _load_map_raw.cache_clear()
+    global _map_cache, _map_key
+    _map_cache = None
+    _map_key = None
 
 
 def _table_meta() -> dict[str, dict[str, Any]]:
@@ -102,15 +120,26 @@ def list_platform_capabilities() -> dict[str, Any]:
 
     适用：「MES系统能干什么」「MES 有哪些业务模块」「根据表结构给功能总览」。
     不要用本工具回答「平台/系统能干什么」（那是 WorkBuddy 产品介绍）。
-    不要用本工具回答「帮我查工单/排产」——那是模拟演示查询。
+    不要用本工具回答「帮我查业务数据」——那是可查对象目录上的查询工具。
     """
     reload_capability_map()
     raw = _load_map_raw()
     caps = raw.get("capabilities") or []
     if not caps:
+        path, src = resolve_capability_map_path()
         return {
-            "error": "能力地图配置为空或缺失",
-            "hint": f"请检查 {_MAP_PATH}",
+            "capabilities": [],
+            "capability_count": 0,
+            "summary": {"schema_backed": [], "other": []},
+            "scope": "schema_only",
+            "scope_note": _BOUNDARY,
+            "note": (
+                "当前资料包尚未提供 capability_map.json（能力地图为空）。"
+                "请改用 list_schema_domains / analyze_schema_capabilities 依据已上传表结构回答；"
+                "或在资料包中补充能力地图。"
+                + (f" 期望路径：{path}" if path else " 请先在「系统配置 → MES 接入」上传表结构。")
+            ),
+            "source": src,
         }
 
     table_meta = _table_meta()
@@ -146,7 +175,7 @@ def list_platform_capabilities() -> dict[str, Any]:
         ],
         "glossary_count": len(raw.get("glossary") or []),
         "demo_note": (
-            "另：助手里「查工单/查排产/导入导出」是模拟演示功能，"
+            "另：助手里「查数/导入导出」依据可查对象目录，"
             "与本 MES 能力地图无关，请勿在「MES系统能干什么」的结论里当成真实 MES 全量能力。"
             "用户问「平台/系统」时请介绍 ZR WorkBuddy，不要用本结果回答。"
         ),
@@ -168,19 +197,19 @@ def describe_platform_capability(
             "hint": "可先 list_platform_capabilities 看总览",
         }
 
-    # 排产/生产计划：表结构地图不单列该模块，引导术语说明 + 边界
+    # 常见业务说法若不在能力地图：引导查 glossary / list，勿硬编码演示实体
     if any(k in q for k in ("排产", "排程", "生产计划")) and "工单" not in q:
         gloss = list_platform_glossary(keyword="生产计划")
         return {
             "id": None,
-            "name": "生产计划（非表结构能力条目）",
-            "one_liner": "中软 MES 表结构摸底不以「排产/排程」为独立 MES 能力模块",
+            "name": "生产计划（需对照当前表结构）",
+            "one_liner": "请以当前资料包表结构与能力地图为准，勿套用仓库旧演示实体",
             "status": "not_in_schema_map",
-            "status_label": "不在本表结构能力地图中",
+            "status_label": "不在当前能力地图或需术语核对",
             "glossary": gloss.get("glossary") or [],
             "note": (
                 "若问「MES 表结构里有哪些能力」：请看 list_platform_capabilities。"
-                "若要「查排产数据」：那是助手模拟演示（production-plans），不是 MES 能力结论。"
+                "若要「查业务列表数据」：请走可查对象查询工具，不是 MES 能力结论。"
                 "若问「平台/系统能干什么」：介绍 ZR WorkBuddy，不要用本结果回答。"
             ),
             "scope_note": _BOUNDARY,
@@ -249,8 +278,8 @@ def describe_platform_capability(
         "glossary": gloss,
         "scope_note": raw.get("scope_note") or _BOUNDARY,
         "demo_note": (
-            "不要把「查工单/导入导出」写进本模块的平台能力结论；"
-            "那些是模拟演示。本模块只讲表结构业务含义与代表表。"
+            "不要把「查数/导入导出」写进本模块的平台能力结论；"
+            "那些依据可查对象目录。本模块只讲表结构业务含义与代表表。"
         ),
         "note": (
             "依据本地表结构字典。若 related_scenarios 非空，可用 get_scenario_table_pack 看阶段路径。"
@@ -277,6 +306,6 @@ def list_platform_glossary(
     return {
         "count": len(items),
         "glossary": items,
-        "note": "术语小抄（表结构语境）。查工单/排产演示数据请走查询工具，勿与平台能力地图混谈。",
+        "note": "术语小抄（表结构语境）。查业务数据请走查询工具，勿与平台能力地图混谈。",
         "scope_note": raw.get("scope_note") or _BOUNDARY,
     }

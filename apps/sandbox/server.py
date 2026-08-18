@@ -51,53 +51,32 @@ OPENAPI: dict[str, Any] = {
                 "responses": {"200": {"description": "token"}},
             }
         },
-        "/api/v1/work-orders/": {
-            "get": {"summary": "List Work Orders", "tags": ["工单管理"], "responses": {"200": {"description": "ok"}}},
-            "post": {
-                "summary": "Create Work Order",
-                "tags": ["工单管理"],
-                "responses": {"201": {"description": "created"}},
-            },
-        },
-        "/api/v1/work-orders/{order_id}": {
-            "get": {"summary": "Get Work Order", "tags": ["工单管理"], "responses": {"200": {"description": "ok"}}},
-            "put": {
-                "summary": "Update Work Order",
-                "tags": ["工单管理"],
-                "responses": {"200": {"description": "ok"}},
-            },
-            "delete": {
-                "summary": "Delete Work Order",
-                "tags": ["工单管理"],
-                "responses": {"204": {"description": "deleted"}},
-            },
-        },
-        "/api/v1/production-plans/": {
+        "/api/v1/probe-items/": {
             "get": {
-                "summary": "List Production Plans",
-                "tags": ["生产计划"],
+                "summary": "探活样例列表",
+                "tags": ["探活"],
                 "responses": {"200": {"description": "ok"}},
             },
             "post": {
-                "summary": "Create Production Plan",
-                "tags": ["生产计划"],
+                "summary": "探活样例创建",
+                "tags": ["探活"],
                 "responses": {"201": {"description": "created"}},
             },
         },
-        "/api/v1/production-plans/{plan_id}": {
+        "/api/v1/probe-items/{item_id}": {
             "get": {
-                "summary": "Get Production Plan",
-                "tags": ["生产计划"],
+                "summary": "探活样例详情",
+                "tags": ["探活"],
                 "responses": {"200": {"description": "ok"}},
             },
             "put": {
-                "summary": "Update Production Plan",
-                "tags": ["生产计划"],
+                "summary": "探活样例更新",
+                "tags": ["探活"],
                 "responses": {"200": {"description": "ok"}},
             },
             "delete": {
-                "summary": "Delete Production Plan",
-                "tags": ["生产计划"],
+                "summary": "探活样例删除",
+                "tags": ["探活"],
                 "responses": {"204": {"description": "deleted"}},
             },
         },
@@ -317,12 +296,6 @@ SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
             with _LOCK:
                 _STORE.clear()
                 _SEQ = 0
-                _STORE["/api/v1/work-orders"] = [
-                    {"id": "1", "name": "WO-sandbox-1", "status": "open", "sandbox": True},
-                ]
-                _STORE["/api/v1/production-plans"] = [
-                    {"id": "1", "name": "PP-sandbox-1", "status": "draft", "sandbox": True},
-                ]
             return self._send(200, {"status": "ok", "reset": True, "sandbox": True})
 
         is_item, coll, _item_id = _is_item(path)
@@ -385,15 +358,6 @@ SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
 
 
 def main() -> None:
-    # seed a couple rows so GET list isn't always empty
-    with _LOCK:
-        _STORE["/api/v1/work-orders"] = [
-            {"id": "1", "name": "WO-sandbox-1", "status": "open", "sandbox": True},
-        ]
-        _STORE["/api/v1/production-plans"] = [
-            {"id": "1", "name": "PP-sandbox-1", "status": "draft", "sandbox": True},
-        ]
-
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[sandbox] listening on http://{HOST}:{PORT}")
     print(f"[sandbox] docs     http://{HOST}:{PORT}/docs")

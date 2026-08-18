@@ -1,28 +1,31 @@
 """
-解析 docs/中软MES数据库表结构.md（中软数据字典导出）。
+解析 MES 表结构 Markdown（现场上传的数据字典等）。
 
-只读本地 Markdown，不连数据库、不改 ERP、不碰 entities.json。
-大文档按域/表分页返回，避免一次塞进模型上下文。
+只读当前资料包 / MES_SCHEMA_DOC 指定文件；未配置时明确报错，不使用仓库内置演示表。
+不连数据库、不改 ERP。大文档按域/表分页返回，避免一次塞进模型上下文。
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
 from config import Config
+from mes_profile import resolve_schema_doc
 
-# 默认文档路径（仓库 docs/）
-DEFAULT_SCHEMA_DOC = Config.REPO_ROOT / "docs" / "中软MES数据库表结构.md"
-# 可选缓存索引（首次解析后写入，加速后续）
-INDEX_CACHE = Config.REPO_ROOT / "data" / "schema" / "mes_schema_index.json"
+INDEX_CACHE = Config.DATA_DIR / "schema" / "mes_schema_index.json"
 
 _DOMAIN_RE = re.compile(r"^###\s+(\d+\.\d+)\s+(.+?)\s*$", re.M)
-_TABLE_HEAD_RE = re.compile(
+# 中软字典：#### 1 工单主表 (TBL_MO)
+_TABLE_HEAD_ZR_RE = re.compile(
     r"^####\s+(\d+)\s+(.+?)\s*\(\s*([A-Z][A-Z0-9_]+)\s*\)\s*$",
+    re.M,
+)
+# ERP / SQLite 说明：#### `work_orders` — 生产工单
+_TABLE_HEAD_ERP_RE = re.compile(
+    r"^####\s+`([A-Za-z_][A-Za-z0-9_]*)`\s*[—\-–]\s*(.+?)\s*$",
     re.M,
 )
 _MEANING_RE = re.compile(r"-\s*\*\*业务含义\*\*[：:]\s*(.+)")
@@ -31,13 +34,24 @@ _FIELD_ROW_RE = re.compile(
     r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$"
 )
 _REL_RE = re.compile(r"^\s*-\s*([A-Z][A-Z0-9_]+)\.([A-Za-z0-9_]+)\s*=\s*([A-Z][A-Z0-9_]+)\.([A-Za-z0-9_]+)")
+# 兼容旧名
+_TABLE_HEAD_RE = _TABLE_HEAD_ZR_RE
 
 
 def schema_doc_path() -> Path:
-    override = os.getenv("MES_SCHEMA_DOC", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    return DEFAULT_SCHEMA_DOC
+    path, _src = resolve_schema_doc()
+    if path is None:
+        raise FileNotFoundError(
+            "未配置表结构文档。请在「系统配置 → MES 接入」上传表结构（.md）。"
+        )
+    return path
+
+
+def invalidate_schema_caches() -> None:
+    """资料包切换或上传后清内存缓存；索引文件下次 build 时按 path+mtime 失效。"""
+    global _full_tables_cache, _full_tables_mtime
+    _full_tables_cache = None
+    _full_tables_mtime = None
 
 
 def _load_raw_text() -> str:
@@ -48,13 +62,60 @@ def _load_raw_text() -> str:
     if not text.strip():
         raise ValueError(
             f"表结构文档为空（可能未保存）: {path}。"
-            "请在编辑器中保存 docs/中软MES数据库表结构.md 后重试。"
+            "请在「系统配置 → MES 接入」重新上传表结构。"
         )
     return text
 
 
-def _split_table_blocks(text: str) -> list[tuple[str, str, str, str]]:
-    """返回 [(domain_id, domain_name, table_head_line, block_body), ...]。"""
+def _iter_table_heads(text: str) -> list[tuple[int, str, dict[str, Any]]]:
+    """返回 [(start, head_line, meta), ...]，meta 含 table/label/seq/style。"""
+    found: list[tuple[int, str, dict[str, Any]]] = []
+    for m in _TABLE_HEAD_ZR_RE.finditer(text):
+        found.append(
+            (
+                m.start(),
+                m.group(0),
+                {
+                    "style": "zhongruan",
+                    "seq": int(m.group(1)),
+                    "label": m.group(2).strip(),
+                    "table": m.group(3).strip(),
+                },
+            )
+        )
+    for m in _TABLE_HEAD_ERP_RE.finditer(text):
+        found.append(
+            (
+                m.start(),
+                m.group(0),
+                {
+                    "style": "erp",
+                    "seq": 0,
+                    "label": m.group(2).strip(),
+                    "table": m.group(1).strip(),
+                },
+            )
+        )
+    found.sort(key=lambda x: x[0])
+    out: list[tuple[int, str, dict[str, Any]]] = []
+    seen: set[int] = set()
+    for start, line, meta in found:
+        if start in seen:
+            continue
+        seen.add(start)
+        out.append((start, line, meta))
+    seq = 0
+    for i, (start, line, meta) in enumerate(out):
+        if meta.get("seq"):
+            continue
+        seq += 1
+        meta["seq"] = seq
+        out[i] = (start, line, meta)
+    return out
+
+
+def _split_table_blocks(text: str) -> list[tuple[str, str, str, str, dict[str, Any]]]:
+    """返回 [(domain_id, domain_name, table_head_line, block_body, head_meta), ...]。"""
     domain_spans: list[tuple[int, str, str]] = []
     for m in _DOMAIN_RE.finditer(text):
         domain_spans.append((m.start(), m.group(1), m.group(2).strip()))
@@ -68,13 +129,16 @@ def _split_table_blocks(text: str) -> list[tuple[str, str, str, str]]:
                 break
         return cur
 
-    heads = list(_TABLE_HEAD_RE.finditer(text))
-    blocks: list[tuple[str, str, str, str]] = []
-    for i, m in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-        body = text[m.end() : end]
-        did, dname = domain_at(m.start())
-        blocks.append((did, dname, m.group(0), body))
+    heads = _iter_table_heads(text)
+    blocks: list[tuple[str, str, str, str, dict[str, Any]]] = []
+    for i, (start, head_line, meta) in enumerate(heads):
+        chunk = text[start:]
+        nl = chunk.find("\n")
+        head_end = start + (nl + 1 if nl >= 0 else len(head_line))
+        end = heads[i + 1][0] if i + 1 < len(heads) else len(text)
+        body = text[head_end:end]
+        did, dname = domain_at(start)
+        blocks.append((did, dname, head_line, body, meta))
     return blocks
 
 
@@ -83,15 +147,33 @@ def _parse_table_block(
     domain_name: str,
     head_line: str,
     body: str,
+    head_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    hm = _TABLE_HEAD_RE.match(head_line.strip())
-    seq = int(hm.group(1)) if hm else 0
-    label = hm.group(2).strip() if hm else ""
-    table = hm.group(3).strip() if hm else ""
+    meta = head_meta or {}
+    if not meta.get("table"):
+        zm = _TABLE_HEAD_ZR_RE.match(head_line.strip())
+        em = _TABLE_HEAD_ERP_RE.match(head_line.strip())
+        if zm:
+            meta = {
+                "style": "zhongruan",
+                "seq": int(zm.group(1)),
+                "label": zm.group(2).strip(),
+                "table": zm.group(3).strip(),
+            }
+        elif em:
+            meta = {
+                "style": "erp",
+                "seq": 0,
+                "label": em.group(2).strip(),
+                "table": em.group(1).strip(),
+            }
+    seq = int(meta.get("seq") or 0)
+    label = str(meta.get("label") or "")
+    table = str(meta.get("table") or "")
 
     meaning_m = _MEANING_RE.search(body)
     db_m = _DB_RE.search(body)
-    meaning = meaning_m.group(1).strip() if meaning_m else ""
+    meaning = meaning_m.group(1).strip() if meaning_m else (label if meta.get("style") == "erp" else "")
     database = db_m.group(1).strip() if db_m else ""
 
     fields: list[dict[str, str]] = []
@@ -123,7 +205,7 @@ def _parse_table_block(
     relations: list[dict[str, str]] = []
     in_rel = False
     for line in body.splitlines():
-        if "关联关系" in line:
+        if "关联关系" in line or line.strip().startswith("**关系**"):
             in_rel = True
             continue
         if in_rel:
@@ -144,8 +226,10 @@ def _parse_table_block(
 
     prefix = ""
     parts = table.split("_")
-    if len(parts) >= 2:
+    if meta.get("style") == "zhongruan" and len(parts) >= 2:
         prefix = parts[1]  # SYS / BD / QM / SFC ...
+    elif parts:
+        prefix = parts[0]
 
     return {
         "seq": seq,
@@ -168,7 +252,11 @@ def build_index(force: bool = False) -> dict[str, Any]:
         try:
             cached = json.loads(INDEX_CACHE.read_text(encoding="utf-8"))
             src = schema_doc_path()
-            if cached.get("source_mtime") == src.stat().st_mtime and cached.get("tables"):
+            if (
+                cached.get("source") == str(src)
+                and cached.get("source_mtime") == src.stat().st_mtime
+                and cached.get("tables")
+            ):
                 return cached
         except Exception:
             pass
@@ -178,9 +266,9 @@ def build_index(force: bool = False) -> dict[str, Any]:
     tables: list[dict[str, Any]] = []
     domains: dict[str, dict[str, Any]] = {}
 
-    for did, dname, head, body in blocks:
+    for did, dname, head, body, head_meta in blocks:
         # 索引只保留摘要，字段在 describe 时解析（避免巨大 JSON）
-        full = _parse_table_block(did, dname, head, body)
+        full = _parse_table_block(did, dname, head, body, head_meta)
         summary = {
             "seq": full["seq"],
             "table": full["table"],
@@ -229,7 +317,9 @@ def _all_tables_full() -> list[dict[str, Any]]:
         return _full_tables_cache
     text = _load_raw_text()
     blocks = _split_table_blocks(text)
-    _full_tables_cache = [_parse_table_block(d, n, h, b) for d, n, h, b in blocks]
+    _full_tables_cache = [
+        _parse_table_block(d, n, h, b, m) for d, n, h, b, m in blocks
+    ]
     _full_tables_mtime = mtime
     return _full_tables_cache
 

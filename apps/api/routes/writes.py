@@ -18,7 +18,6 @@ if _parent not in sys.path:
     sys.path.insert(0, _parent)
 
 from routes.auth import require_auth, UserInfo
-from tools.platform_api import set_request_erp_token, reset_request_erp_token
 from middleware.write_store import (
     claim_action,
     get_action,
@@ -122,7 +121,7 @@ async def get_write_action(action_id: str, auth: tuple = Depends(require_auth)):
 @router.post("/actions/{action_id}/confirm", response_model=ActionResponse)
 async def confirm_write(action_id: str, auth: tuple = Depends(require_auth)):
     """用户确认后执行真实写操作（原子认领，防止双确认重复写入）。"""
-    erp_token, user = auth
+    _token, user = auth
     action = get_action(action_id)
     if not action:
         raise HTTPException(status_code=404, detail="未找到该写操作")
@@ -146,11 +145,7 @@ async def confirm_write(action_id: str, auth: tuple = Depends(require_auth)):
             detail=f"操作已结束或正在执行，当前状态：{cur.get('status')}",
         )
 
-    tok = set_request_erp_token(erp_token)
-    try:
-        result = _execute_write(claimed)
-    finally:
-        reset_request_erp_token(tok)
+    result = _execute_write(claimed)
 
     ok = isinstance(result, dict) and not result.get("error")
     if not ok:

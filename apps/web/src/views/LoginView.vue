@@ -6,7 +6,7 @@
           <img src="/zr-logo.svg" alt="" class="brand-logo" />
         </div>
         <h1>ZR WorkBuddy</h1>
-        <p>你的工作搭档 · 使用 ERP 账号登录</p>
+        <p>你的工作搭档 · 登录 ZR WorkBuddy</p>
       </div>
 
       <form class="login-form" @submit.prevent="onSubmit">
@@ -60,11 +60,11 @@
 
         <label class="field">
           <span>账号</span>
-          <input v-model="username" type="text" autocomplete="username" placeholder="ERP 用户名" required />
+          <input v-model="username" type="text" autocomplete="username" placeholder="账号" required />
         </label>
         <label class="field">
           <span>密码</span>
-          <input v-model="password" type="password" autocomplete="current-password" placeholder="ERP 密码" required />
+          <input v-model="password" type="password" autocomplete="current-password" placeholder="密码" required />
         </label>
 
         <p v-if="error" class="error">{{ error }}</p>
@@ -74,7 +74,7 @@
         </button>
       </form>
 
-      <p class="hint">账号与密码来自公司 ERP，登录接口：/api/v1/auth/login</p>
+      <p class="hint">本页是 ZR WorkBuddy 登录，与系统配置里上传的 MES 接口文档无关。</p>
     </div>
   </div>
 </template>

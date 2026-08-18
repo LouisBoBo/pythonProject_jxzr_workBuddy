@@ -21,6 +21,7 @@ from routes.auth import router as auth_router
 from routes.writes import router as writes_router
 from routes.ide_bridge import router as ide_bridge_router
 from routes.settings import router as settings_router
+from routes.mes_profile import router as mes_profile_router
 from routes_config import DATA_DIR, SERVER_PORT
 
 try:
@@ -77,6 +78,7 @@ app.include_router(convert_router)
 app.include_router(writes_router)
 app.include_router(ide_bridge_router)
 app.include_router(settings_router)
+app.include_router(mes_profile_router)
 if cursor_dev_router is not None:
     app.include_router(cursor_dev_router)
 if local_dev_router is not None:

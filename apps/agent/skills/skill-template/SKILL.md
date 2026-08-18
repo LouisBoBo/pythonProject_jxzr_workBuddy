@@ -9,7 +9,7 @@ description: >-
 
 > 使用方法：复制整个 `skill-template/` 目录，改名为你的技能名（小写+连字符），
 > 再编辑 `SKILL.md` 的 frontmatter 与正文。详见仓库文档
-> `docs/DeepAgents-Skills使用指南.md`。
+> `docs/Agent开发/DeepAgents-Skills使用指南.md`。
 
 ## 何时使用
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -73,11 +74,14 @@ def test_history_ownership() -> None:
 
 def test_require_auth_jwt_first() -> None:
     from routes import auth as auth_mod
+    from session_jwt import issue_session_jwt
 
     prev = auth_mod.AUTH_REQUIRED
+    prev_secret = os.environ.get("WORKBUDDY_JWT_SECRET")
+    os.environ["WORKBUDDY_JWT_SECRET"] = "smoke-embed-jwt"
     auth_mod.AUTH_REQUIRED = True
     try:
-        token = _fake_jwt(sub="42", username="from-jwt")
+        token, _exp = issue_session_jwt(user_id="42", username="from-jwt")
         _, user = auth_mod.require_auth(
             authorization=f"Bearer {token}",
             x_user_name="spoofed-header",
@@ -87,17 +91,33 @@ def test_require_auth_jwt_first() -> None:
         if user.username != "from-jwt":
             _fail("jwt_name", f"username={user.username} (header must not win)")
 
-        token2 = _fake_jwt(sub="7")
+        token2, _exp2 = issue_session_jwt(user_id="7", username="")
         _, user2 = auth_mod.require_auth(
             authorization=f"Bearer {token2}",
             x_user_name="login-user",
         )
-        if user2.username != "login-user":
-            _fail("header_fallback", f"expected login-user got {user2.username}")
+        if user2.username != "user-7":
+            _fail("jwt_default_name", f"expected user-7 got {user2.username}")
         if str(user2.user_id) != "7":
             _fail("jwt_sub2", f"user_id={user2.user_id}")
+
+        fake = _fake_jwt(sub="99", username="forged")
+        try:
+            auth_mod.require_auth(authorization=f"Bearer {fake}", x_user_name="x")
+            _fail("alg_none", "unsigned JWT must be rejected")
+        except Exception as exc:
+            if "401" not in str(exc) and "无效" not in str(exc) and "过期" not in str(exc):
+                # HTTPException str 可能不含中文，至少不能成功返回
+                from fastapi import HTTPException
+
+                if not isinstance(exc, HTTPException) or exc.status_code != 401:
+                    _fail("alg_none_exc", str(exc))
     finally:
         auth_mod.AUTH_REQUIRED = prev
+        if prev_secret is None:
+            os.environ.pop("WORKBUDDY_JWT_SECRET", None)
+        else:
+            os.environ["WORKBUDDY_JWT_SECRET"] = prev_secret
     _ok("require_auth jwt-first")
 
 

@@ -48,7 +48,7 @@ def list_schema_domains() -> dict[str, Any]:
     try:
         index = build_index()
     except Exception as e:
-        return {"error": str(e), "hint": "请确认已保存 docs/中软MES数据库表结构.md"}
+        return {"error": str(e), "hint": "请在「系统配置 → MES 接入」上传表结构文档"}
     domains = [
         {
             "domain_id": d.get("domain_id"),

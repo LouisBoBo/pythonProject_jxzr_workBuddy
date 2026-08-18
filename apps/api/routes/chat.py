@@ -16,7 +16,6 @@ if _parent not in sys.path:
 from routes_config import UPLOAD_DIR, AgentConfig, DATA_DIR
 from agent_wrapper import AgentRunner
 from routes.auth import require_auth
-from tools.platform_api import set_request_erp_token, reset_request_erp_token
 from middleware.request_context import set_request_agent_context, reset_request_agent_context
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -37,11 +36,10 @@ class ChatResponse(BaseModel):
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
     """同步对话：发送消息，等待完整回复后返回。"""
-    token, user = auth
+    _token, user = auth
     thread_id = (req.thread_id or "").strip() or f"session-{(user.username or 'anon')}"
     if thread_id == "default" and user.username:
         thread_id = f"session-{user.username}"
-    tok = set_request_erp_token(token)
     ctx = set_request_agent_context(
         thread_id=thread_id,
         user_id=user.user_id,
@@ -57,7 +55,6 @@ async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
         return ChatResponse(reply=reply, thread_id=thread_id)
     finally:
         reset_request_agent_context(ctx)
-        reset_request_erp_token(tok)
 
 
 @router.post("/chat/stream")
@@ -69,14 +66,13 @@ async def chat_stream(
     """流式对话：SSE 推送 status / step / token / confirm / done / error。"""
     import asyncio
 
-    erp_token, user = auth
+    _token, user = auth
     thread_id = (req.thread_id or "").strip() or f"session-{(user.username or 'anon')}"
     if thread_id == "default" and user.username:
         thread_id = f"session-{user.username}"
 
     async def generate():
         runner = AgentRunner()
-        tok = set_request_erp_token(erp_token)
         ctx = set_request_agent_context(
             thread_id=thread_id,
             user_id=user.user_id,
@@ -165,7 +161,6 @@ async def chat_stream(
         finally:
             cancel_event.set()
             reset_request_agent_context(ctx)
-            reset_request_erp_token(tok)
 
     return StreamingResponse(
         generate(),

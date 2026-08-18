@@ -5,18 +5,40 @@
 - MockClient：本地模拟，无需真实平台即可测试 Agent 全流程。
 - ERPClient：通过 HTTP 连接真实 ERP（自动登录、自动 token 管理）。
 
-可操作实体由 entities.json（entity_catalog）统一配置。
+可操作实体由当前 MES 资料包 entities.json（entity_catalog）统一配置。
 """
 from __future__ import annotations
 
 import contextvars
 import json
 import time
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+from urllib.request import Request
 from urllib.error import URLError, HTTPError
 
 from config import Config
-from tools.query_tool.entity_catalog import get_entity_map, list_entity_ids, resolve_entity_id
+from safe_http import (
+    assert_http_url_allowed,
+    safe_query_name,
+    safe_request_path,
+    urlopen_limited,
+)
+from tools.query_tool.entity_catalog import (
+    get_entity,
+    get_entity_map,
+    list_entity_ids,
+    load_catalog_meta,
+    resolve_entity_id,
+)
+
+
+_GENERIC_LOGIN_FALLBACKS = (
+    "/api/auth/login",
+    "/api/v1/auth/login",
+    "/login",
+    "/api/login",
+)
+_GENERIC_LIST_KEYS = ("items", "records", "data", "results", "list", "rows")
 
 
 def _safe_log_call(**kwargs) -> None:
@@ -55,33 +77,171 @@ def get_request_erp_token() -> str | None:
     return _erp_token_override.get()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Mock 样例数据（仅本地演示；实体集合以目录为准）
-# ═══════════════════════════════════════════════════════════════════════════
-_MOCK_SEED: dict[str, list[dict]] = {
-    "work-orders": [
-        {"id": 1, "order_no": "WO-0701", "product_name": "四层HDI板",
-         "production_line": "SMT线", "plan_quantity": 500, "status": "in_progress",
-         "priority": "high", "assignee": "张工"},
-        {"id": 2, "order_no": "WO-0702", "product_name": "六层通孔板",
-         "production_line": "蚀刻线", "plan_quantity": 200, "status": "completed",
-         "priority": "normal", "assignee": "李工"},
-        {"id": 3, "order_no": "WO-0703", "product_name": "柔性双面板",
-         "production_line": "钻孔线", "plan_quantity": 1000, "status": "pending",
-         "priority": "normal", "assignee": "王工"},
-        {"id": 4, "order_no": "WO-0704", "product_name": "高多层板",
-         "production_line": "压合线", "plan_quantity": 80, "status": "pending",
-         "priority": "urgent", "assignee": "赵工"},
-    ],
-    "production-plans": [
-        {"id": 1, "plan_no": "PP-0801", "product_name": "四层HDI板",
-         "plan_quantity": 500, "production_line": "SMT线", "status": "draft",
-         "start_date": "2026-08-01", "end_date": "2026-08-07"},
-        {"id": 2, "plan_no": "PP-0802", "product_name": "六层通孔板",
-         "plan_quantity": 200, "production_line": "蚀刻线", "status": "confirmed",
-         "start_date": "2026-08-03", "end_date": "2026-08-10"},
-    ],
-}
+# Mock：不再内置工单/排产样例；按当前资料包实体目录建空表，ERP 不通时回落空结果
+_MOCK_SEED: dict[str, list[dict]] = {}
+
+
+def _path_prefix() -> str:
+    try:
+        from mes_profile import resolve_path_prefix
+
+        return (resolve_path_prefix() or "").rstrip("/")
+    except Exception:
+        meta = load_catalog_meta()
+        raw = str(meta.get("path_prefix") or "").strip()
+        if raw and not raw.startswith("/"):
+            raw = "/" + raw
+        return raw.rstrip("/")
+
+
+def _login_paths() -> list[str]:
+    discovered: list[str] = []
+    try:
+        from mes_profile import resolve_login_paths
+
+        discovered = list(resolve_login_paths() or [])
+    except Exception:
+        meta = load_catalog_meta()
+        raw = meta.get("login_paths")
+        if isinstance(raw, list):
+            discovered = [str(p).strip() for p in raw if str(p).strip()]
+    out: list[str] = []
+    for p in discovered:
+        s = safe_request_path(p)
+        if s and s not in out:
+            out.append(s)
+    if out:
+        return out
+    for p in _GENERIC_LOGIN_FALLBACKS:
+        s = safe_request_path(p)
+        if s and s not in out:
+            out.append(s)
+    return out or ["/api/auth/login"]
+
+
+def _collection_path(resource: str, prefix: str | None = None) -> str:
+    """实体 path 已是绝对路径则原样用；相对路径拼资料包前缀，不写死 /api/v1。"""
+    r = (resource or "").strip()
+    if r.startswith("/"):
+        return safe_request_path(r) or "/"
+    pref = prefix if prefix is not None else _path_prefix()
+    pref_s = safe_request_path(pref) if pref else ""
+    seg = r.strip("/")
+    joined = f"{pref_s}/{seg}" if pref_s else f"/{seg}"
+    return safe_request_path(joined) or "/"
+
+
+def _list_query_string(
+    paging: dict | None,
+    filters: dict | None,
+    limit: int,
+) -> str:
+    """分页参数名来自 OpenAPI；文档未声明时同时带常见几种，兼容不同平台。"""
+    pairs: list[tuple[str, str]] = []
+
+    def add(name: object, value: object) -> bool:
+        n = safe_query_name(str(name or ""))
+        if not n:
+            return False
+        pairs.append((n, str(value)))
+        return True
+
+    cap = max(1, min(int(limit or 20), 100))
+    paging = paging if isinstance(paging, dict) else {}
+    sent_size = False
+    if paging.get("limit"):
+        sent_size = add(paging["limit"], cap) or sent_size
+    if paging.get("page_size"):
+        sent_size = add(paging["page_size"], cap) or sent_size
+    if paging.get("page"):
+        add(paging["page"], 1)
+    if paging.get("offset"):
+        add(paging["offset"], 0)
+    if not sent_size:
+        add("limit", cap)
+        add("page", 1)
+        add("page_size", cap)
+    if filters:
+        for k, v in filters.items():
+            if v is None or v == "":
+                continue
+            add(k, v)
+    return urlencode(pairs)
+
+
+def _records_from_payload(
+    result: dict | list,
+    list_keys: list[str] | None = None,
+) -> tuple[list, int]:
+    if isinstance(result, list):
+        return result, len(result)
+    if not isinstance(result, dict):
+        return [], 0
+    keys: list[str] = []
+    for k in list(list_keys or []) + list(_GENERIC_LIST_KEYS):
+        if k and k not in keys:
+            keys.append(k)
+    for key in keys:
+        val = result.get(key)
+        if isinstance(val, list):
+            total = result.get("total", result.get("count", len(val)))
+            try:
+                n = int(total)
+            except (TypeError, ValueError):
+                n = len(val)
+            return val, n
+        if isinstance(val, dict):
+            for nk in _GENERIC_LIST_KEYS:
+                inner = val.get(nk)
+                if isinstance(inner, list):
+                    total = val.get("total", val.get("count", result.get("total", len(inner))))
+                    try:
+                        n = int(total)
+                    except (TypeError, ValueError):
+                        n = len(inner)
+                    return inner, n
+    return [], 0
+
+
+def _token_from_login_payload(result: dict | list | None) -> str:
+    if not isinstance(result, dict):
+        return ""
+    for key in ("access_token", "token", "accessToken"):
+        val = result.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    data = result.get("data")
+    if isinstance(data, dict):
+        return _token_from_login_payload(data)
+    return ""
+
+
+def _mes_query_credentials() -> tuple[str, str, str]:
+    """MES 业务接口账号。与 WorkBuddy 登录无关。"""
+    user = pwd = ent = ""
+    try:
+        from settings_store import resolve_setting
+
+        user = (resolve_setting("MES_API_USERNAME", "") or "").strip()
+        pwd = (resolve_setting("MES_API_PASSWORD", "") or "").strip()
+        ent = (resolve_setting("MES_API_ENTERPRISE_CODE", "") or "").strip()
+    except Exception:
+        pass
+    if not user:
+        user = (Config.ERP_USERNAME or "").strip()
+    if not pwd:
+        pwd = (Config.ERP_PASSWORD or "").strip()
+    if not ent:
+        ent = (Config.ERP_ENTERPRISE_CODE or "").strip()
+    return user, pwd, ent
+
+
+def _mes_auth_missing_message(missing: list[str]) -> str:
+    hint = "、".join(missing) if missing else "MES 接口账号、密码"
+    return (
+        "MES 接口需要单独鉴权（与 WorkBuddy 登录无关）。"
+        f"请在「系统配置 → MES 接入」填写{hint}，保存后再查。"
+    )
 
 
 def _normalize_entity(entity: str) -> str | None:
@@ -159,68 +319,111 @@ class ERPClient:
     """
 
     def __init__(self):
-        self.base = Config.PLATFORM_BASE_URL.rstrip("/")
+        api_base = ""
+        try:
+            from mes_profile import resolve_mes_api_base
+
+            api_base = (resolve_mes_api_base() or "").rstrip("/")
+        except Exception:
+            api_base = ""
+        try:
+            self.base = assert_http_url_allowed(api_base, what="MES 接口地址") if api_base else ""
+        except ValueError:
+            self.base = ""
         self._token: str | None = None
         self.ENTITY_MAP = get_entity_map()
+        self._login_paths = _login_paths()
 
     # ── 内部方法 ──────────────────────────────────────────────────────
 
-    def _ensure_auth(self):
-        """确保已登录，拿到 Bearer token。用户请求 token 优先。"""
-        if get_request_erp_token():
-            return
-        if self._token is not None:
-            return
-        if not Config.ERP_USERNAME or not Config.ERP_PASSWORD:
-            return  # 无需认证也可以调用（当前平台未强制 auth）
-
+    def _ensure_auth(self) -> str | None:
+        """向 MES 业务登录接口取 JWT。不用 WorkBuddy 会话 token。缺配置时返回中文说明。"""
+        if self._token:
+            return None
+        if not self.base:
+            return "未配置 MES 接口地址。请先在「系统配置 → MES 接入」导入接口文档。"
+        user, password, ent = _mes_query_credentials()
+        required = ["username", "password"]
         try:
-            body = {
-                "username": Config.ERP_USERNAME,
-                "password": Config.ERP_PASSWORD,
-            }
-            if Config.ERP_ENTERPRISE_CODE:
-                body["enterprise_code"] = Config.ERP_ENTERPRISE_CODE
+            from mes_profile import resolve_mes_login_required_fields
 
-            data = json.dumps(body).encode()
-            req = Request(f"{self.base}/api/v1/auth/login", data=data,
-                          headers={"Content-Type": "application/json"}, method="POST")
-            t0 = time.perf_counter()
-            with urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
-                self._token = result.get("access_token", "")
+            required = resolve_mes_login_required_fields() or required
+        except Exception:
+            pass
+        missing: list[str] = []
+        req_l = {str(r).lower() for r in required}
+        if "username" in req_l and not user:
+            missing.append("MES 接口账号")
+        if "password" in req_l and not password:
+            missing.append("MES 接口密码")
+        if any("enterprise" in r for r in req_l) and not ent:
+            missing.append("MES 企业编码")
+        if missing:
+            return _mes_auth_missing_message(missing)
+
+        body: dict = {"username": user, "password": password}
+        if ent:
+            body["enterprise_code"] = ent
+        data = json.dumps(body).encode()
+        last_err = None
+        for login_path in self._login_paths:
+            try:
+                req = Request(
+                    f"{self.base}{login_path}",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                t0 = time.perf_counter()
+                with urlopen_limited(req, timeout=10, max_bytes=1024 * 1024) as resp:
+                    result = json.loads(resp.read().decode() or "{}")
+                    self._token = _token_from_login_payload(result)
+                _safe_log_call(
+                    method="POST",
+                    path=login_path,
+                    status=200,
+                    ok=bool(self._token),
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                )
+                last_err = None
+                if self._token:
+                    break
+            except Exception as e:
+                last_err = e
+                continue
+        if not self._token:
             _safe_log_call(
                 method="POST",
-                path="/api/v1/auth/login",
-                status=200,
-                ok=True,
-                latency_ms=(time.perf_counter() - t0) * 1000,
-            )
-        except Exception as e:
-            _safe_log_call(
-                method="POST",
-                path="/api/v1/auth/login",
+                path=(self._login_paths[0] if self._login_paths else "/login"),
                 status=None,
                 ok=False,
                 latency_ms=None,
-                error=f"login_failed: {e}",
+                error=f"mes_login_failed: {last_err}",
             )
-            pass  # 登录失败不阻塞，继续无 token 调用（行为保持不变）
+            return (
+                "已用 MES 接口账号登录业务系统失败（未返回 token）。"
+                "请核对账号、密码、企业编码；这与 WorkBuddy 登录不是同一套。"
+            )
+        return None
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict | list:
-        """发送 HTTP 请求到 ERP，自动附带 token。出站调用写入 api_calls 日志（失败不影响返回）。"""
-        self._ensure_auth()
+    def _request(self, method: str, path: str, body: dict | None = None, *, _auth_retry: bool = False) -> dict | list:
+        """发送 HTTP 请求到 MES，自动附带 MES token（不是 WorkBuddy 登录 token）。"""
+        if not self.base:
+            return {"error": "未配置 MES 接口地址。请先在「系统配置 → MES 接入」导入接口文档。"}
+        missing = self._ensure_auth()
+        if missing:
+            return {"error": missing}
         url = f"{self.base}{path}"
         data = json.dumps(body).encode() if body else None
         headers = {"Content-Type": "application/json"}
-        token = get_request_erp_token() or self._token
+        token = self._token
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
         req = Request(url, data=data, headers=headers, method=method)
         t0 = time.perf_counter()
         try:
-            with urlopen(req, timeout=15) as resp:
+            with urlopen_limited(req, timeout=15, max_bytes=8 * 1024 * 1024) as resp:
                 text = resp.read().decode()
                 latency_ms = (time.perf_counter() - t0) * 1000
                 status = getattr(resp, "status", None) or 200
@@ -241,16 +444,31 @@ class ERPClient:
                 return parsed
         except HTTPError as e:
             latency_ms = (time.perf_counter() - t0) * 1000
-            err = f"HTTP {e.code}: {e.reason}"
+            if e.code == 401 and not _auth_retry:
+                self._token = None
+                return self._request(method, path, body, _auth_retry=True)
+            if e.code in (401, 403):
+                err = (
+                    f"HTTP {e.code}: MES 接口鉴权失败。"
+                    "请核对「系统配置 → MES 接入」中的接口账号/密码/企业编码"
+                    "（与 WorkBuddy 登录无关）。"
+                )
+            else:
+                err = f"HTTP {e.code}"
             _safe_log_call(
                 method=method, path=path, status=e.code, ok=False, latency_ms=latency_ms, error=err
             )
             return {"error": err}
         except URLError as e:
             latency_ms = (time.perf_counter() - t0) * 1000
-            err = f"连接失败: {e.reason}"
+            err = "无法连接 MES 接口，请检查接口文档主机是否可达。"
             _safe_log_call(
-                method=method, path=path, status=None, ok=False, latency_ms=latency_ms, error=err
+                method=method,
+                path=path,
+                status=None,
+                ok=False,
+                latency_ms=latency_ms,
+                error=f"{err} {e.reason}",
             )
             return {"error": err}
 
@@ -278,18 +496,21 @@ class ERPClient:
         if not resource or not eid:
             return {"error": f"实体 '{entity}' 不存在，可用实体: {list(self.ENTITY_MAP.keys())}"}
 
-        # 获取足够数据来提取字段并统计真实记录数（ERP 最大接受约 100）
-        result = self._request("GET", f"/api/v1/{resource}/?limit=100")
+        # 获取足够数据来提取字段并统计真实记录数
+        spec = get_entity(eid) or {}
+        coll = _collection_path(resource)
+        qs = _list_query_string(spec.get("paging"), None, 100)
+        result = self._request("GET", f"{coll}?{qs}")
         if isinstance(result, dict) and "error" in result:
             return result
 
-        records = result if isinstance(result, list) else result.get("records", [])
+        records, total = _records_from_payload(result, spec.get("list_keys"))
         fields = self._extract_fields(records[0]) if records else []
         return {
             "entity": eid,
-            "resource": resource,
+            "resource": coll,
             "fields": fields,
-            "record_count": len(records),
+            "record_count": total,
             "sample": records[:5],
         }
 
@@ -310,7 +531,7 @@ class ERPClient:
 
         for i, record in enumerate(records):
             clean = {k: v for k, v in record.items() if k not in server_fields}
-            result = self._request("POST", f"/api/v1/{resource}/", clean)
+            result = self._request("POST", _collection_path(resource), clean)
             if isinstance(result, dict) and "error" in result:
                 errors.append({"index": i, "error": result["error"]})
             else:
@@ -328,21 +549,15 @@ class ERPClient:
         if not resource:
             return []
 
-        params = []
-        if filters:
-            for k, v in filters.items():
-                params.append(f"{k}={v}")
-        param_str = "&".join(params)
-        path = f"/api/v1/{resource}/?limit=100"
-        if param_str:
-            path += "&" + param_str
-
-        result = self._request("GET", path)
+        coll = _collection_path(resource)
+        spec = get_entity(_normalize_entity(entity) or "") or {}
+        qs = _list_query_string(spec.get("paging"), filters, 100)
+        result = self._request("GET", f"{coll}?{qs}")
         if isinstance(result, dict) and "error" in result:
             # 保持可被 file_ops 识别；不再静默成 []（调用已记入 api_calls）
             return result
-        return result if isinstance(result, list) else []
-
+        records, _total = _records_from_payload(result, spec.get("list_keys"))
+        return records
     def query(self, entity: str, filters: dict | None = None, limit: int = 100) -> dict:
         """条件查询实体数据。filter key 直接映射为 API query 参数。"""
         eid = _normalize_entity(entity)
@@ -350,19 +565,15 @@ class ERPClient:
         if not resource or not eid:
             return {"error": f"实体 '{entity}' 不存在，可用: {list(self.ENTITY_MAP.keys())}"}
 
-        params = [f"limit={limit}"]
-        if filters:
-            for k, v in filters.items():
-                params.append(f"{k}={v}")
-        path = f"/api/v1/{resource}/?{'&'.join(params)}"
-
-        result = self._request("GET", path)
+        coll = _collection_path(resource)
+        spec = get_entity(eid) or {}
+        qs = _list_query_string(spec.get("paging"), filters, limit)
+        result = self._request("GET", f"{coll}?{qs}")
         if isinstance(result, dict) and "error" in result:
             return result
 
-        records = result if isinstance(result, list) else []
-        return {"entity": eid, "total": len(records), "records": records}
-
+        records, total = _records_from_payload(result, spec.get("list_keys"))
+        return {"entity": eid, "total": total, "records": records}
     def execute_sql(self, sql: str) -> dict:
         return {"error": "ERP 平台不支持 SQL 查询"}
 

@@ -176,12 +176,7 @@ def sync_app_sources() -> None:
     for f in ("run_api.py", "run_sandbox.py"):
         shutil.copy2(REPO / "desktop" / "py" / f, py_dst / f)
 
-    # schema 文档（可选）
-    doc = REPO / "docs" / "中软MES数据库表结构.md"
-    if doc.is_file():
-        docs_dst = APP / "docs"
-        docs_dst.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(doc, docs_dst / doc.name)
+    # schema 文档由现场资料包提供，打包时不再内置中软演示字典
 
     # 冻结布局下让 WORKBUDDY_REPO_ROOT 指向 app/
     marker = APP / ".workbuddy_bundle"

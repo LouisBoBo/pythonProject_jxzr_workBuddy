@@ -74,27 +74,23 @@ curl http://127.0.0.1:8765/health
 
 | 需求 | 改动位置 | 是否重启 |
 |------|----------|----------|
-| 加查询实体 / 别名 | `apps/agent/tools/query_tool/entities.json` | 重启 API（`./scripts/stop.sh && ./scripts/dev.sh`） |
+| 加查询实体 / 别名 | 「MES 接入」上传接口文档，或改资料包 `entities.json` | 上传后自动重载；改文件可重启 API |
 | Agent 提示词规则 | `apps/agent/tools/query_tool/entity_catalog.py` | 同上 |
 | **新增业务 Skill** | `apps/agent/skills/<name>/SKILL.md` | 同上（详见 Skills 指南） |
 | **自定义 Middleware** | `apps/agent/middleware/` | 同上（详见 Middleware 指南） |
 | HTTP 接口 | `apps/api/routes/*` | 开发模式 API 支持 reload |
 | 前端 UI | `apps/web/src/*` | Vite 热更新 |
 
-更细的查询工具说明见 [`docs/平台查询工具维护笔记.md`](docs/平台查询工具维护笔记.md)。  
-**功能清单与测试用例（总入口，新增功能须同步更新）**见 [`docs/功能清单与测试用例.md`](docs/功能清单与测试用例.md)。  
-**Deep Agents Skills**（以后扩功能主方式）见 [`docs/DeepAgents-Skills使用指南.md`](docs/DeepAgents-Skills使用指南.md)。  
-**Middleware**（审计/硬拦截等横切逻辑）见 [`docs/DeepAgents-Middleware使用指南.md`](docs/DeepAgents-Middleware使用指南.md)。  
-**第一阶段开发复盘**见 [`docs/第一阶段开发复盘.md`](docs/第一阶段开发复盘.md)。  
-**第二阶段产品方向（已锁定）**见 [`docs/第二阶段产品方向.md`](docs/第二阶段产品方向.md)。  
-**PCB 效率平台规划 vs 架构匹配度**见 [`docs/PCB效率平台规划与架构匹配度评估.md`](docs/PCB效率平台规划与架构匹配度评估.md)。  
-**第二阶段开发计划（M1～M4）**见 [`docs/第二阶段开发计划.md`](docs/第二阶段开发计划.md)。  
-**ERP 登录对接**见 [`docs/ERP登录对接说明.md`](docs/ERP登录对接说明.md)。  
-**M2 写操作确认（HITL）**见 [`docs/M2写操作确认交付说明.md`](docs/M2写操作确认交付说明.md)。  
-**第二阶段开发复盘**见 [`docs/第二阶段开发复盘.md`](docs/第二阶段开发复盘.md)。  
-**表结构→业务能力分析**见 [`docs/表结构业务能力分析说明.md`](docs/表结构业务能力分析说明.md)。  
-**IDE 代码审核（可选，`IDE_REVIEW_ENABLED=1`）**见 [`docs/IDE代码审核开发者接入手册.md`](docs/IDE代码审核开发者接入手册.md)；架构与验收见 [`docs/IDE代码审核MCP对接方案.md`](docs/IDE代码审核MCP对接方案.md)。  
-**Cursor 写码车道（管理员配 Key；同事零配置）**见 [`docs/Cursor写码车道管理员上线清单.md`](docs/Cursor写码车道管理员上线清单.md)；原理见 [`docs/Cursor写码车道原理与完整流程.md`](docs/Cursor写码车道原理与完整流程.md)。上线闸门：`make check-cursor-dev`；旁路冒烟：`make smoke-cursor-dev`。
+文档已按类别归档，完整索引见 [`docs/README.md`](docs/README.md)。
+
+常用入口：
+
+- [功能清单与测试用例](docs/总览/功能清单与测试用例.md)（新增功能须同步更新）
+- [第二阶段产品方向](docs/产品规划/第二阶段产品方向.md) · [MES 四块能力方案](docs/总览/MES懂行助手四块能力方案.md)
+- [Skills](docs/Agent开发/DeepAgents-Skills使用指南.md) · [Middleware](docs/Agent开发/DeepAgents-Middleware使用指南.md) · [查询工具维护](docs/MES业务/平台查询工具维护笔记.md)
+- [桌面安装说明](docs/桌面与部署/桌面端安装与配置说明.md) · [写码管理员清单](docs/写码与审码/Cursor写码车道管理员上线清单.md)
+
+写码上线闸门：`make check-cursor-dev`；旁路冒烟：`make smoke-cursor-dev`。
 
 ## 从旧 mes-client 迁移说明
 

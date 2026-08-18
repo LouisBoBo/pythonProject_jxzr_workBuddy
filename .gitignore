@@ -31,6 +31,9 @@ data/api_catalog/*
 data/ide_bridge/*
 data/cursor_dev/*
 data/settings.json
+data/.settings_key
+data/.session_jwt_secret
+data/mes_profiles/
 data/user_prefs/
 data/local_dev/
 data/agent_checkpoints.sqlite

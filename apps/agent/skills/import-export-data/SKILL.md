@@ -19,7 +19,7 @@ description: >-
 
 1. 确认目标实体英文 id（对照 `list_platform_entities` 或实体目录）
 2. 有本地路径时：`preview_file` 预览列名与样例行
-3. `import_file_to_platform(file_path=..., target_entity="work-orders"|...)`
+3. `import_file_to_platform(file_path=..., target_entity=<当前目录英文 id>)`
 4. 若返回 `pending_confirmation` / 提示等待界面确认：**不要再次调用导入**；用一两句说明「已挂起，请在下方确认卡操作」，**不要**再写「确认前我不会…」「请点击确认写入」等长说明（确认卡自带按钮）
 5. 用户确认后由系统执行写入；你只需根据后续结果或用户反馈说明成败
 

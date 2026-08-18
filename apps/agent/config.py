@@ -128,9 +128,11 @@ class Config:
     PLATFORM_BASE_URL = _resolve("PLATFORM_BASE_URL", "http://localhost:8000")
     USE_ERP = os.getenv("USE_ERP", "").lower() in ("true", "1", "yes")
 
-    ERP_USERNAME = os.getenv("ERP_USERNAME", "")
-    ERP_PASSWORD = os.getenv("ERP_PASSWORD", "")
-    ERP_ENTERPRISE_CODE = os.getenv("ERP_ENTERPRISE_CODE", "")
+    ERP_USERNAME = _resolve("MES_API_USERNAME", "") or os.getenv("ERP_USERNAME", "")
+    ERP_PASSWORD = _resolve("MES_API_PASSWORD", "") or os.getenv("ERP_PASSWORD", "")
+    ERP_ENTERPRISE_CODE = (
+        _resolve("MES_API_ENTERPRISE_CODE", "") or os.getenv("ERP_ENTERPRISE_CODE", "")
+    )
 
     # --- Agent 配置 ---
     MAX_IMPORT_ROWS = int(os.getenv("MAX_IMPORT_ROWS", "10000"))
@@ -186,6 +188,11 @@ class Config:
         cls.VISION_BASE_URL = _effective_vision_base_url()
         cls.VISION_MODEL = _effective_vision_model()
         cls.PLATFORM_BASE_URL = _resolve("PLATFORM_BASE_URL", "http://localhost:8000")
+        cls.ERP_USERNAME = _resolve("MES_API_USERNAME", "") or os.getenv("ERP_USERNAME", "")
+        cls.ERP_PASSWORD = _resolve("MES_API_PASSWORD", "") or os.getenv("ERP_PASSWORD", "")
+        cls.ERP_ENTERPRISE_CODE = (
+            _resolve("MES_API_ENTERPRISE_CODE", "") or os.getenv("ERP_ENTERPRISE_CODE", "")
+        )
 
     @classmethod
     def summary(cls) -> str:
