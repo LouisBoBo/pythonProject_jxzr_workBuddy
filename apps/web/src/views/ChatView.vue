@@ -4412,7 +4412,7 @@ async function beginLocalDevStream(msg, { workspace, content }) {
   activeCursorDevMsg.value = msg
   streamStartedAt.value = Date.now()
   streamContent.value = ''
-  streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: '本机沙箱写码…' }]
+  streamProcess.value = [{ id: 'boot', type: 'step', state: 'running', title: '本机 Cursor 写码…' }]
   streamCodingPlan.value = []
   streamProcessCollapsed.value = false
   streamAnswerPending.value = false
@@ -4719,7 +4719,7 @@ async function onCursorDevPickResolved(msg, payload) {
       pendingContent: requirement,
       phase: 'running',
       status: 'confirmed',
-      progressText: '正在启动本机沙箱写码…',
+      progressText: '正在启动本机 Cursor 写码…',
       error: '',
       userStopped: false,
     }

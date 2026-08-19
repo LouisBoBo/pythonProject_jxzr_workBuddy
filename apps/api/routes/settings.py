@@ -83,19 +83,19 @@ _FIELD_META: list[dict[str, str]] = [
     {
         "key": "MES_API_USERNAME",
         "group": "mes",
-        "label": "MES 接口账号",
+        "label": "MES / ERP 接口账号",
         "secret": "0",
     },
     {
         "key": "MES_API_PASSWORD",
         "group": "mes",
-        "label": "MES 接口密码",
+        "label": "MES / ERP 接口密码",
         "secret": "1",
     },
     {
         "key": "MES_API_ENTERPRISE_CODE",
         "group": "mes",
-        "label": "MES 企业编码",
+        "label": "MES / ERP 企业编码",
         "secret": "0",
     },
     {
@@ -127,7 +127,7 @@ _FIELD_META: list[dict[str, str]] = [
 _GROUP_LABELS = {
     "llm": "对话模型",
     "vision": "视觉模型",
-    "mes": "MES 接入",
+    "mes": "MES / ERP 接入",
     "cursor_dev": "写码车道",
     "git_review": "Git 审码拉仓",
 }

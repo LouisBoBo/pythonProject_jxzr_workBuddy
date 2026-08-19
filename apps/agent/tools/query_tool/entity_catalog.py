@@ -324,6 +324,8 @@ def build_system_prompt() -> str:
         "回复须含：中文实体名 + 英文 id、条数（total/returned）、关键列中文名；有 filters_applied 须复述",
         "- 「各有多少 / 按状态汇总」调用 summarize_platform_data，按 groups 回复；"
         "分组字段必须是本次返回记录里真实存在的列，不要臆造",
+        "- 「分析一下 / 产线概况 / 异常分布 / 帮我看看工单情况」调用 analyze_platform_brief，"
+        "直接展示 markdown_report（含状态/优先级分布与可绑定指标）",
         "- 「在制 / 未完工 / 紧急未完工 / 当日完工」调用 query_metric（可先 list_query_metrics）；"
         "口径随当前目录绑定，禁止套用其它 MES 的实体 id 或状态值；绑不上或日期筛不了要如实说",
         "- **运维值班**：紧急工单/急单堆积 **必须** `run_ops_scene('urgent-backlog')` 或 `query_metric('紧急未完工')`；"
@@ -364,13 +366,14 @@ def build_system_prompt() -> str:
         "- 术语：list_platform_glossary；场景表包：list_business_scenarios / get_scenario_table_pack（按当前文档表名/中文匹配）",
         "- 换平台/资料包配好了吗：inspect_mes_profile（分 A 摸底 / B 查数，不要混谈）",
         "- 导出摸底报告：export_schema_survey_report；告知文件路径",
-        "- 文档 vs 接口是否对得上：compare_schema_vs_catalog（默认不抽检现场数据）",
+        "- 文档 vs 接口是否对得上：compare_schema_vs_catalog（优先展示 markdown_summary；默认不抽检现场数据）",
         "- **MES 能力结论只谈表结构业务模块**",
         "- 用户若要查业务数据，再走上方可查对象目录的 query/import/export",
         "",
         "### 改 MES 相关页面/接口（写码前）",
         "- 仅当用户要改 MES 功能时调用 mes_change_preflight(user_intent=原话)",
-        "- 把返回的当前目录实体 id、acceptance_hints、stack_chain 写进 propose.requirement",
+        "- 把返回的当前目录实体 id、acceptance_hints / acceptance_markdown、stack_chain 写进 propose.requirement",
+        "- 写码完成后按 acceptance_markdown 在对话里跑查数/口径验收，不要只靠预览",
         "- 列表/表单加字段必须走完整链路：界面 → 接口 → 库表 → 业务写入 → 旧数据；禁止只加空列",
         "- 纯 UI 复刻、无关 MES 的写码不要调用，以免打断正常写码确认卡",
         "",

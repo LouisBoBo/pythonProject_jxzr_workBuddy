@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextvars
 import json
 import time
+from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request
 from urllib.error import URLError, HTTPError
@@ -270,8 +271,15 @@ class MockClient:
         if not eid or eid not in self._storage:
             return {"error": f"实体 '{entity}' 不存在，可用: {list(self._storage.keys())}"}
         data = self._storage[eid]
-        fields = list(data[0].keys()) if data else []
-        return {"entity": eid, "fields": fields, "record_count": len(data), "sample": data[:2]}
+        sample = next((r for r in data if isinstance(r, dict)), None)
+        fields = list(sample.keys()) if sample else []
+        sample_out = [r for r in data[:5] if isinstance(r, dict)] or data[:2]
+        return {
+            "entity": eid,
+            "fields": fields,
+            "record_count": len(data),
+            "sample": sample_out,
+        }
 
     def import_data(self, entity: str, records: list[dict]) -> dict:
         eid = _normalize_entity(entity)
@@ -479,9 +487,11 @@ class ERPClient:
             return None
         return self.ENTITY_MAP.get(eid)
 
-    def _extract_fields(self, record: dict) -> list[str]:
-        """从一条记录提取字段名列表。"""
-        return sorted(record.keys())
+    def _extract_fields(self, record: Any) -> list[str]:
+        """从一条记录提取字段名列表；非 dict 记录返回空列表。"""
+        if not isinstance(record, dict):
+            return []
+        return sorted(str(k) for k in record.keys())
 
     # ── 对外方法（Agent 工具层调用）───────────────────────────────────
 
@@ -505,13 +515,16 @@ class ERPClient:
             return result
 
         records, total = _records_from_payload(result, spec.get("list_keys"))
-        fields = self._extract_fields(records[0]) if records else []
+        # 部分接口 list 项可能是纯字符串/标量，不能对 str 调 .keys()
+        dict_records = [r for r in records if isinstance(r, dict)]
+        sample_rec = dict_records[0] if dict_records else None
+        fields = self._extract_fields(sample_rec) if sample_rec is not None else []
         return {
             "entity": eid,
             "resource": coll,
             "fields": fields,
             "record_count": total,
-            "sample": records[:5],
+            "sample": (dict_records[:5] if dict_records else records[:5]),
         }
 
     def import_data(self, entity: str, records: list[dict]) -> dict:

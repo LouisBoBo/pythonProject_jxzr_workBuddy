@@ -94,8 +94,32 @@ def mes_change_preflight(
             "旧数据必须回填（已开工/已完成用计划日+约定时刻；待开工保持空）",
         ],
         "acceptance_hints": accept[:5],
+        "post_change_checks": [
+            {
+                "say": h,
+                "tools": ["query_platform_data"] if "列表" in h else ["query_metric", "run_ops_scene"],
+            }
+            for h in accept[:5]
+        ],
+        "acceptance_markdown": _acceptance_markdown(accept, hinted or catalog[:1]),
         "reply_hint": (
-            "若本轮是改 MES 页/接口：把 entities 与 acceptance_hints 写进 propose.requirement。"
+            "若本轮是改 MES 页/接口：把 entities、acceptance_hints、stack_chain 写进 propose.requirement。"
+            "写码完成后在对话里按 acceptance_markdown 逐条验收（查数/口径），不要只靠预览截图。"
             "纯 UI 复刻/无关 MES 的写码不要生搬这份清单。"
         ),
     }
+
+
+def _acceptance_markdown(hints: list[str], entities: list[dict[str, Any]]) -> str:
+    lines = ["### 改后数据侧验收", ""]
+    if entities:
+        e0 = entities[0]
+        eid = e0.get("entity") or e0.get("id")
+        label = e0.get("label") or eid
+        lines.append(f"针对「{label}」(`{eid}`) 建议在对话执行：")
+        lines.append("")
+    for i, h in enumerate(hints[:5], 1):
+        lines.append(f"{i}. {h}")
+    lines.append("")
+    lines.append("加字段类额外核对：列表/详情新列有值或按约定为空；已完工历史行是否已回填。")
+    return "\n".join(lines)

@@ -202,6 +202,7 @@ def list_platform_capabilities() -> dict[str, Any]:
             }
             for c in enriched
         ],
+        "markdown_summary": _caps_markdown(enriched, raw.get("map_source") or "profile"),
         "glossary_count": len(raw.get("glossary") or []),
         "map_source": raw.get("map_source") or "profile",
         "demo_note": (
@@ -218,7 +219,24 @@ def list_platform_capabilities() -> dict[str, Any]:
                 else ""
             )
         ),
+        "reply_hint": "优先展示 markdown_summary；再按需展开某一业务域。不要把查数实体当成 MES 全量能力。",
     }
+
+
+def _caps_markdown(enriched: list[dict[str, Any]], map_source: str) -> str:
+    lines = [
+        "## MES 业务能力地图（表结构）",
+        "",
+        f"共 **{len(enriched)}** 个业务域（来源：{map_source}）。依据当前资料包表结构，不是实时库条数。",
+        "",
+        "| # | 业务域 | 一句话 |",
+        "| --- | --- | --- |",
+    ]
+    for i, c in enumerate(enriched, 1):
+        lines.append(f"| {i} | {c.get('name')} | {c.get('one_liner') or ''} |")
+    lines.append("")
+    lines.append("需要某域详情、场景表包或导出摸底报告时告诉我。")
+    return "\n".join(lines)
 
 
 def describe_platform_capability(

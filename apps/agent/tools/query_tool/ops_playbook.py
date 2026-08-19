@@ -213,6 +213,12 @@ def _run_metric_chain(
         "有 summary.groups 则给出分组表；有 export.file 须报绝对路径与 rows。"
         "禁止未确认就改状态；需要写变更时说明须走确认卡。"
     )
+    if spec.get("exportable") and not export:
+        out["next_actions"] = [
+            "若用户要留档：再调 run_ops_scene(同一场景, export=true)",
+            "若要改状态/导入：必须走写确认卡，禁止默写",
+        ]
+        out["reply_hint"] += " 可主动问是否导出 CSV/Excel。"
     return out
 
 
@@ -441,8 +447,12 @@ def _run_diagnose(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
-    """值班简报：只跑当前目录能绑定的口径，绑不上就跳过。"""
-    from tools.query_tool.platform_query import list_query_metrics, query_metric
+    """值班简报：只跑当前目录能绑定的口径，绑不上就跳过；附状态分布与 markdown。"""
+    from tools.query_tool.platform_query import (
+        analyze_platform_brief,
+        list_query_metrics,
+        query_metric,
+    )
 
     listed = list_query_metrics()
     rows: list[dict[str, Any]] = []
@@ -468,7 +478,7 @@ def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
         try:
             out = query_metric(str(m.get("id") or ""), limit=page_limit)
         except Exception as e:
-            item["error"] = str(e)[:200]
+            item["error"] = f"{type(e).__name__}"
             rows.append(item)
             queried += 1
             continue
@@ -478,15 +488,62 @@ def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
         item["error"] = out.get("error")
         item["caveats"] = out.get("caveats")
         rows.append(item)
+
+    brief = None
+    try:
+        brief = analyze_platform_brief(entity=None, limit=max(40, page_limit), include_metrics=False)
+        if isinstance(brief, dict) and brief.get("error"):
+            brief = None
+    except Exception:
+        brief = None
+
+    lines = ["## 值班口径简报", ""]
+    lines.append("| 口径 | 条数 | 说明 |")
+    lines.append("| --- | --- | --- |")
+    for m in rows:
+        if m.get("skipped") or m.get("error"):
+            lines.append(f"| {m.get('label')} | — | {m.get('skipped') or m.get('error')} |")
+        else:
+            cave = "；".join(str(c) for c in (m.get("caveats") or [])[:1])
+            lines.append(f"| {m.get('label')} | **{m.get('total')}** | {cave or m.get('definition') or ''} |")
+    if brief and brief.get("breakdowns"):
+        lines.append("")
+        lines.append(f"### 主业务对象分布（`{brief.get('entity')}`）")
+        for b in brief.get("breakdowns") or []:
+            lines.append("")
+            lines.append(f"**按 {b.get('group_by_label')}**")
+            lines.append("")
+            lines.append("| 取值 | 条数 | 占比 |")
+            lines.append("| --- | --- | --- |")
+            for g in (b.get("groups") or [])[:8]:
+                lines.append(f"| {g.get('value')} | {g.get('count')} | {g.get('pct')}% |")
+    lines.append("")
+    lines.append("异常清单可再跑 `run_ops_scene('urgent-backlog')`；需要留档可加 `export=true`。")
+
     return {
         "scene": spec.get("id"),
         "label": spec.get("label"),
         "definition": spec.get("definition") or "",
         "kind": "daily_brief",
         "metrics": rows,
+        "object_brief": {
+            "entity": (brief or {}).get("entity"),
+            "label": (brief or {}).get("label"),
+            "total": (brief or {}).get("total"),
+            "breakdowns": (brief or {}).get("breakdowns") or [],
+        }
+        if brief
+        else None,
+        "markdown_report": "\n".join(lines),
+        "next_actions": [
+            "run_ops_scene('urgent-backlog') 看紧急未完工",
+            "run_ops_scene('urgent-backlog', export=true) 导出急单",
+            "analyze_platform_brief() 看更完整分组分析",
+        ],
         "reply_hint": (
-            "用中文简报列出各口径条数与定义；绑不上的如实跳过。"
+            "直接展示 markdown_report；绑不上的口径如实跳过。"
             "不要编造；不要默写；不要套其它 MES 的实体 id。"
+            "可追问是否导出紧急清单。"
         ),
     }
 

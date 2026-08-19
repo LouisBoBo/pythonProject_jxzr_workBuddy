@@ -7,7 +7,7 @@
           <span class="cd-hint">确认后开始改代码；取消可继续对话</span>
         </div>
         <p class="cd-summary">请确认写码目标与需求摘要</p>
-        <p class="cd-desc">默认写入本机目录（沙箱隔离后再同步）；也可改走 GitHub</p>
+        <p class="cd-desc">默认写入本机目录（沙箱内用 Cursor SDK 改码后再同步）；也可改走 GitHub Cloud</p>
       </div>
 
       <div class="cd-tabs" role="tablist">
@@ -77,7 +77,7 @@
             {{ lastWorkspace || card.lastWorkspace }}
           </button>
         </p>
-        <p class="cd-desc">改码先在沙箱进行，成功后才同步到该目录；失败不会脏写宿主机。</p>
+        <p class="cd-desc">改码由 Cursor SDK 在沙箱执行，成功后才同步到该目录；失败不会脏写宿主机。计费走 Cursor，不走 DeepSeek 工具环。</p>
       </template>
 
       <template v-else>
@@ -132,7 +132,7 @@
           @click="onConfirm"
         >
           <span v-if="busy" class="cd-spinner" aria-hidden="true" />
-          {{ busy ? '启动中…' : (targetTab === 'local' ? '确认并写入本机' : '确认并开始写码') }}
+          {{ busy ? '启动中…' : (targetTab === 'local' ? '确认并用 Cursor 写入本机' : '确认并开始写码') }}
         </button>
       </div>
     </template>

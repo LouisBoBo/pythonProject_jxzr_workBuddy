@@ -47,8 +47,12 @@ def create_job(
     workspace: str,
     message: str,
     empty_target: bool = False,
+    runtime: str | None = None,
 ) -> dict[str, Any]:
     now = int(time.time())
+    rt = (runtime or "cursor_local").strip() or "cursor_local"
+    if rt not in {"cursor_local", "local_sandbox"}:
+        rt = "cursor_local"
     job: dict[str, Any] = {
         "id": new_job_id(),
         "user_id": "" if user_id is None else str(user_id),
@@ -65,7 +69,8 @@ def create_job(
         "preview": None,
         "error": None,
         "cancel_requested": False,
-        "runtime": "local_sandbox",
+        "runtime": rt,
+        "agent_id": None,
         "created_at": now,
         "updated_at": now,
     }

@@ -23,7 +23,7 @@
           class="group-card"
         >
           <div class="group-title-row">
-            <h2 class="group-title">{{ group.label }}</h2>
+            <h2 class="group-title">{{ groupDisplayLabel(group) }}</h2>
             <el-button
               v-if="group.id === 'mes'"
               size="small"
@@ -145,8 +145,8 @@
           <template v-if="group.id === 'mes'">
             <div class="fields">
               <div v-for="field in group.fields" :key="field.key" class="field-row">
-                <div class="field-label">
-                  <span>{{ field.label }}</span>
+              <div class="field-label">
+                  <span>{{ fieldDisplayLabel(field) }}</span>
                   <span class="source-tag" :data-src="field.source">
                     {{ sourceLabel(field.source) }}
                   </span>
@@ -508,6 +508,24 @@ function sourceLabel(src) {
   return '未设置'
 }
 
+function groupDisplayLabel(group) {
+  if (group?.id === 'mes') return 'MES / ERP 接入'
+  return group?.label || ''
+}
+
+/** 前端兜底：避免 API 进程未重启时仍显示旧标签 */
+const FIELD_LABEL_OVERRIDES = {
+  MES_PROFILE_ID: 'MES / ERP 平台名称',
+  PLATFORM_BASE_URL: 'MES / ERP 平台访问地址',
+  MES_API_USERNAME: 'MES / ERP 接口账号',
+  MES_API_PASSWORD: 'MES / ERP 接口密码',
+  MES_API_ENTERPRISE_CODE: 'MES / ERP 企业编码',
+}
+
+function fieldDisplayLabel(field) {
+  return FIELD_LABEL_OVERRIDES[field?.key] || field?.label || ''
+}
+
 function secretPlaceholder(field) {
   if (clearSecrets.value[field.key]) return '将清除界面覆盖（保存后回退环境变量）'
   if (field.configured) return '留空表示不修改；输入新值则覆盖'
@@ -521,7 +539,7 @@ function fieldPlaceholder(field) {
   if (field.key === 'MAIN_MODEL' || field.key === 'VISION_MODEL') return '模型 ID'
   if (field.key === 'MES_PROFILE_ID') return '现场 MES 名称，例如：车间A'
   if (field.key === 'PLATFORM_BASE_URL') return 'http://主机:端口（网页或 API 根均可）'
-  if (field.key === 'MES_API_USERNAME') return 'MES 业务接口账号'
+  if (field.key === 'MES_API_USERNAME') return 'MES / ERP 业务接口账号'
   if (field.key === 'MES_API_ENTERPRISE_CODE') return '例如：江西中软'
   return field.label
 }

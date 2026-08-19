@@ -61,6 +61,37 @@ def resolve_in_sandbox(sandbox: Path, rel: str) -> Path:
     return target
 
 
+def sandbox_entry(sandbox: Path, rel: str) -> Path:
+    """沙箱内未 resolve 的入口路径（用于检测符号链接）；同样拒绝 .. / 绝对路径。"""
+    raw = (rel or "").strip().replace("\\", "/")
+    if not raw or raw.startswith("/") or raw.startswith("~"):
+        raise ValueError("只允许沙箱内相对路径")
+    if ".." in Path(raw).parts:
+        raise ValueError("路径不允许包含 ..")
+    entry = sandbox / raw
+    # 叶子为符号链接：先返回给调用方拒绝，避免 resolve 跟随外链时语义混成「逃逸」
+    if entry.is_symlink():
+        return entry
+    root = sandbox.resolve()
+    try:
+        entry.resolve(strict=False).relative_to(root)
+    except ValueError as e:
+        raise ValueError("路径逃逸出沙箱") from e
+    return entry
+
+
+def resolve_regular_file_in_sandbox(sandbox: Path, rel: str) -> Path:
+    """仅允许沙箱内普通文件；符号链接一律拒绝（防链出宿主机敏感文件）。"""
+    entry = sandbox_entry(sandbox, rel)
+    if entry.is_symlink():
+        raise ValueError("拒绝符号链接")
+    if not entry.exists():
+        raise FileNotFoundError(rel)
+    if not entry.is_file():
+        raise ValueError("不是普通文件")
+    return resolve_in_sandbox(sandbox, rel)
+
+
 def prepare_sandbox(
     data_dir: Path,
     job_id: str,
@@ -119,6 +150,9 @@ def prepare_sandbox(
             rel = str((rel_dir / name).as_posix() if str(rel_dir) != "." else name)
             if is_sensitive_rel(rel):
                 continue
+            # 不跟随符号链接拷入沙箱，避免把宿主机 .env / 密钥链进来给 Agent 读
+            if src.is_symlink() or not src.is_file():
+                continue
             try:
                 size = src.stat().st_size
             except OSError:
@@ -130,8 +164,15 @@ def prepare_sandbox(
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             try:
-                shutil.copy2(src, dest)
+                shutil.copy2(src, dest, follow_symlinks=False)
             except OSError:
+                continue
+            # copy2 在部分平台仍可能落地为链接；再拒一次
+            if dest.is_symlink():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
                 continue
             copied += 1
             total_bytes += size
@@ -163,7 +204,8 @@ def sync_changed_to_target(
     """将变更相对路径从沙箱同步到目标；返回实际写入列表。
 
     - 先校验再写入；单文件先写临时文件再 replace，降低半截文件风险
-    - 应同步却缺失的非敏感文件会抛错，避免静默丢变更
+    - 拒绝符号链接与逃逸路径（跳过该项，不拖垮整次同步中的合法文件）
+    - 应同步却缺失的非敏感普通文件会抛错，避免静默丢变更
     """
     import os
 
@@ -182,23 +224,38 @@ def sync_changed_to_target(
 
     planned: list[tuple[str, Path, Path]] = []
     missing: list[str] = []
+    skipped_unsafe: list[str] = []
+    total_bytes = 0
     for rel_n in requested:
         try:
-            src = resolve_in_sandbox(sandbox, rel_n)
-        except ValueError as e:
-            raise RuntimeError(f"同步路径非法：{rel_n}") from e
-        if not src.is_file():
+            src = resolve_regular_file_in_sandbox(sandbox, rel_n)
+        except FileNotFoundError:
             missing.append(rel_n)
+            continue
+        except ValueError:
+            skipped_unsafe.append(rel_n)
             continue
         size = src.stat().st_size
         if size > cfg.max_file_bytes:
             raise RuntimeError(f"文件过大，拒绝同步：{rel_n}")
+        if total_bytes + size > cfg.max_total_write_bytes:
+            raise RuntimeError(
+                f"本任务同步字节超限（>{cfg.max_total_write_bytes}），已中止"
+            )
         dest = (target / rel_n).resolve()
         try:
             dest.relative_to(target)
         except ValueError as e:
             raise RuntimeError(f"同步路径逃逸：{rel_n}") from e
+        # 目标若已是指向沙箱外的符号链接，拒绝覆盖写穿
+        dest_entry = target / rel_n
+        if dest_entry.is_symlink():
+            try:
+                dest_entry.resolve().relative_to(target)
+            except ValueError as e:
+                raise RuntimeError(f"目标路径为外链，拒绝覆盖：{rel_n}") from e
         planned.append((rel_n, src, dest))
+        total_bytes += size
 
     if missing:
         sample = "、".join(missing[:5])
@@ -206,6 +263,11 @@ def sync_changed_to_target(
         raise RuntimeError(f"沙箱中缺少待同步文件：{sample}{more}")
 
     if not planned:
+        if skipped_unsafe:
+            sample = "、".join(skipped_unsafe[:5])
+            raise RuntimeError(
+                f"没有可同步的安全文件（已跳过符号链接/逃逸路径：{sample}）"
+            )
         raise RuntimeError("没有可同步的有效文件")
 
     written: list[str] = []
@@ -213,13 +275,16 @@ def sync_changed_to_target(
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".wb-sync-tmp")
         try:
-            if tmp.exists():
+            if tmp.exists() or tmp.is_symlink():
                 tmp.unlink()
-            shutil.copy2(src, tmp)
+            shutil.copy2(src, tmp, follow_symlinks=False)
+            if tmp.is_symlink():
+                tmp.unlink()
+                raise RuntimeError(f"同步产生符号链接，已拒绝：{rel_n}")
             os.replace(tmp, dest)
         except OSError as e:
             try:
-                if tmp.exists():
+                if tmp.exists() or tmp.is_symlink():
                     tmp.unlink()
             except OSError:
                 pass

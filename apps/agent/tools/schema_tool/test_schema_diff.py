@@ -43,6 +43,8 @@ class SchemaDiffTests(unittest.TestCase):
         self.assertIn("tickets", ids)
         self.assertFalse(out["live_samples"])
         self.assertIn("启发式", out["note"])
+        self.assertIn("表结构 ↔ 接口目录对照", out.get("markdown_summary") or "")
+        self.assertIn("匹配", out.get("markdown_summary") or "")
 
     def test_overlay_wins(self) -> None:
         tables = {"tables": [{"table": "FOO", "label": "奇怪表", "meaning": "x"}]}

@@ -66,6 +66,41 @@ class PlatformApiAdaptTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(total, 9)
 
+    def test_describe_entity_tolerates_string_list_items(self) -> None:
+        """list 接口偶发返回字符串数组时，不可对 str 调 .keys()。"""
+        from unittest.mock import patch
+
+        from tools.platform_api import ERPClient
+
+        client = ERPClient.__new__(ERPClient)
+        client.ENTITY_MAP = {"work-orders": "work-orders"}
+        client.base = "http://127.0.0.1:9"
+        client._token = "t"
+
+        with (
+            patch("tools.platform_api._normalize_entity", return_value="work-orders"),
+            patch.object(client, "_resolve_entity", return_value="work-orders"),
+            patch("tools.platform_api.get_entity", return_value={"paging": {"limit": "limit"}}),
+            patch("tools.platform_api._collection_path", return_value="/api/work-orders"),
+            patch.object(
+                client,
+                "_request",
+                return_value=["alpha", "beta", {"id": 3, "name": "x"}],
+            ),
+        ):
+            out = client.describe_entity("work-orders")
+        self.assertNotIn("error", out)
+        self.assertEqual(out.get("fields"), ["id", "name"])
+        self.assertEqual(out.get("record_count"), 3)
+        self.assertEqual(out.get("sample"), [{"id": 3, "name": "x"}])
+
+    def test_extract_fields_ignores_non_dict(self) -> None:
+        from tools.platform_api import ERPClient
+
+        client = ERPClient.__new__(ERPClient)
+        self.assertEqual(client._extract_fields("oops"), [])
+        self.assertEqual(client._extract_fields({"b": 1, "a": 2}), ["a", "b"])
+
     def test_token_from_nested_login_payload(self) -> None:
         self.assertEqual(
             _token_from_login_payload({"access_token": "abc"}),

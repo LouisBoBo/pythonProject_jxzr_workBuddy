@@ -21,6 +21,7 @@ from tools.query_tool.platform_query import (
     list_platform_entities,
     query_platform_data,
     summarize_platform_data,
+    analyze_platform_brief,
     describe_entity,
     get_platform_summary,
     list_query_metrics,
@@ -77,6 +78,7 @@ TOOLS = [
     describe_entity,
     query_platform_data,
     summarize_platform_data,
+    analyze_platform_brief,
     list_query_metrics,
     query_metric,
     list_ops_scenes,
@@ -180,8 +182,10 @@ _CURSOR_DEV_CODING_PROMPT = """
 【写码分支 · workbuddy_lane=code_dev — 与审核对等互斥】
 - 触发：前端按用户「写/改/加功能」意图进入；标记含【写码需求讨论】、:::cursor_dev_*、
   page_context.workbuddy_lane=code_dev / cursor_dev_repo / local_workspace_root。
-- 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；**默认目标为本机目录（沙箱写码）**，
+- 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；**默认目标为本机目录**
+  （沙箱 + **Cursor SDK Local Agent** 写码后同步），
   GitHub + Cursor Cloud 为第二入口（propose 里 target=github）。
+  本机写码默认不走 DeepSeek 工具环（省 DeepSeek；计费在 Cursor）。
 - 做/改业务页、仪表盘、看板时同时启用 Skill「ui-product-design」：一页一身份、有信息层级；
   禁止照抄首页布局骨架，禁止默认白卡片 KPI 模板交差。
 - 用户说重做/重新设计/设计感时：旧「按截图位置」只作字段参考，禁止再锁截图骨架；明文 1:1/复刻除外。

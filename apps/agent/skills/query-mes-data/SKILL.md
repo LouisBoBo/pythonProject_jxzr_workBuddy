@@ -25,7 +25,8 @@ description: >-
 4. 查列表：`query_platform_data(entity="<英文id>", filters=?, limit=?)`
 5. 看字段：`describe_entity(entity="<英文id>")`（`filter_fields` 才是可下发的筛选名）
 6. 轻量汇总：`summarize_platform_data(entity="<英文id>", group_by=?, filters=?)`
-7. 指标口径：先 `list_query_metrics`，再 `query_metric`；「紧急工单/急单」用 `query_metric("紧急未完工")` 或 `run_ops_scene("urgent-backlog")`，**不要**只传 `filters={"priority":"urgent"}`
+7. **分析简报**：`analyze_platform_brief(entity=?)`（状态/优先级分布 + 可绑定指标；展示 `markdown_report`）
+8. 指标口径：先 `list_query_metrics`，再 `query_metric`；「紧急工单/急单」用 `query_metric("紧急未完工")` 或 `run_ops_scene("urgent-backlog")`，**不要**只传 `filters={"priority":"urgent"}`
 
 `entity` **必须用英文 id**（来自当前目录），不要传中文。口径名用中文或 id 均可，**禁止**把其它 MES 的实体 id 写进口径查询。
 
@@ -46,8 +47,10 @@ description: >-
 2. 条数：`total` / `returned`；有 `filters_applied` 须复述条件
 3. 用工具返回的 `markdown_table`（或 `display_rows`）展示，列名用中文
 4. 「各多少 / 按状态汇总」用 `summarize_platform_data` 的 `groups`，不要臆造字段或分组值
-5. 「在制 / 未完工 / 紧急未完工 / 当日完工」用 `query_metric`，先复述工具返回的 `definition` 与 `filter_sets`；绑不上就如实说，不要套 pending/work-orders
-6. 用户要导出时走 `export_platform_data`，报绝对路径 `file` 和行数 `rows`
+5. 「分析一下 / 概况 / 异常分布」用 `analyze_platform_brief`，展示 `markdown_report`
+6. 「在制 / 未完工 / 紧急未完工 / 当日完工」用 `query_metric`，先复述工具返回的 `definition` 与 `filter_sets`；绑不上就如实说，不要套 pending/work-orders
+7. 若返回含 `caveats`（常见：当日完工接口无日期筛参）：**必须**把 caveat 说给用户，禁止说成「今天完工了 N 条」；只能说「按已完工状态查出 N 条，未能限定当天」
+8. 用户要导出时走 `export_platform_data`，报绝对路径 `file` 和行数 `rows`
 
 ## 自检
 
@@ -56,5 +59,6 @@ description: >-
 - [ ] entity 是否与用户意图一致
 - [ ] 是否调用了查询工具（不要空口编数据）
 - [ ] 带筛选条件时是否传了 filters（看工具返回的 filters_applied）
-- [ ] 回复是否有中文列名、条数，而不是只贴原始 JSON
+- [ ] 回复是否有中文列名、条数，而不是只贴原始 JSON（过程区也应能看到中文表预览）
 - [ ] 「紧急工单/急单」是否走了 `query_metric("紧急未完工")` / `run_ops_scene("urgent-backlog")`，而不是只筛 `priority=urgent`
+- [ ] 「当日完工」若有 `caveats`，是否如实说明未能限定当天（禁止说成今天完工了 N 条）

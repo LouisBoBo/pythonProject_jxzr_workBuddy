@@ -132,6 +132,7 @@ def _is_cursor_dev_coding_lane(message: str = "", ctx: dict | None = None) -> bo
 _TOOL_LABELS = {
     "query_platform_data": "查询平台数据",
     "summarize_platform_data": "汇总平台数据分组",
+    "analyze_platform_brief": "平台轻量分析简报",
     "list_query_metrics": "列出指标口径",
     "query_metric": "按指标口径查询",
     "list_ops_scenes": "列出运维场景",
@@ -362,7 +363,7 @@ def _input_detail(name: str, inp: Any) -> str:
         return text[:240] + ("…" if len(text) > 240 else "") if text else ""
 
     lines: list[str] = []
-    if name in ("query_platform_data", "summarize_platform_data", "query_metric", "run_ops_scene"):
+    if name in ("query_platform_data", "summarize_platform_data", "analyze_platform_brief", "query_metric", "run_ops_scene"):
         if data.get("entity"):
             lines.append(f"实体：{data['entity']}")
         if data.get("name") and name == "query_metric":
@@ -558,37 +559,100 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
                 summary += "（本机直读）"
             return summary, files[:8]
 
-        if "total" in data or "records" in data:
+        if "total" in data or "records" in data or data.get("markdown_table") or data.get("display_rows") or data.get("markdown_report"):
+            if data.get("markdown_report") and not data.get("records") and not data.get("display_rows"):
+                # 分析简报 / 值班简报：过程区直接露出报告前几行
+                report = str(data.get("markdown_report") or "")
+                summary = "分析/简报已生成"
+                if data.get("label") or data.get("entity"):
+                    summary = f"分析简报：「{data.get('label') or ''}」(`{data.get('entity') or ''}`)"
+                for line in report.splitlines()[:12]:
+                    if line.strip():
+                        preview.append(line.strip())
+                if report.count("\n") > 12:
+                    preview.append("…（完整见助手回复 markdown_report）")
+                return summary, preview
             entity = data.get("entity") or ""
+            label = str(data.get("label") or data.get("metric_label") or "").strip()
             total = data.get("total")
+            returned = data.get("returned")
             records = data.get("records") if isinstance(data.get("records"), list) else []
+            display_rows = data.get("display_rows") if isinstance(data.get("display_rows"), list) else []
             if total is None:
-                total = len(records)
-            summary = f"查询完成：{entity} 共 {total} 条" if entity else f"查询完成：共 {total} 条"
-            for row in records[:4]:
-                if not isinstance(row, dict):
-                    preview.append(str(row)[:100])
-                    continue
-                bits = []
-                for key in (
-                    "plan_no",
-                    "order_no",
-                    "work_order_no",
-                    "product_name",
-                    "name",
-                    "status",
-                    "line_name",
-                    "qty",
-                    "plan_qty",
-                    "id",
-                ):
-                    if key in row and row[key] is not None:
-                        bits.append(f"{key}={row[key]}")
-                if not bits:
-                    bits = [f"{k}={v}" for k, v in list(row.items())[:4]]
-                preview.append(" · ".join(bits))
-            if total and total > len(preview):
-                preview.append(f"… 其余 {total - len(preview)} 条已省略")
+                total = len(records) if records else len(display_rows)
+            if returned is None:
+                returned = len(display_rows) if display_rows else len(records)
+            if label and entity:
+                summary = f"查询完成：「{label}」(`{entity}`) MES 共 {total} 条，本次 {returned} 条"
+            elif entity:
+                summary = f"查询完成：`{entity}` MES 共 {total} 条，本次 {returned} 条"
+            else:
+                summary = f"查询完成：共 {total} 条，本次 {returned} 条"
+            if data.get("metric_label"):
+                summary = f"口径「{data.get('metric_label')}」· " + summary
+            applied = data.get("filters_applied") if isinstance(data.get("filters_applied"), dict) else {}
+            if applied:
+                bits = [f"{k}={v}" for k, v in list(applied.items())[:6]]
+                summary += "；筛选 " + "，".join(bits)
+            caveats = data.get("caveats") if isinstance(data.get("caveats"), list) else []
+            for c in caveats[:3]:
+                s = str(c or "").strip()
+                if s:
+                    preview.append(f"说明：{s}")
+            # 优先中文 display_rows / markdown_table，过程区不再只贴英文 key=value
+            if display_rows:
+                col_meta = data.get("columns") if isinstance(data.get("columns"), list) else []
+                headers = [
+                    str(c.get("label") or c.get("name") or "")
+                    for c in col_meta
+                    if isinstance(c, dict)
+                ]
+                if headers and all(isinstance(r, dict) for r in display_rows[:1]):
+                    preview.append(" | ".join(headers))
+                    preview.append(" | ".join("---" for _ in headers))
+                    for row in display_rows[:5]:
+                        preview.append(
+                            " | ".join(str(row.get(h) or "")[:40] for h in headers)
+                        )
+                else:
+                    for row in display_rows[:5]:
+                        if isinstance(row, dict):
+                            preview.append(
+                                " · ".join(f"{k}={v}" for k, v in list(row.items())[:5])
+                            )
+                        else:
+                            preview.append(str(row)[:100])
+            else:
+                md = str(data.get("markdown_table") or "").strip()
+                if md:
+                    for line in md.splitlines()[:8]:
+                        if line.strip():
+                            preview.append(line.strip())
+                else:
+                    for row in records[:4]:
+                        if not isinstance(row, dict):
+                            preview.append(str(row)[:100])
+                            continue
+                        bits = []
+                        for key in (
+                            "plan_no",
+                            "order_no",
+                            "work_order_no",
+                            "product_name",
+                            "name",
+                            "status",
+                            "line_name",
+                            "qty",
+                            "plan_qty",
+                            "id",
+                        ):
+                            if key in row and row[key] is not None:
+                                bits.append(f"{key}={row[key]}")
+                        if not bits:
+                            bits = [f"{k}={v}" for k, v in list(row.items())[:4]]
+                        preview.append(" · ".join(bits))
+            if int(returned or 0) > 5:
+                preview.append(f"… 其余 {int(returned) - 5} 条已省略（完整表见助手回复）")
             return summary, preview
 
         if "entities" in data and isinstance(data["entities"], list):
@@ -958,7 +1022,7 @@ class AgentRunner:
                 "禁止 clone 仓库、禁止输出「代码审核报告」、禁止「筛选功能源码」。\n"
                 "禁止 read_file/write_file 本机绝对路径；路径只写入 propose.workspace。\n"
                 "只澄清需求并输出 :::cursor_dev_options 或 :::cursor_dev_propose；"
-                "默认 target=local（本机沙箱写码）；仅用户明确要 GitHub 时用 target=github（Cursor Cloud）。\n"
+                "默认 target=local（本机路径 + Cursor SDK Local Agent）；仅用户明确要 GitHub 时用 target=github（Cursor Cloud）。\n"
                 "消息里出现 GitHub 仓库名/分支仅表示要改哪个仓，不等于审核意图。\n"
             )
             body = f"{body}{force_coding}"
@@ -1540,7 +1604,20 @@ class AgentRunner:
                     ),
                 }
             else:
-                err_text = f"审核过程异常：{msg[:300]}"
+                # 通用流异常：勿一律写成「审核过程」，避免查数/写码误导
+                lane = ""
+                try:
+                    from middleware.request_context import get_page_context
+
+                    lane = str((get_page_context() or {}).get("workbuddy_lane") or "")
+                except Exception:
+                    lane = ""
+                if lane == "code_review" or "审核" in (message or ""):
+                    err_text = f"审核过程异常：{msg[:300]}"
+                elif lane == "code_dev":
+                    err_text = f"写码过程异常：{msg[:300]}"
+                else:
+                    err_text = f"处理异常：{msg[:300]}"
                 yield {
                     "type": "error",
                     "text": err_text,

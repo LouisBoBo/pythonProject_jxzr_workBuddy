@@ -313,14 +313,176 @@ def query_metric(
     presented["filter_sets"] = bound.get("filter_sets")
     presented["caveats"] = bound.get("caveats") or []
     presented["api_calls"] = len(calls)
+    caveats = bound.get("caveats") or []
     presented["reply_hint"] = (
         f"先复述口径「{bound.get('label')}」：{bound.get('definition')}；"
         f"查的是「{bound.get('entity_label')}」(`{bound.get('entity')}`)，"
         f"本次 {presented.get('returned')} 条。"
-        "列出实际下发的 filter_sets；有 caveats 必须告诉用户。"
+        "列出实际下发的 filter_sets；用 markdown_table / display_rows 展示。"
+        "有 caveats 必须原样告诉用户（例如接口无日期筛参时不得说成「今天完工了 N 条」）。"
         "不要编造未返回的记录。"
     )
+    if caveats:
+        presented["reply_hint"] += " 本次 caveats：" + "；".join(str(c) for c in caveats[:3])
     if any(c.get("error") for c in calls) and not merged:
         presented["error"] = "按口径请求 MES 失败"
         presented["call_errors"] = [c for c in calls if c.get("error")]
     return presented
+
+
+def analyze_platform_brief(
+    entity: Annotated[
+        str | None,
+        "实体英文 id 或中文别名；不传则按「生产工单/工单」等 hints 从当前目录解析",
+    ] = None,
+    limit: Annotated[int, "参与分析的记录上限，默认 100"] = 100,
+    include_metrics: Annotated[
+        bool, "是否附带当前目录可绑定的指标口径条数（在制/紧急未完工等），默认 true"
+    ] = True,
+) -> dict:
+    """轻量业务分析简报：按状态/优先级分组 + 可选指标口径，输出 markdown_report。
+
+    适合「分析一下工单」「产线概况」「帮我看下异常分布」。不是 SQL、不是 BI 看板。
+    分组与指标均绑定当前资料包；绑不上如实跳过。
+    """
+    from tools.query_tool.metrics_pack import _resolve_entity
+
+    catalog = load_catalog()
+    if not catalog:
+        return {
+            "error": "当前未配置可查对象，请先在系统配置接入 MES。",
+            "hint": "分析依赖接口目录，与表结构摸底不同。",
+        }
+    eid = (entity or "").strip() or None
+    if eid:
+        from tools.query_tool.entity_catalog import resolve_entity_id
+
+        resolved = resolve_entity_id(eid) or eid
+        eid = resolved
+    else:
+        eid = _resolve_entity(
+            ["生产工单", "工单", "派工单", "制造工单", "work order", "mo", "ticket"],
+            catalog,
+        )
+    if not eid:
+        return {
+            "error": "未能确定分析对象：请传 entity，或确保目录里有工单类对象。",
+            "available": [
+                {"entity": r.get("id"), "label": r.get("label")} for r in catalog[:12]
+            ],
+        }
+
+    cap = max(1, min(int(limit or 100), 100))
+    client = get_client()
+    raw = client.query(eid, None, cap)
+    if isinstance(raw, dict) and raw.get("error"):
+        return raw
+    presented = present_query_result(raw, filters=None, limit=cap)
+    records = presented.get("records") or []
+    keys: list[str] = []
+    for rec in records:
+        if isinstance(rec, dict):
+            for k in rec.keys():
+                ks = str(k)
+                if ks not in keys:
+                    keys.append(ks)
+    labels = field_label_map(str(presented.get("entity") or eid))
+    breakdowns: list[dict] = []
+    for want in ("状态", "优先级", "产线"):
+        field = resolve_group_by(want, keys, labels)
+        if not field:
+            continue
+        groups = summarize_records(records, field)
+        breakdowns.append(
+            {
+                "group_by": field,
+                "group_by_label": labels.get(field) or want,
+                "groups": groups,
+            }
+        )
+
+    metric_rows: list[dict] = []
+    if include_metrics:
+        listed = list_query_metrics()
+        for m in listed.get("metrics") or []:
+            if not m.get("bindable"):
+                metric_rows.append(
+                    {
+                        "id": m.get("id"),
+                        "label": m.get("label"),
+                        "bindable": False,
+                        "skipped": m.get("reason") or "绑不上",
+                    }
+                )
+                continue
+            mid = str(m.get("id") or "")
+            # 简报只抽与本实体相关、且最常用的口径，避免打太多请求
+            if m.get("entity") and str(m.get("entity")) != str(presented.get("entity")):
+                continue
+            if mid not in ("wip", "unfinished", "urgent-unfinished", "completed-today"):
+                continue
+            if len([x for x in metric_rows if x.get("bindable") and "total" in x]) >= 3:
+                break
+            out = query_metric(mid, limit=min(20, cap))
+            metric_rows.append(
+                {
+                    "id": mid,
+                    "label": m.get("label"),
+                    "bindable": True,
+                    "total": out.get("total"),
+                    "returned": out.get("returned"),
+                    "caveats": out.get("caveats") or [],
+                    "error": out.get("error"),
+                }
+            )
+
+    label = presented.get("label") or eid
+    total = presented.get("total")
+    returned = presented.get("returned")
+    lines = [
+        f"## 分析简报：{label}（`{presented.get('entity')}`）",
+        "",
+        f"- MES 共 **{total}** 条，本次分析用了 **{returned}** 条（轻量汇总，非全库 SQL）。",
+    ]
+    for b in breakdowns:
+        lines.append("")
+        lines.append(f"### 按「{b['group_by_label']}」分布")
+        lines.append("")
+        lines.append("| 取值 | 条数 | 占比 |")
+        lines.append("| --- | --- | --- |")
+        for g in b.get("groups") or []:
+            lines.append(f"| {g.get('value')} | {g.get('count')} | {g.get('pct')}% |")
+    if metric_rows:
+        lines.append("")
+        lines.append("### 指标口径（当前目录可绑定）")
+        lines.append("")
+        lines.append("| 口径 | 条数 | 说明 |")
+        lines.append("| --- | --- | --- |")
+        for m in metric_rows:
+            if m.get("skipped") or m.get("error"):
+                note = m.get("skipped") or m.get("error") or ""
+                lines.append(f"| {m.get('label')} | — | {note} |")
+            else:
+                cave = "；".join(str(c) for c in (m.get("caveats") or [])[:1])
+                lines.append(
+                    f"| {m.get('label')} | **{m.get('total')}** | {cave or '已下发口径 filters'} |"
+                )
+    lines.append("")
+    lines.append(
+        "需要明细清单、按条件筛选或导出 CSV/Excel 时告诉我即可。"
+    )
+    report = "\n".join(lines)
+    return {
+        "entity": presented.get("entity"),
+        "label": label,
+        "total": total,
+        "returned": returned,
+        "breakdowns": breakdowns,
+        "metrics": metric_rows,
+        "markdown_report": report,
+        "sample_table": presented.get("markdown_table") or "",
+        "reply_hint": (
+            "直接展示 markdown_report；说明这是当前资料包轻量分析，不是全库 SQL。"
+            "有 caveats 的口径必须原样告知。不要编造未出现的分组或条数。"
+        ),
+    }

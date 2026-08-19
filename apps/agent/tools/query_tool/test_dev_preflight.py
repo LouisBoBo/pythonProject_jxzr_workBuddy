@@ -48,6 +48,8 @@ class DevPreflightTests(unittest.TestCase):
         self.assertIn("tickets", blob)
         self.assertTrue(out.get("stack_chain"))
         self.assertTrue(any("库表" in x for x in out["stack_chain"]))
+        self.assertIn("改后数据侧验收", out.get("acceptance_markdown") or "")
+        self.assertTrue(out.get("post_change_checks"))
 
 
 if __name__ == "__main__":

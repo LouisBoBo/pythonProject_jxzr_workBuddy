@@ -88,6 +88,8 @@ class OpsPlaybookTests(unittest.TestCase):
         self.assertEqual(out.get("scene"), "urgent-backlog")
         self.assertIn("summary", out)
         self.assertEqual(out["summary"]["groups"][0]["count"], 1)
+        self.assertTrue(out.get("next_actions"))
+        self.assertIn("export=true", " ".join(out.get("next_actions") or []))
 
     def test_write_audit_scene(self) -> None:
         fake = {"returned": 1, "records": [{"username": "admin", "file": "a.csv"}], "note": "近 30 天"}
@@ -119,15 +121,30 @@ class OpsPlaybookTests(unittest.TestCase):
             ]
         }
         fake = {"entity": "tickets", "total": 4, "returned": 4}
+        brief = {
+            "entity": "tickets",
+            "label": "生产工单",
+            "total": 4,
+            "breakdowns": [
+                {
+                    "group_by": "status",
+                    "group_by_label": "状态",
+                    "groups": [{"value": "in_progress", "count": 2, "pct": 50.0}],
+                }
+            ],
+        }
         with (
             patch("tools.query_tool.platform_query.list_query_metrics", return_value=listed),
             patch("tools.query_tool.platform_query.query_metric", return_value=fake),
+            patch("tools.query_tool.platform_query.analyze_platform_brief", return_value=brief),
         ):
             out = run_ops_scene("值班简报")
         self.assertEqual(out.get("kind"), "daily_brief")
         by_id = {r["id"]: r for r in out.get("metrics") or []}
         self.assertEqual(by_id["wip"]["total"], 4)
         self.assertIn("skipped", by_id["x"])
+        self.assertIn("值班口径简报", out.get("markdown_report") or "")
+        self.assertTrue(out.get("next_actions"))
 
 
 if __name__ == "__main__":

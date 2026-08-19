@@ -182,6 +182,58 @@ class QueryPresentTests(unittest.TestCase):
         self.assertEqual(by_val["pending"], 2)
         self.assertEqual(by_val["done"], 1)
 
+    def test_analyze_platform_brief_builds_report(self) -> None:
+        from tools.query_tool.platform_query import analyze_platform_brief
+
+        class FakeClient:
+            def query(self, entity, filters, limit):
+                return {
+                    "entity": "work-orders",
+                    "total": 4,
+                    "records": [
+                        {"order_no": "WO-1", "status": "pending", "priority": "high"},
+                        {"order_no": "WO-2", "status": "in_progress", "priority": "urgent"},
+                        {"order_no": "WO-3", "status": "in_progress", "priority": "normal"},
+                        {"order_no": "WO-4", "status": "completed", "priority": "low"},
+                    ],
+                }
+
+        catalog = [
+            {
+                "id": "work-orders",
+                "label": "生产工单",
+                "aliases": ["工单"],
+                "fields": [{"name": "status", "label": "状态"}, {"name": "priority", "label": "优先级"}],
+            }
+        ]
+        with (
+            patch("tools.query_tool.platform_query.get_client", return_value=FakeClient()),
+            patch("tools.query_tool.platform_query.load_catalog", return_value=catalog),
+            patch("tools.query_tool.query_present.get_entity", return_value=_META),
+            patch(
+                "tools.query_tool.platform_query.list_query_metrics",
+                return_value={
+                    "metrics": [
+                        {
+                            "id": "wip",
+                            "label": "在制",
+                            "bindable": True,
+                            "entity": "work-orders",
+                        }
+                    ]
+                },
+            ),
+            patch(
+                "tools.query_tool.platform_query.query_metric",
+                return_value={"total": 2, "returned": 2, "caveats": []},
+            ),
+        ):
+            out = analyze_platform_brief(entity="work-orders", include_metrics=True)
+        self.assertEqual(out["entity"], "work-orders")
+        self.assertTrue(out.get("breakdowns"))
+        self.assertIn("分析简报", out.get("markdown_report") or "")
+        self.assertIn("在制", out.get("markdown_report") or "")
+
 
 if __name__ == "__main__":
     unittest.main()

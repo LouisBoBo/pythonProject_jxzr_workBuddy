@@ -4,7 +4,8 @@ description: >-
   用户要开发/实现/改写软件功能（非 PCB、非工程审核）。
   与「代码审核」是对等的另一条核心路由：按用户写/改意图进入，禁止调用审核工具。
   澄清需求必须用 :::cursor_dev_options 选项确认卡（勾选即可），禁止用表格/A~D/开放题逼用户打字。
-  默认写码目标为本机目录（沙箱隔离后同步）；GitHub + Cursor Cloud 为第二入口（target=github）。
+  默认写码目标为本机目录（沙箱隔离后由 Cursor SDK Local Agent 改码再同步）；
+  GitHub + Cursor Cloud 为第二入口（target=github）。
   截图 1:1/复刻：以【截图理解】视觉规格为准，禁止臆造模块、禁止 Element 白卡片模板交差。
   重做/重新设计/要有设计感：优先 Skill「ui-product-design」；旧「按截图位置」只作字段参考，禁止再锁五卡骨架。
   做/改/重写界面时必须同时遵循 Skill「ui-product-design」：有产品设计感，禁止照抄已有页布局。
@@ -15,7 +16,9 @@ description: >-
 # 写码需求讨论（确认卡前）
 
 > **定位**：少打字收集需求 → 确认目标与摘要 → 前端触发写码。  
-> **默认目标**：本机目录（沙箱内改 → 成功后同步）；GitHub Cloud 为可选项。  
+> **默认目标**：本机目录（沙箱内由 **Cursor SDK Local Agent** 改码 → 成功后同步）；GitHub Cloud 为可选项。  
+> **计费**：本机 Tab = Cursor 用量（非 DeepSeek 工具环）；GitHub Tab = Cursor Cloud。  
+> **应急**：环境变量 `LOCAL_DEV_AGENT=llm` 可回退旧 DeepSeek/对话模型工具环。  
 > **路由**：`workbuddy_lane=code_dev`，与 `code_review`（审核）对等互斥、无优先级。  
 > **交互铁律**：能勾选就不输入。凡技术栈、范围、是否含登录、首页档位等离散决策，**必须**用选项确认卡，禁止让用户打字回「Spring + B + 含登录」。  
 > **路径钉死**：改代码 = 必须 `:::cursor_dev_propose`（勿自己 read/write 本机绝对路径）。  
@@ -133,7 +136,7 @@ description: >-
 **仅当**用户明确要改当前 MES 的页、接口或查数相关功能时：
 
 1. 调用 `mes_change_preflight(user_intent=用户原话)`（只读目录，不写仓、不打 MES）
-2. 把返回的当前实体 id、`acceptance_hints`、**`stack_chain`** 写进 `:::cursor_dev_propose` 的 `requirement`
+2. 把返回的当前实体 id、`acceptance_hints` / `acceptance_markdown`、**`stack_chain`** 写进 `:::cursor_dev_propose` 的 `requirement`
 3. 不要写死另一套 MES 的实体 id
 4. **列表/表单加字段必须写清完整链路**（禁止只改页面）：
    - 库表补列或迁移
@@ -141,7 +144,7 @@ description: >-
    - 业务动作赋值（保存/开工等）
    - 前端展示与空值约定
    - 旧数据必须回填（已开工/已完成用计划日；待开工保持空）
-5. 改完后可用查数/口径工具做数据侧点检（用户确认写码之后）
+5. 写码完成后按 `acceptance_markdown` 在对话里跑查数/口径验收（本机写码摘要也会附验收清单）
 
 纯 UI 复刻、无关 MES 的开发：**不要**调用此工具，继续走选项卡 / propose。
 

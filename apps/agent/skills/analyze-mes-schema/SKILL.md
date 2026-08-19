@@ -30,13 +30,13 @@ description: >-
 ## 工具顺序
 
 1. 换平台 / 资料包是否就绪：`inspect_mes_profile()`（先看 A_schema 与 B_query 是否分开就绪）
-2. 人话总览：`list_platform_capabilities()`（无 capability_map.json 时按当前表结构域自动生成）
+2. 人话总览：`list_platform_capabilities()`（优先展示 `markdown_summary`；无 capability_map.json 时按当前表结构域自动生成）
 3. 某块详情：`describe_platform_capability(focus="…")`
 4. 术语：`list_platform_glossary(keyword=?)`
 5. 表结构：`analyze_schema_capabilities` / `list_schema_domains` / `list_schema_tables` / `describe_schema_table`
 6. 场景表包：`list_business_scenarios` → `get_scenario_table_pack`（按当前文档表名/中文匹配，不是写死 TBL_MO）
 7. 导出报告：`export_schema_survey_report(format="both")`
-8. 文档 vs 接口对照：`compare_schema_vs_catalog()`（默认不抽检 MES；用户明确要现场抽检才 `sample_live=true`）
+8. 文档 vs 接口对照：`compare_schema_vs_catalog()`（优先展示 `markdown_summary`；默认不抽检 MES；用户明确要现场抽检才 `sample_live=true`）
 9. 文档更新：`rebuild_schema_index()`
 
 若工具报「未配置表结构」或 `missing` 含表结构：把 action 告诉用户，不要编造模块清单。

@@ -1,4 +1,4 @@
-"""本机写码执行：沙箱内 LLM 工具循环 → 闸门 → 同步目标目录。"""
+"""本机写码执行：沙箱 +（默认）Cursor SDK Local Agent → 闸门 → 同步目标目录。"""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,14 @@ from typing import Any, Callable
 
 from . import jobs as job_store
 from .config import LocalDevConfig, get_config
+from .cursor_local_agent import (
+    build_cursor_local_prompt,
+    cursor_local_availability,
+    run_cursor_local_agent,
+    run_cursor_local_followup,
+)
 from .dev_runtime import ensure_dev_preview
+from .fs_snapshot import diff_snapshots, snapshot_sandbox
 from .import_check import find_broken_relative_imports, format_repair_prompt
 from .prompts import SYSTEM_PROMPT, TOOL_SPECS, build_user_prompt, parse_plan_steps_from_text
 from .sandbox import prepare_sandbox, sync_changed_to_target
@@ -279,8 +286,15 @@ def run_job(
         _emit(sink, {"type": "error", "message": err})
         return job_store.get_job(data_dir, job_id) or job
 
-    job_store.update_job(data_dir, job_id, status="running", error=None)
-    _emit(sink, {"type": "status", "text": "本机沙箱写码开始", "phase": "start"})
+    use_cursor = (cfg.agent or "cursor_sdk") == "cursor_sdk"
+    runtime_label = "cursor_local" if use_cursor else "local_sandbox"
+    job_store.update_job(data_dir, job_id, status="running", error=None, runtime=runtime_label)
+    start_text = (
+        "本机路径 + Cursor SDK 写码开始"
+        if use_cursor
+        else "本机沙箱写码开始（LLM 工具环）"
+    )
+    _emit(sink, {"type": "status", "text": start_text, "phase": "start", "channel": runtime_label})
 
     workspace = str(job.get("workspace") or "").strip()
     check = validate_workspace(workspace)
@@ -301,6 +315,14 @@ def run_job(
     try:
         if job_store.is_cancel_requested(data_dir, job_id):
             raise RuntimeError("任务已取消")
+
+        if use_cursor:
+            ok_c, reason_c, _model_c = cursor_local_availability()
+            if not ok_c:
+                raise RuntimeError(
+                    reason_c
+                    or "本机 Cursor 写码不可用；可设 LOCAL_DEV_AGENT=llm 回退旧工具环"
+                )
 
         step("准备沙箱", sid="sandbox-prep")
         meta = prepare_sandbox(
@@ -325,67 +347,75 @@ def run_job(
 
         fs = SandboxFS(sandbox_path, cfg=cfg)
         plan = _PlanTracker(sink)
-        client, model = _load_llm_client()
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": build_user_prompt(
-                    requirement=requirement,
-                    workspace_hint=str(target),
-                    empty_target=empty_target,
-                ),
-            },
-        ]
+        assistant_text = ""
+        cursor_agent_id = ""
 
-        step("模型在沙箱内改码…", sid="agent-loop")
-        assistant_text = _run_llm_tool_loop(
-            client=client,
-            model=model,
-            messages=messages,
-            fs=fs,
-            plan=plan,
-            sink=sink,
-            data_dir=data_dir,
-            job_id=job_id,
-            max_steps=cfg.max_agent_steps,
-            step=step,
-            stream_tokens=True,
-            loop_sid="agent-loop",
-        )
-
-        # 相对 import 闸门：破损则强制再修，避免同步后 Vite 红屏
-        for repair_i in range(2):
-            issues = find_broken_relative_imports(sandbox_path, fs.changed_files())
-            if not issues:
-                if repair_i == 0:
-                    step("相对 import 校验通过", sid="import-gate", state="done")
-                else:
-                    step("相对 import 已修复", sid="import-gate", state="done")
-                break
-            step(
-                f"相对 import 闸门：{len(issues)} 处无法解析，强制修复（第 {repair_i + 1} 轮）…",
-                sid="import-gate",
+        if use_cursor:
+            before = snapshot_sandbox(sandbox_path)
+            prompt = build_cursor_local_prompt(
+                requirement=requirement,
+                workspace_hint=str(target),
+                empty_target=empty_target,
             )
-            messages.append({"role": "user", "content": format_repair_prompt(issues)})
-            repaired = _run_llm_tool_loop(
-                client=client,
-                model=model,
-                messages=messages,
-                fs=fs,
-                plan=plan,
-                sink=sink,
+            step("Cursor 在沙箱内改码…", sid="agent-loop")
+            cre = run_cursor_local_agent(
+                sandbox=sandbox_path,
+                prompt=prompt,
                 data_dir=data_dir,
                 job_id=job_id,
-                max_steps=min(10, cfg.max_agent_steps),
+                sink=sink,
                 step=step,
-                stream_tokens=False,
-                loop_sid=f"import-repair-{repair_i + 1}",
+                is_cancel_requested=lambda: job_store.is_cancel_requested(data_dir, job_id),
+                timeout_sec=cfg.cursor_timeout_sec,
             )
-            if repaired:
-                assistant_text = repaired
-        else:
-            leftover = find_broken_relative_imports(sandbox_path, fs.changed_files())
+            if not cre.get("ok"):
+                raise RuntimeError(cre.get("error") or "Cursor 本机写码失败")
+            assistant_text = str(cre.get("text") or "")
+            cursor_agent_id = str(cre.get("agent_id") or "")
+            if cursor_agent_id:
+                job_store.update_job(data_dir, job_id, agent_id=cursor_agent_id)
+
+            # 相对 import 闸门：破损则 Cursor follow-up 再修
+            for repair_i in range(2):
+                after_mid = snapshot_sandbox(sandbox_path)
+                changed_mid = diff_snapshots(before, after_mid)
+                issues = find_broken_relative_imports(sandbox_path, changed_mid)
+                if not issues:
+                    if repair_i == 0:
+                        step("相对 import 校验通过", sid="import-gate", state="done")
+                    else:
+                        step("相对 import 已修复", sid="import-gate", state="done")
+                    break
+                step(
+                    f"相对 import 闸门：{len(issues)} 处无法解析，强制修复（第 {repair_i + 1} 轮）…",
+                    sid="import-gate",
+                )
+                repaired = run_cursor_local_followup(
+                    sandbox=sandbox_path,
+                    agent_id=cursor_agent_id,
+                    prompt=format_repair_prompt(issues),
+                    data_dir=data_dir,
+                    job_id=job_id,
+                    sink=sink,
+                    step=step,
+                    is_cancel_requested=lambda: job_store.is_cancel_requested(data_dir, job_id),
+                    timeout_sec=min(900, cfg.cursor_timeout_sec),
+                    loop_sid=f"import-repair-{repair_i + 1}",
+                )
+                if repaired.get("ok") and repaired.get("text"):
+                    assistant_text = str(repaired.get("text") or assistant_text)
+                elif not repaired.get("ok"):
+                    step(
+                        f"相对 import 修复未成功：{str(repaired.get('error') or '')[:120]}",
+                        sid="import-gate",
+                        state="done",
+                    )
+                    # 不再空转；下方统一 leftover 检查后中止同步
+                    break
+            after_mid = snapshot_sandbox(sandbox_path)
+            leftover = find_broken_relative_imports(
+                sandbox_path, diff_snapshots(before, after_mid)
+            )
             if leftover:
                 detail = "; ".join(
                     f"{x['file']} ← {x['import']}" for x in leftover[:8]
@@ -394,9 +424,82 @@ def run_job(
                     "相对 import 校验未通过，已中止同步（避免 Vite 红屏）：" + detail
                 )
 
-        plan.mark_all_done()
-        changed = fs.changed_files()
-        job_store.update_job(data_dir, job_id, changed_files=changed)
+            plan.mark_all_done()
+            changed = diff_snapshots(before, snapshot_sandbox(sandbox_path))
+            job_store.update_job(data_dir, job_id, changed_files=changed)
+        else:
+            client, model = _load_llm_client()
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_user_prompt(
+                        requirement=requirement,
+                        workspace_hint=str(target),
+                        empty_target=empty_target,
+                    ),
+                },
+            ]
+
+            step("模型在沙箱内改码…", sid="agent-loop")
+            assistant_text = _run_llm_tool_loop(
+                client=client,
+                model=model,
+                messages=messages,
+                fs=fs,
+                plan=plan,
+                sink=sink,
+                data_dir=data_dir,
+                job_id=job_id,
+                max_steps=cfg.max_agent_steps,
+                step=step,
+                stream_tokens=True,
+                loop_sid="agent-loop",
+            )
+
+            # 相对 import 闸门：破损则强制再修，避免同步后 Vite 红屏
+            for repair_i in range(2):
+                issues = find_broken_relative_imports(sandbox_path, fs.changed_files())
+                if not issues:
+                    if repair_i == 0:
+                        step("相对 import 校验通过", sid="import-gate", state="done")
+                    else:
+                        step("相对 import 已修复", sid="import-gate", state="done")
+                    break
+                step(
+                    f"相对 import 闸门：{len(issues)} 处无法解析，强制修复（第 {repair_i + 1} 轮）…",
+                    sid="import-gate",
+                )
+                messages.append({"role": "user", "content": format_repair_prompt(issues)})
+                repaired = _run_llm_tool_loop(
+                    client=client,
+                    model=model,
+                    messages=messages,
+                    fs=fs,
+                    plan=plan,
+                    sink=sink,
+                    data_dir=data_dir,
+                    job_id=job_id,
+                    max_steps=min(10, cfg.max_agent_steps),
+                    step=step,
+                    stream_tokens=False,
+                    loop_sid=f"import-repair-{repair_i + 1}",
+                )
+                if repaired:
+                    assistant_text = repaired
+            else:
+                leftover = find_broken_relative_imports(sandbox_path, fs.changed_files())
+                if leftover:
+                    detail = "; ".join(
+                        f"{x['file']} ← {x['import']}" for x in leftover[:8]
+                    )
+                    raise RuntimeError(
+                        "相对 import 校验未通过，已中止同步（避免 Vite 红屏）：" + detail
+                    )
+
+            plan.mark_all_done()
+            changed = fs.changed_files()
+            job_store.update_job(data_dir, job_id, changed_files=changed)
 
         if not changed:
             summary = assistant_text or "模型未写入任何文件。"
@@ -481,14 +584,37 @@ def run_job(
             )
         gate_md = format_gate_summary(gate_result)
         gate_block = f"{gate_md}\n\n" if gate_md else ""
+        accept_block = ""
+        if looks_like_data_ui_change(requirement):
+            try:
+                # 本机写码进程可能不在 agent 包路径下，按需加入
+                import sys
+                from pathlib import Path as _P
+
+                _agent = _P(__file__).resolve().parents[1] / "agent"
+                if str(_agent) not in sys.path:
+                    sys.path.insert(0, str(_agent))
+                from tools.query_tool.dev_preflight import mes_change_preflight
+
+                pf = mes_change_preflight(requirement)
+                md = str(pf.get("acceptance_markdown") or "").strip()
+                if md:
+                    accept_block = f"{md}\n\n"
+            except Exception:  # noqa: BLE001
+                accept_block = (
+                    "### 改后数据侧验收\n\n"
+                    "- 在对话里查相关列表，确认无 401、条数合理\n"
+                    "- 加字段：核对新列展示与历史回填\n\n"
+                )
         summary = (
             f"## 已完成本机写码\n\n"
             f"已写入目标目录：`{target}`\n\n"
             f"变更文件（{len(synced)}）：\n{files_md}\n\n"
             f"{preview_md}\n"
             f"{gate_block}"
+            f"{accept_block}"
             f"沙箱 id：`{job_id}`\n\n"
-            f"本机写码不经 GitHub / Cursor Cloud。\n"
+            f"{'本机写码：Cursor SDK Local Agent（不经 GitHub Cloud / 不经 DeepSeek 工具环）。' if use_cursor else '本机写码：LLM 工具环（应急模式 LOCAL_DEV_AGENT=llm）。'}\n"
         )
         if assistant_text:
             summary += f"\n### 模型说明\n{assistant_text}\n"

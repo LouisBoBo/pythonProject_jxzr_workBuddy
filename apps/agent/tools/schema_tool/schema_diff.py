@@ -235,17 +235,77 @@ def compare_schema_vs_catalog(
         "catalog_only": catalog_only[:30],
         "overlay_pairs": overlay,
         "live_samples": live,
+        "markdown_summary": _diff_markdown(
+            matched_count=len(matched),
+            schema_only_count=len(schema_only),
+            catalog_only_count=len(catalog_only),
+            matched=matched,
+            schema_only=schema_only,
+            catalog_only=catalog_only,
+            sample_live=bool(sample_live),
+            live=live,
+        ),
         "note": (
             "L0=表结构文档，L1=接口可查对象。匹配是启发式，不是同一对象的证明。"
             "默认未抽检现场数据；sample_live 才只读抽 1 条。"
             "资料包可放 schema_catalog_map.json 按 table→entity 校准。"
         ),
         "reply_hint": (
-            "先报对照结论：匹配数 / 仅文档有 / 仅接口有；点名几条例子。"
+            "优先展示 markdown_summary；先报对照结论：匹配数 / 仅文档有 / 仅接口有；点名几条例子。"
             "不要把「对得上名字」说成已经查了实时库。"
             "用户要现场抽检时才 sample_live=true。"
         ),
     }
+
+
+def _diff_markdown(
+    *,
+    matched_count: int,
+    schema_only_count: int,
+    catalog_only_count: int,
+    matched: list[dict[str, Any]],
+    schema_only: list[dict[str, Any]],
+    catalog_only: list[dict[str, Any]],
+    sample_live: bool,
+    live: list[dict[str, Any]],
+) -> str:
+    lines = [
+        "## 表结构 ↔ 接口目录对照",
+        "",
+        f"- 匹配：**{matched_count}**",
+        f"- 仅文档有：**{schema_only_count}**",
+        f"- 仅接口有：**{catalog_only_count}**",
+        "",
+        "（启发式名称匹配，不等于同一业务对象；默认未抽检现场数据。）",
+    ]
+    if matched:
+        lines += ["", "### 匹配示例", "", "| 表 | 可查对象 | 方式 |", "| --- | --- | --- |"]
+        for m in matched[:8]:
+            lines.append(
+                f"| {m.get('table_label') or m.get('table')} | "
+                f"{m.get('entity_label') or m.get('entity')} (`{m.get('entity')}`) | "
+                f"{m.get('how')} |"
+            )
+    if schema_only:
+        lines += ["", "### 仅文档有（节选）"]
+        for t in schema_only[:6]:
+            lines.append(f"- {t.get('label') or t.get('table')}（`{t.get('table')}`）")
+    if catalog_only:
+        lines += ["", "### 仅接口有（节选）"]
+        for e in catalog_only[:6]:
+            lines.append(f"- {e.get('label')}（`{e.get('entity')}`）")
+    if sample_live and live:
+        lines += ["", "### 现场抽检"]
+        for row in live[:5]:
+            if row.get("error"):
+                lines.append(f"- 抽检失败：{row.get('error')}")
+            elif row.get("ok"):
+                lines.append(
+                    f"- `{row.get('entity')}`：ok，total={row.get('total')}，本次 {row.get('returned')}"
+                )
+            else:
+                lines.append(f"- `{row.get('entity')}`：{row.get('error') or '失败'}")
+    return "\n".join(lines)
 
 
 def _sample_live(matched: list[dict[str, Any]]) -> list[dict[str, Any]]:

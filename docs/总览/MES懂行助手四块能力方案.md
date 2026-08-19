@@ -62,10 +62,10 @@ flowchart TB
 
 | 能力块 | 现有底座（已落地） | 主要缺口 |
 |--------|-------------------|----------|
-| **A 懂平台** | 资料包表结构 + capability map（可选）+ schema 工具、PCB/MES Skills、实体别名规则 | 与**你们现场真实库/官方 API**校准；场景化「表包」与话术覆盖不足 |
-| **B 数据分析** | `query_platform_data` / 导出、实体目录、结果可对话展示 | ERP 真地址未通时只见沙箱假数；缺指标口径、聚合分析、权限到字段级 |
-| **C 协助运维** | `ops-query-playbook`、接口健康/沙箱探活、写操作确认与审计 | 缺值班级场景清单、日志/告警接入、变更回滚话术闭环 |
-| **D 加功能** | Cursor 写码车道、本机目录写码、Git/IDE 审码、桌面壳 | 与 A/B 闭环弱：改功能前缺「真实表/API」约束；改后缺数据侧验收清单 |
+| **A 懂平台** | 资料包表结构；无 overlay 可推断能力地图（含 `markdown_summary`）；场景表关键字匹配；`inspect_mes_profile`；`compare_schema_vs_catalog`（含对照 markdown） | 现场长期校准流水线；摸底 10 句仍需人工抽检对话质量 |
+| **B 数据分析** | 真 ERP 查数/筛选/汇总/导出；中文 `markdown_table`；过程区优先中文表；指标口径 + 当日完工无日期筛参诚实降级；**`analyze_platform_brief` 轻量分析简报** | 只读 SQL；字段级权限；固定产线异常日报套版；前端独立结果表组件（过程区已可读） |
+| **C 协助运维** | `list_ops_scenes` / `run_ops_scene`；紧急/401/探活/简报/故障树；值班简报含分布 markdown + 导出提示；写确认与审计 | 日志/告警只读接入；变更窗口与双人确认 |
+| **D 加功能** | 本机/GitHub 写码与审码；`mes_change_preflight`（含 `acceptance_markdown`）；`stack_chain` + 同步后 SQLite 闸门；**写码摘要附改后验收清单** | 改后自动跑查数；非 SQLite 库的迁移/回填 |
 
 ---
 

@@ -66,6 +66,7 @@
 | **预期工具** | `query_platform_data`，实体 id 以目录为准（当前示例 `inspection-plans`，路径 `/api/inspection/plans`） |
 | **期望要点** | ① 走嵌套列表路径，不是误打 `/api/v1/...` ② **不要**用工单数据充数 |
 | **通过标准** | 返回点检计划或如实空；实体与工单不同 |
+| **验收** | **P** · 2026-08-19 · entity=`inspection-plans` · path=`/api/inspection/plans` · total=2 / returned=2 · 未走 `/api/v1` · 未用工单充数 |
 
 当前资料包若无点检计划，改问目录里存在的另一嵌套对象（如设备保养计划），标准相同。
 
@@ -81,6 +82,7 @@
 | **期望要点** | 提示到系统配置填写 **MES 接口账号**（可提到企业编码）；说明与 WorkBuddy 登录无关 |
 | **通过标准** | **不**用 WorkBuddy 登录 token 去打 MES 而报 401；应明确缺 MES 接口凭证 |
 | **收尾** | 测完把账号填回去，再跑 TC-Q-01 |
+| **验收** | **P** · 2026-08-19 · `inspect_mes_profile(查生产工单列表)` · `can_answer_now=false` · missing 含「MES 接口账号」· 未用 WorkBuddy token 冒充打 MES |
 
 ---
 
@@ -92,6 +94,7 @@
 | **测试问题** | MES 系统能干什么？ |
 | **预期工具** | 表结构摸底（`list_platform_capabilities` 等），**不是** `query_platform_data` |
 | **通过标准** | 按表结构讲模块/场景；不把「能查 work-orders」当成 MES 全量能力 |
+| **验收** | **P** · 2026-08-19 · intent=`survey` · next_tool=`list_platform_capabilities` · map_source=`inferred_from_schema` · capability_count=10 · 35 表 / 10 域 |
 
 ---
 
@@ -147,12 +150,19 @@
 
 记录格式：`P` / `F` + 日期 + 资料包 + 实际实体 id + 条数要点。
 
-### 联调记录（江西中软 MES · 2026-08-18）
+### 联调记录（江西中软 MES · 2026-08-18 / 08-19）
 
 | 用例 | 结果 | 要点 |
 |------|------|------|
 | TC-Q-01 | P | 生产工单列表 `work-orders`，12 条，中文列表格 |
 | TC-Q-02 | P | pending 3 条，筛选已作接口参数 |
+| TC-Q-03 | P · 08-19 | `inspection-plans` · `/api/inspection/plans` · 2 条 |
+| TC-Q-04 | P · 08-19 | 无 MES 账号时 `can_answer_now=false`，提示补接口凭证 |
+| TC-Q-05 | P · 08-19 | 摸底 10 能力 / 35 表，不走查数 |
 | TC-Q-06 | P | 按状态分组 4/3/3/2 |
 | TC-Q-07 | P | 导出 CSV 12 行，给出绝对路径 |
 | TC-Q-08 | P | 在制 4；紧急未完工 3；当日完工缺日期筛参时如实降级为已完工 3 条 |
+| 换平台负向 | P · 08-19 | 空目录查数被挡，结果不含 `work-orders` |
+| D 闸门 | P · 08-19 | 加实际结束时间：补列并回填计划日 18:00 |
+
+自动化冒烟：`PYTHONPATH=apps/agent:apps python3 scripts/smoke_mes_acceptance_0819.py`

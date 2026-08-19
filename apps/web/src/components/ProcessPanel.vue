@@ -45,8 +45,8 @@
           <div v-if="item.detail" class="process-block">
             <div class="process-block-label">结果</div>
             <div class="process-block-summary">{{ item.detail }}</div>
-            <ul v-if="item.preview?.length" class="process-preview">
-              <li v-for="(line, i) in item.preview" :key="i">{{ line }}</li>
+            <ul v-if="item.preview?.length" class="process-preview" :class="{ 'is-table': looksLikeTable(item.preview) }">
+              <li v-for="(line, i) in item.preview" :key="i" class="mono">{{ line }}</li>
             </ul>
           </div>
         </div>
@@ -173,6 +173,13 @@ function isDoneItem(item) {
 
 function isErrorItem(item) {
   return item?.state === 'error' || item?.ok === false
+}
+
+function looksLikeTable(preview) {
+  if (!Array.isArray(preview) || preview.length < 2) return false
+  const a = String(preview[0] || '')
+  const b = String(preview[1] || '')
+  return a.includes(' | ') && (b.includes('---') || /^[\s|:-]+$/.test(b.trim()))
 }
 </script>
 
@@ -424,6 +431,19 @@ function isErrorItem(item) {
   color: #64748b;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.process-preview.is-table {
+  list-style: none;
+  padding-left: 0;
+  overflow-x: auto;
+}
+
+.process-preview.is-table li {
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .process-preview li {

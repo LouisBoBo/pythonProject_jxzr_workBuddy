@@ -39,7 +39,7 @@ class JobResponse(BaseModel):
     workspace: str = ""
     thread_id: str = ""
     error: str | None = None
-    runtime: str = "local_sandbox"
+    runtime: str = "cursor_local"
     changed_files: list[str] = Field(default_factory=list)
     synced_files: list[str] = Field(default_factory=list)
     sandbox_path: str | None = None
@@ -83,7 +83,7 @@ def _job_to_response(job: dict[str, Any]) -> JobResponse:
         workspace=job.get("workspace") or "",
         thread_id=job.get("thread_id") or "",
         error=job.get("error"),
-        runtime=job.get("runtime") or "local_sandbox",
+        runtime=job.get("runtime") or "cursor_local",
         changed_files=list(job.get("changed_files") or []),
         synced_files=list(job.get("synced_files") or []),
         sandbox_path=job.get("sandbox_path"),
@@ -115,15 +115,29 @@ def _assert_job_owner(job: dict[str, Any], user: Any) -> None:
 @router.get(
     "/status",
     summary="本机写码可用性",
-    description="检查本机沙箱写码是否开启，以及对话模型是否已配置。",
+    description=(
+        "检查本机写码是否开启。"
+        "默认执行器为 Cursor SDK Local Agent（需 CURSOR_API_KEY）；"
+        "LOCAL_DEV_AGENT=llm 时回退为对话模型工具环。"
+    ),
 )
 async def local_dev_status(auth: tuple = Depends(require_auth)):
     _auth_user(auth)
     cfg = get_config()
     reason = ""
     available = bool(cfg.enabled)
+    runtime = "cursor_local" if (cfg.agent or "") == "cursor_sdk" else "local_sandbox"
+    cursor_model = ""
     if not available:
         reason = "LOCAL_DEV_ENABLED 未开启"
+    elif runtime == "cursor_local":
+        from local_dev.cursor_local_agent import cursor_local_availability
+
+        ok, why, model = cursor_local_availability()
+        cursor_model = model
+        if not ok:
+            available = False
+            reason = why or "Cursor 本机写码不可用"
     else:
         try:
             agent_root = Path(__file__).resolve().parents[2] / "agent"
@@ -141,7 +155,9 @@ async def local_dev_status(auth: tuple = Depends(require_auth)):
         "available": available,
         "reason": reason,
         "enabled": cfg.enabled,
-        "runtime": "local_sandbox",
+        "runtime": runtime,
+        "agent": cfg.agent,
+        "cursor_model": cursor_model,
     }
 
 
@@ -187,7 +203,7 @@ async def pick_folder_dialog(
     response_model=JobResponse,
     status_code=201,
     summary="创建本机写码任务",
-    description="确认本地目录与需求后创建任务；执行时先在沙箱改码，成功后再同步到目标目录。",
+    description="确认本地目录与需求后创建任务；默认用 Cursor SDK 在沙箱改码，成功后再同步到目标目录。",
 )
 async def create_local_dev_job(body: CreateLocalJobBody, auth: tuple = Depends(require_auth)):
     user = _auth_user(auth)
@@ -196,6 +212,30 @@ async def create_local_dev_job(body: CreateLocalJobBody, auth: tuple = Depends(r
         raise HTTPException(status_code=503, detail="本机写码未开启")
     if not body.confirmed:
         raise HTTPException(status_code=400, detail="须 confirmed=true（启动前确认）")
+
+    runtime = "cursor_local" if (cfg.agent or "") == "cursor_sdk" else "local_sandbox"
+    if runtime == "cursor_local":
+        from local_dev.cursor_local_agent import cursor_local_availability
+
+        ok, why, _model = cursor_local_availability()
+        if not ok:
+            raise HTTPException(
+                status_code=503,
+                detail=why or "Cursor 本机写码不可用（需 CURSOR_API_KEY + cursor-sdk）",
+            )
+    else:
+        try:
+            agent_root = Path(__file__).resolve().parents[2] / "agent"
+            if str(agent_root) not in sys.path:
+                sys.path.insert(0, str(agent_root))
+            from config import Config  # type: ignore
+
+            if not (Config.LLM_API_KEY or "").strip():
+                raise HTTPException(status_code=503, detail="未配置对话模型 API Key")
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=f"无法读取模型配置：{e}") from e
 
     message = (body.message or "").strip()
     if not message:
@@ -240,6 +280,7 @@ async def create_local_dev_job(body: CreateLocalJobBody, auth: tuple = Depends(r
         workspace=check["path"],
         message=message,
         empty_target=bool(check.get("empty")),
+        runtime=runtime,
     )
     user_prefs.set_last_local_workspace(DATA_DIR, username, check["path"])
     return _job_to_response(job)

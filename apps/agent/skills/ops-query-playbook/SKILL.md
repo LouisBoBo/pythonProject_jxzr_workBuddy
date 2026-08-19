@@ -32,9 +32,12 @@ run_ops_scene(scene="<id或中文>", export=false|true)
 | 401 / Token / MES 账号 | `login-mes-auth-help` | 区分 WorkBuddy 登录 vs MES 接口账号 |
 | 没有可查对象 | `catalog-empty-help` | 引导 MES 接入 |
 | 查不到数据 / 故障排查 | `ops-diagnose` | 只读就绪状态+日志分支，不写 MES |
-| 值班简报 / 产线日报 | `ops-daily-brief` | 当前目录能绑定的口径摘要；绑不上则跳过 |
+| 值班简报 / 产线日报 | `ops-daily-brief` | 口径摘要 + 主对象状态/优先级分布（`markdown_report`）；绑不上则跳过 |
+| 分析概况 / 异常分布 | （也可）`analyze_platform_brief` | 轻量分析简报，非 SQL |
 
 也可直接用 `query_metric("紧急未完工")` / `query_write_audit` / `analyze-api-health` 六步。与场景等价时 **优先 `run_ops_scene`**。
+
+紧急链：`run_ops_scene('urgent-backlog')` 后若用户要留档，再 `export=true`（工具会提示 next_actions）。
 
 **禁止**：把「紧急工单」理解成只筛 `priority=urgent`。用户未说「只要 urgent 这一档」时，一律用紧急未完工口径。
 
