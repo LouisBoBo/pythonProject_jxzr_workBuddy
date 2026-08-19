@@ -151,6 +151,34 @@ def _dispatch_tool(
     return {"ok": False, "error": f"未知工具：{name}"}
 
 
+def _truncate_tool_json(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    keep = max(500, max_chars - 24)
+    return text[:keep] + "\n…(工具结果已截断，完整内容在沙箱文件)"
+
+
+def _compact_tool_messages(
+    messages: list[dict[str, Any]],
+    *,
+    keep_rounds: int,
+    max_tool_chars: int,
+) -> None:
+    """就地压缩旧轮 tool 输出，保留最近 keep_rounds 轮完整结果。"""
+    if keep_rounds <= 0 or max_tool_chars <= 0:
+        return
+    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    if len(tool_idxs) <= keep_rounds:
+        return
+    for idx in tool_idxs[: len(tool_idxs) - keep_rounds]:
+        content = messages[idx].get("content")
+        if not isinstance(content, str):
+            continue
+        compact = _truncate_tool_json(content, max(800, max_tool_chars // 2))
+        if compact != content:
+            messages[idx]["content"] = compact
+
+
 def _run_llm_tool_loop(
     *,
     client: Any,
@@ -165,6 +193,8 @@ def _run_llm_tool_loop(
     step: Callable[..., None],
     stream_tokens: bool,
     loop_sid: str,
+    tool_result_max_chars: int = 12000,
+    tool_history_keep_rounds: int = 4,
 ) -> str:
     """跑若干轮 tool-calling；返回最后一轮助手正文。"""
     assistant_text = ""
@@ -172,6 +202,12 @@ def _run_llm_tool_loop(
     for _ in range(max(1, int(max_steps))):
         if job_store.is_cancel_requested(data_dir, job_id):
             raise RuntimeError("任务已取消")
+
+        _compact_tool_messages(
+            messages,
+            keep_rounds=tool_history_keep_rounds,
+            max_tool_chars=tool_result_max_chars,
+        )
 
         resp = client.chat.completions.create(
             model=model,
@@ -260,7 +296,10 @@ def _run_llm_tool_loop(
                 {
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": _truncate_tool_json(
+                        json.dumps(result, ensure_ascii=False),
+                        tool_result_max_chars,
+                    ),
                 }
             )
     else:
@@ -321,7 +360,7 @@ def run_job(
             if not ok_c:
                 raise RuntimeError(
                     reason_c
-                    or "本机 Cursor 写码不可用；可设 LOCAL_DEV_AGENT=llm 回退旧工具环"
+                    or "本机 Cursor 写码不可用：请配置 CURSOR_API_KEY 并确认 cursor-sdk 已安装"
                 )
 
         step("准备沙箱", sid="sandbox-prep")
@@ -455,6 +494,8 @@ def run_job(
                 step=step,
                 stream_tokens=True,
                 loop_sid="agent-loop",
+                tool_result_max_chars=cfg.tool_result_max_chars,
+                tool_history_keep_rounds=cfg.tool_history_keep_rounds,
             )
 
             # 相对 import 闸门：破损则强制再修，避免同步后 Vite 红屏
@@ -484,6 +525,8 @@ def run_job(
                     step=step,
                     stream_tokens=False,
                     loop_sid=f"import-repair-{repair_i + 1}",
+                    tool_result_max_chars=cfg.tool_result_max_chars,
+                    tool_history_keep_rounds=cfg.tool_history_keep_rounds,
                 )
                 if repaired:
                     assistant_text = repaired

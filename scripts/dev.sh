@@ -13,6 +13,7 @@ SANDBOX_HOST="${API_PROBE_SANDBOX_HOST:-127.0.0.1}"
 export API_PROBE_SANDBOX_URL="${API_PROBE_SANDBOX_URL:-http://${SANDBOX_HOST}:${SANDBOX_PORT}}"
 export API_PROBE_SANDBOX_PORT="$SANDBOX_PORT"
 export API_PROBE_SANDBOX_HOST="$SANDBOX_HOST"
+export LOCAL_DEV_AGENT="${LOCAL_DEV_AGENT:-cursor_sdk}"
 
 PID_DIR="$ROOT/.run"
 mkdir -p "$PID_DIR" "$ROOT/data"/{history,uploads,exports,converted,api_calls,api_catalog}

@@ -20,14 +20,19 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_agent(name: str, default: str = "cursor_sdk") -> str:
-    """本机写码执行器：cursor_sdk（默认）| llm（旧 DeepSeek 工具环，应急）。"""
+    """本机写码执行器：cursor_sdk（默认）| llm（仅 LOCAL_DEV_ALLOW_LLM_FALLBACK=1 时允许）。"""
     raw = (os.getenv(name) or "").strip().lower()
+    allow_llm = os.getenv("LOCAL_DEV_ALLOW_LLM_FALLBACK", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if raw in {"llm", "openai", "deepseek", "local_sandbox"}:
+        return "llm" if allow_llm else "cursor_sdk"
     if not raw:
         return default
     if raw in {"cursor_sdk", "cursor", "sdk", "local_cursor"}:
         return "cursor_sdk"
-    if raw in {"llm", "openai", "deepseek", "local_sandbox"}:
-        return "llm"
     return default
 
 
@@ -51,6 +56,8 @@ class LocalDevConfig:
     preview_start_timeout_sec: int = 75
     preview_install_timeout_sec: int = 180
     cursor_timeout_sec: int = 2700
+    tool_result_max_chars: int = 12000
+    tool_history_keep_rounds: int = 4
 
 
 def get_config() -> LocalDevConfig:
@@ -71,6 +78,8 @@ def get_config() -> LocalDevConfig:
         preview_start_timeout_sec=max(15, _env_int("LOCAL_DEV_PREVIEW_START_TIMEOUT", 75)),
         preview_install_timeout_sec=max(30, _env_int("LOCAL_DEV_PREVIEW_INSTALL_TIMEOUT", 180)),
         cursor_timeout_sec=max(60, _env_int("LOCAL_DEV_CURSOR_TIMEOUT_SEC", 2700)),
+        tool_result_max_chars=max(2000, _env_int("LOCAL_DEV_TOOL_RESULT_MAX_CHARS", 12000)),
+        tool_history_keep_rounds=max(1, _env_int("LOCAL_DEV_TOOL_HISTORY_KEEP_ROUNDS", 4)),
     )
 
 

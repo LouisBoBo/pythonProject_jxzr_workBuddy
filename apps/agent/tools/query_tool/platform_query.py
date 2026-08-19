@@ -17,37 +17,32 @@ from tools.platform_api import get_client
 def list_platform_entities() -> dict:
     """列出平台中所有可用的数据实体（表/集合）。
 
-    返回实体 id、中文名、别名、支持操作与字段概要。
-    导入/查询前应先调用此工具确认目标实体与正确的英文 id。
+    返回实体 id、中文名、别名、支持操作与目录字段概要（来自资料包，不逐实体打 MES）。
+    需要样例数据或实时字段探测时，再调用 describe_entity(单个 entity)。
     """
-    client = get_client()
     catalog = catalog_summary()
     details = []
     for row in catalog:
-        eid = row["entity"]
-        info = client.describe_entity(eid)
-        item = {
-            "entity": eid,
-            "label": row["label"],
-            "aliases": row["aliases"],
-            "ops": row["ops"],
-            "catalog_fields": row["fields"],
-            "field_labels": row.get("field_labels") or {},
-        }
-        if "error" not in info:
-            item["fields"] = info.get("fields", [])
-            item["record_count"] = info.get("record_count", 0)
-        else:
-            item["error"] = info["error"]
-            item["fields"] = row["fields"]
-            item["record_count"] = 0
-        details.append(item)
+        details.append(
+            {
+                "entity": row["entity"],
+                "label": row["label"],
+                "aliases": row["aliases"],
+                "ops": row["ops"],
+                "filter_fields": row["fields"],
+                "column_fields": row["columns"],
+                "field_labels": row.get("field_labels") or {},
+            }
+        )
 
     return {
         "entities": [r["entity"] for r in catalog],
         "count": len(catalog),
         "details": details,
-        "hint": "调用 query/import/export 时 entity 必须用上方英文 id；换平台后目录会变，禁止沿用其它 MES 的 id",
+        "hint": (
+            "调用 query/import/export 时 entity 必须用英文 id；字段以本目录为准。"
+            "需要样例/实时字段或条数时，对单个实体调用 describe_entity，不要对本工具期望 record_count。"
+        ),
     }
 
 
@@ -88,8 +83,8 @@ def summarize_platform_data(
     raw = client.query(entity, filters, cap)
     if isinstance(raw, dict) and "error" in raw:
         return raw
+    records = raw.get("records") if isinstance(raw.get("records"), list) else []
     presented = present_query_result(raw, filters=filters, limit=cap)
-    records = presented.get("records") or []
     keys: list[str] = []
     for rec in records:
         if isinstance(rec, dict):
@@ -170,30 +165,47 @@ def _catalog_named_fields(items: object) -> list[dict[str, str]]:
     return out
 
 
-def get_platform_summary() -> dict:
+def get_platform_summary(*, include_live_counts: bool = False) -> dict:
     """获取平台的概要信息：有哪些实体、各有多少数据。
 
-    适合作为 Agent 了解平台全貌的第一步。
+    默认只读资料包目录（零 MES 请求）；include_live_counts=True 时对每个实体 describe（较慢）。
     """
-    client = get_client()
     catalog = catalog_summary()
     summary = {}
     total_records = 0
-    for row in catalog:
-        eid = row["entity"]
-        info = client.describe_entity(eid)
-        count = info.get("record_count", 0)
-        summary[eid] = {
-            "label": row["label"],
-            "aliases": row["aliases"],
-            "record_count": count,
-        }
-        total_records += count
-    return {
+    if include_live_counts:
+        client = get_client()
+        for row in catalog:
+            eid = row["entity"]
+            info = client.describe_entity(eid)
+            count = info.get("record_count", 0) if "error" not in info else 0
+            summary[eid] = {
+                "label": row["label"],
+                "aliases": row["aliases"],
+                "record_count": count,
+            }
+            total_records += count
+    else:
+        for row in catalog:
+            summary[row["entity"]] = {
+                "label": row["label"],
+                "aliases": row["aliases"],
+            }
+    out = {
         "entity_count": len(catalog),
-        "total_records": total_records,
         "breakdown": summary,
+        "hint": (
+            "breakdown 来自当前资料包目录。"
+            + (
+                "未探测各实体 record_count；对单个实体用 describe_entity 或 query_platform_data。"
+                if not include_live_counts
+                else ""
+            )
+        ),
     }
+    if include_live_counts:
+        out["total_records"] = total_records
+    return out
 
 
 def list_query_metrics() -> dict:
@@ -377,8 +389,8 @@ def analyze_platform_brief(
     raw = client.query(eid, None, cap)
     if isinstance(raw, dict) and raw.get("error"):
         return raw
+    records = raw.get("records") if isinstance(raw.get("records"), list) else []
     presented = present_query_result(raw, filters=None, limit=cap)
-    records = presented.get("records") or []
     keys: list[str] = []
     for rec in records:
         if isinstance(rec, dict):

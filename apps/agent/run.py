@@ -31,7 +31,7 @@ def demo():
 
     # 1. 平台概况
     print("1. 平台当前数据概况：")
-    summary = get_platform_summary()
+    summary = get_platform_summary(include_live_counts=True)
     for entity, info in summary["breakdown"].items():
         count = info["record_count"] if isinstance(info, dict) else info
         label = info.get("label", entity) if isinstance(info, dict) else entity
@@ -42,7 +42,8 @@ def demo():
     print("2. 可用实体及字段：")
     entities = list_platform_entities()
     for d in entities["details"]:
-        print(f"   {d['entity']}: {d['fields']}  ({d['record_count']} 条)")
+        fields = d.get("filter_fields") or d.get("fields") or []
+        print(f"   {d['entity']}: {fields}")
     print()
 
     # 3. 创建测试文件并导入（需已配置可查对象）
@@ -92,7 +93,7 @@ def demo():
 
     # 6. 导入后的平台状态
     print("6. 导入后平台数据：")
-    summary = get_platform_summary()
+    summary = get_platform_summary(include_live_counts=True)
     for entity, info in summary["breakdown"].items():
         count = info["record_count"] if isinstance(info, dict) else info
         label = info.get("label", entity) if isinstance(info, dict) else entity

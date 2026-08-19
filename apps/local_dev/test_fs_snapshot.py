@@ -41,8 +41,18 @@ class LocalDevAgentConfigTests(unittest.TestCase):
             cfg = get_config()
             self.assertEqual(cfg.agent, "cursor_sdk")
 
-    def test_llm_alias(self):
+    def test_llm_blocked_without_allow_flag(self):
         with mock.patch.dict(os.environ, {"LOCAL_DEV_AGENT": "deepseek"}, clear=False):
+            os.environ.pop("LOCAL_DEV_ALLOW_LLM_FALLBACK", None)
+            cfg = get_config()
+            self.assertEqual(cfg.agent, "cursor_sdk")
+
+    def test_llm_allowed_with_explicit_flag(self):
+        with mock.patch.dict(
+            os.environ,
+            {"LOCAL_DEV_AGENT": "llm", "LOCAL_DEV_ALLOW_LLM_FALLBACK": "1"},
+            clear=False,
+        ):
             cfg = get_config()
             self.assertEqual(cfg.agent, "llm")
 

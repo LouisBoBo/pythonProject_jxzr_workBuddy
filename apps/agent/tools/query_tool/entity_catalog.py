@@ -156,6 +156,61 @@ def catalog_summary() -> list[dict[str, Any]]:
     return rows
 
 
+def _compact_catalog_field_names(fields: list[Any], *, max_names: int = 6) -> str:
+    names: list[str] = []
+    for item in fields or []:
+        if isinstance(item, dict) and item.get("name"):
+            names.append(str(item["name"]))
+        elif isinstance(item, str) and item.strip():
+            names.append(item.strip())
+        if len(names) >= max_names:
+            break
+    if not names:
+        return ""
+    suffix = ""
+    total = len(fields or [])
+    if total > len(names):
+        suffix = f" 等{total}项"
+    return ", ".join(names) + suffix
+
+
+def _format_catalog_entity_line(e: dict[str, Any], *, compact: bool) -> list[str]:
+    label = e.get("label", e["id"])
+    eid = e["id"]
+    aliases = "、".join(e.get("aliases") or [label])
+    ops = ", ".join(e.get("ops") or ["query"])
+    if not compact:
+        lines = [f"### {label}（`{eid}`）", f"- 常见说法（均可）：{aliases}", f"- 支持操作：{ops}"]
+        fields = e.get("fields") or []
+        if fields:
+            field_parts = []
+            for f in fields:
+                if isinstance(f, dict):
+                    field_parts.append(f"{f['name']}（{f.get('label', f['name'])}）")
+                else:
+                    field_parts.append(str(f))
+            lines.append(f"- 可筛选字段（filters 英文名）：{', '.join(field_parts)}")
+        columns = e.get("columns") or []
+        if columns:
+            col_parts = []
+            for f in columns:
+                if isinstance(f, dict):
+                    col_parts.append(f"{f['name']}（{f.get('label', f['name'])}）")
+                else:
+                    col_parts.append(str(f))
+            lines.append(f"- 结果列（中文名优先）：{', '.join(col_parts)}")
+        lines.append("")
+        return lines
+    fs = _compact_catalog_field_names(e.get("fields") or [])
+    cs = _compact_catalog_field_names(e.get("columns") or [], max_names=4)
+    parts = [f"- **{label}** (`{eid}`)：{aliases}；{ops}"]
+    if fs:
+        parts.append(f"可筛 {fs}")
+    if cs:
+        parts.append(f"列 {cs}")
+    return ["；".join(parts)]
+
+
 def build_system_prompt() -> str:
     """根据实体目录生成 Agent 系统提示词。"""
     lines: list[str] = [
@@ -253,33 +308,18 @@ def build_system_prompt() -> str:
             "",
         ])
     else:
-        lines.append("### 实体一览")
-        lines.append("")
+        from config import Config
+
+        compact = Config.SYSTEM_PROMPT_COMPACT_CATALOG
+        if compact:
+            lines.append("### 实体一览（紧凑；字段细节用 describe_entity / list_platform_entities）")
+            lines.append("")
+        else:
+            lines.append("### 实体一览")
+            lines.append("")
         for e in catalog:
-            label = e.get("label", e["id"])
-            aliases = "、".join(e.get("aliases") or [label])
-            ops = ", ".join(e.get("ops") or ["query"])
-            lines.append(f"### {label}（`{e['id']}`）")
-            lines.append(f"- 常见说法（均可）：{aliases}")
-            lines.append(f"- 支持操作：{ops}")
-            fields = e.get("fields") or []
-            if fields:
-                field_parts = []
-                for f in fields:
-                    if isinstance(f, dict):
-                        field_parts.append(f"{f['name']}（{f.get('label', f['name'])}）")
-                    else:
-                        field_parts.append(str(f))
-                lines.append(f"- 可筛选字段（filters 英文名）：{', '.join(field_parts)}")
-            columns = e.get("columns") or []
-            if columns:
-                col_parts = []
-                for f in columns:
-                    if isinstance(f, dict):
-                        col_parts.append(f"{f['name']}（{f.get('label', f['name'])}）")
-                    else:
-                        col_parts.append(str(f))
-                lines.append(f"- 结果列（中文名优先）：{', '.join(col_parts)}")
+            lines.extend(_format_catalog_entity_line(e, compact=compact))
+        if compact:
             lines.append("")
 
     lines.extend([

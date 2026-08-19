@@ -367,12 +367,14 @@ def present_query_result(
         "returned": len(records),
         "filters_applied": applied,
         "columns": [{"name": c, "label": labels.get(c) or c} for c in columns],
-        "records": records,
         "display_rows": shown,
         "markdown_table": table,
         "reply_hint": hint,
         "limit": limit,
     }
+    # 已有中文表时不再附带 raw records，避免 tool JSON 重复占上下文（汇总类工具读 MES 原始响应）
+    if not shown:
+        out["records"] = records
     if narrow:
         out["followup_hint"] = narrow
     return out

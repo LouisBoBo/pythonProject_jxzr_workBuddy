@@ -597,16 +597,34 @@ class ERPClient:
 _client_instance: object | None = None
 
 
+def _should_use_erp_client() -> bool:
+    """是否连接真实 MES/ERP。
+
+    - 开发态可在 .env 设 USE_ERP=true 强制开启
+    - 桌面安装包无 .env：已导入资料包且解析出 api_base 时自动走真实接口
+    """
+    if Config.USE_ERP:
+        return True
+    try:
+        from mes_profile import active_profile_id, resolve_mes_api_base
+
+        if active_profile_id() and resolve_mes_api_base():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def get_client() -> "MockClient | ERPClient":
     """根据配置返回模拟或真实 ERP 客户端（单例）。
 
     判断逻辑：
-    - USE_ERP=true → ERPClient（连接真实 ERP）
-    - 否则 → MockClient（本地模拟模式，零依赖）
+    - USE_ERP=true 或已配置 MES 资料包且存在 api_base → ERPClient
+    - 否则 → MockClient（本地模拟，零依赖）
     """
     global _client_instance
     if _client_instance is None:
-        if Config.USE_ERP:
+        if _should_use_erp_client():
             _client_instance = ERPClient()
         else:
             _client_instance = MockClient()

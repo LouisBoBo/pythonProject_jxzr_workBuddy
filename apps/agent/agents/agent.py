@@ -179,103 +179,21 @@ _SCREENSHOT_PROMPT = """
 """
 
 _CURSOR_DEV_CODING_PROMPT = """
-【写码分支 · workbuddy_lane=code_dev — 与审核对等互斥】
-- 触发：前端按用户「写/改/加功能」意图进入；标记含【写码需求讨论】、:::cursor_dev_*、
-  page_context.workbuddy_lane=code_dev / cursor_dev_repo / local_workspace_root。
-- 走 Skill「cursor-dev-chat」：短正文 + 选项卡或 propose；**默认目标为本机目录**
-  （沙箱 + **Cursor SDK Local Agent** 写码后同步），
-  GitHub + Cursor Cloud 为第二入口（propose 里 target=github）。
-  本机写码默认不走 DeepSeek 工具环（省 DeepSeek；计费在 Cursor）。
-- 做/改业务页、仪表盘、看板时同时启用 Skill「ui-product-design」：一页一身份、有信息层级；
-  禁止照抄首页布局骨架，禁止默认白卡片 KPI 模板交差。
-- 用户说重做/重新设计/设计感时：旧「按截图位置」只作字段参考，禁止再锁截图骨架；明文 1:1/复刻除外。
-- **禁止** request_git_* / request_ide_*（含 list_source_files）；**禁止**「代码审核报告」。
-- **禁止** read_file / ls / glob / grep / write_file 任何本机绝对路径（/Users/…、Desktop、本机 ERP 目录）；
-  服务端虚拟文件系统读不到用户电脑。用户提到本机路径时写入 propose 的 workspace 字段，
-  由确认卡 + 本机沙箱任务落盘（先沙箱后同步），**不要**自己直写宿主机。
-- 仓库名/分支/GitHub URL 只表示改哪个仓（target=github），**不是**审核意图，也不是【Git仓库已确认】。
-- 「本机写码完成」= 已同步到用户确认目录，须用户重启该工程前后端验收。
-- 「GitHub 写码完成」= 已推到 GitHub **工作分支**，**不等于**已合入 main，**不等于**本机/ERP 已更新。
-- 与 code_review 无优先级关系：本轮是写码就不走审核工具。
+【写码 · workbuddy_lane=code_dev — 与审核互斥】
+- **必须**走 Skill「cursor-dev-chat」：短正文 + :::cursor_dev_options / :::cursor_dev_propose。
+- 默认 target=local：本机沙箱 + **Cursor SDK Local Agent**（不经 DeepSeek 工具环）。
+- 仅用户明确要 GitHub 时用 target=github（Cursor Cloud）。
+- 业务页/看板同时启用 Skill「ui-product-design」。
+- **禁止** request_git_* / request_ide_*；禁止 read_file 本机绝对路径；路径只写入 propose.workspace。
 """
 
-_REVIEW_FINDING_ITEM = """
-每条问题（P0/P1/P2）必须按下列四段写满，缺一不可；文件路径用完整相对路径：
-#### Px-n: 简短标题
-- **文件**：`path/to/File.ext`（行号若可知）
-- **问题描述**：错在哪、为何危险、触发条件（禁止只写文件名）
-- **问题代码**：
-```语言
-（从 file_contents 原样摘录的问题片段，含足够上下文）
-```
-- **修复建议**：怎么改、注意点（可验证）
-- **修复代码**：
-```语言
-（可直接粘贴替换的修复示例，禁止空话）
-```
-"""
-
-_GIT_REVIEW_PROMPT = """
-【审核分支 · 公开 Git · workbuddy_lane=code_review — 与写码对等互斥】
-- 触发：用户明确要「审核/审查」公开仓；【Git仓库已确认】或 page_context.git_repo_url
-  且 workbuddy_lane=code_review（或等价审核确认标记）。
-- **若** workbuddy_lane=code_dev / 【写码需求讨论】：本段不适用，禁止 request_git_*。
-- **必须**走 Skill「git-code-review」：
-  1) request_git_list_source_files → 记下 total / batch_count
-  2) i=0..batch_count-1：request_git_read_batch(batch_index=i) → **静默**记下问题 → 立刻下一批
-     （必须按序，禁止跳批；末批 done_after 后禁止再回补漏批工具调用）
-  3) 全部完成后，**仅此时**输出一份完整「🔍 代码审核报告」（禁止再调取码工具）
-- **禁止**只用 request_git_review 抽样结案；**禁止** request_ide_*；**禁止** :::cursor_dev_*。
-- **禁止** SSH；一期仅公开 HTTPS。
-- 【输出纪律】分批过程中禁止向用户输出任何正文；终稿第一行「## 🔍 代码审核报告」。
-- 方法论：Viprasol + gate-90。全文中文。
-""" + _REVIEW_FINDING_ITEM + """
-【终稿】（全部批次完成后）
-## 🔍 代码审核报告
-仓库 / 审核范围(N 文件 M 批) / 引擎 / 结论
-### 📊 问题总览（合并各批；条数必须与正文一致）
-| 级别 | 数量 | 摘要 |
-| P0 | … | … |
-| P1 | … | … |
-| P2 | … | … |
-### 🔴 P0
-（按上列四段逐条展开）
-### 🟠 P1
-（同上）
-### 🟡 P2
-（同上；P2 也须有问题代码+修复代码，可更短）
-### 🎯 优先修复建议
-（按 P0→P1 列出落地顺序）
-"""
-
-_IDE_REVIEW_PROMPT = """
-【审核分支 · 本机 IDE · workbuddy_lane=code_review — 与写码对等互斥】
-- 禁止 read_file/grep/glob 读本机绝对路径。
-- 用户明确「审核代码」且已选工程：禁止再追问。
-- **若** workbuddy_lane=code_dev / 【写码需求讨论】：本段不适用，禁止 request_ide_*。
-- 若【Git仓库已确认】或 page_context.git_repo_url：本段不适用，走 git-code-review。
-- **正确流程**：request_ide_list_source_files → request_ide_read_batch → 终稿「🔍 代码审核报告」。
-- 末批完成后禁止再 request_ide_read_files 补读配置文件；立刻写终稿。
-- 【输出纪律】分批过程禁止输出正文；终稿第一行必须是报告标题；禁止英文过渡句。
-- **禁止** :::cursor_dev_* 写码确认卡。
-- 方法论：Viprasol + gate-90。用户可见全文中文。
-""" + _REVIEW_FINDING_ITEM + """
-【终稿】（全部批次完成后）
-## 🔍 代码审核报告
-工作区 / 审核范围(N 文件 M 批) / 引擎 / 结论
-### 📊 问题总览（合并各批；条数必须与正文一致）
-| 级别 | 数量 | 摘要 |
-| P0 | … | … |
-| P1 | … | … |
-| P2 | … | … |
-### 🔴 P0
-（按上列四段逐条展开）
-### 🟠 P1
-（同上）
-### 🟡 P2
-（同上；P2 也须有问题代码+修复代码，可更短）
-### 🎯 优先修复建议
-（按 P0→P1 列出落地顺序）
+# 审核详规在 Skills（git-code-review / ide-code-review / code-review），系统提示只保留路由。
+_REVIEW_LANE_BRIEF = """
+【代码审核 · workbuddy_lane=code_review — 与写码互斥】
+- 公开 Git：Skill「git-code-review」→ request_git_list_source_files → request_git_read_batch(按序) → 终稿「## 🔍 代码审核报告」。
+- 本机 IDE：Skill「ide-code-review」→ request_ide_list_source_files → request_ide_read_batch(按序) → 同上终稿。
+- 方法论：Skill「code-review」(Viprasol) + gate-90；分批过程**禁止**向用户输出正文；末批后禁止再取码。
+- **禁止** request_git_review 抽样结案；**禁止** :::cursor_dev_*。
 """
 
 
@@ -314,7 +232,7 @@ def create_agent(model=None, checkpointer=None):
         tools.append(request_ide_read_batch)
         tools.append(request_ide_review)
         tools.append(request_ide_read_files)
-        system_prompt = system_prompt + _IDE_REVIEW_PROMPT
+        system_prompt = system_prompt + _REVIEW_LANE_BRIEF
 
     # 公开 Git 仓审核与 VS Code Bridge 解耦：桌面默认不开 IDE_REVIEW 也能审公开仓
     from tools.ide_review import (
@@ -326,7 +244,8 @@ def create_agent(model=None, checkpointer=None):
     tools.append(request_git_list_source_files)
     tools.append(request_git_read_batch)
     tools.append(request_git_review)
-    system_prompt = system_prompt + _GIT_REVIEW_PROMPT
+    if not Config.IDE_REVIEW_ENABLED:
+        system_prompt = system_prompt + _REVIEW_LANE_BRIEF
 
     return create_deep_agent(
         model=model,

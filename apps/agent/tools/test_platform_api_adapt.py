@@ -14,11 +14,51 @@ from tools.platform_api import (
     _list_query_string,
     _login_paths,
     _records_from_payload,
+    _should_use_erp_client,
     _token_from_login_payload,
+    get_client,
 )
 
 
 class PlatformApiAdaptTests(unittest.TestCase):
+    def test_should_use_erp_when_profile_has_api_base(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("config.Config.USE_ERP", False),
+            patch("mes_profile.active_profile_id", return_value="demo"),
+            patch("mes_profile.resolve_mes_api_base", return_value="http://127.0.0.1:8009"),
+        ):
+            self.assertTrue(_should_use_erp_client())
+
+    def test_should_use_mock_without_profile(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("config.Config.USE_ERP", False),
+            patch("mes_profile.active_profile_id", return_value=None),
+            patch("mes_profile.resolve_mes_api_base", return_value=None),
+        ):
+            self.assertFalse(_should_use_erp_client())
+
+    def test_get_client_uses_erp_when_profile_configured(self) -> None:
+        from unittest.mock import patch
+
+        import tools.platform_api as platform_api
+        from tools.platform_api import ERPClient, MockClient
+
+        platform_api._client_instance = None
+        try:
+            with (
+                patch("config.Config.USE_ERP", False),
+                patch("mes_profile.active_profile_id", return_value="demo"),
+                patch("mes_profile.resolve_mes_api_base", return_value="http://127.0.0.1:8009"),
+            ):
+                client = get_client()
+            self.assertIsInstance(client, ERPClient)
+        finally:
+            platform_api._client_instance = None
+
     def test_absolute_path_kept(self) -> None:
         self.assertEqual(_collection_path("/api/work-orders"), "/api/work-orders")
         self.assertEqual(_collection_path("/erp/mo/list"), "/erp/mo/list")

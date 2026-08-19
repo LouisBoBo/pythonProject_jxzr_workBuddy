@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Annotated, Any
 
 from middleware.request_context import get_page_context, get_thread_id, get_user_id
@@ -73,7 +74,15 @@ def _page_git_ref() -> str:
     return str(ctx.get("git_ref") or "").strip()
 
 
-def _trim_file_contents(result: dict[str, Any], *, max_chars: int = 120_000) -> dict[str, Any]:
+def _review_batch_max_chars() -> int:
+    try:
+        return max(8000, int(os.getenv("IDE_REVIEW_BATCH_MAX_CHARS", "65536")))
+    except (TypeError, ValueError):
+        return 65536
+
+
+def _trim_file_contents(result: dict[str, Any], *, max_chars: int | None = None) -> dict[str, Any]:
+    cap = max_chars if max_chars is not None else _review_batch_max_chars()
     contents = result.get("file_contents")
     if not isinstance(contents, list) or not contents:
         return result
@@ -286,7 +295,7 @@ def _read_paths(
         result["next_step"] = (
             "写本批纪要后继续；全仓请用 request_ide_read_batch 按序号推进。"
         )
-    return _trim_file_contents(result, max_chars=100_000)
+    return _trim_file_contents(result)
 
 
 def request_ide_list_source_files(
@@ -611,7 +620,7 @@ def request_git_read_batch(
             f"立刻 request_git_read_batch(batch_index={nxt})；"
             "必须按 batch_index 顺序推进，禁止跳批；禁止输出终稿。"
         )
-    return _trim_file_contents(result, max_chars=100_000)
+    return _trim_file_contents(result)
 
 
 def format_review_for_cli(result: dict[str, Any]) -> str:

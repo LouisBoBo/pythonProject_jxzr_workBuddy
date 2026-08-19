@@ -1,6 +1,7 @@
 """本机目录写码 API（沙箱隔离）。"""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -118,7 +119,7 @@ def _assert_job_owner(job: dict[str, Any], user: Any) -> None:
     description=(
         "检查本机写码是否开启。"
         "默认执行器为 Cursor SDK Local Agent（需 CURSOR_API_KEY）；"
-        "LOCAL_DEV_AGENT=llm 时回退为对话模型工具环。"
+        "LOCAL_DEV_AGENT=llm 仅当 LOCAL_DEV_ALLOW_LLM_FALLBACK=1 时生效。"
     ),
 )
 async def local_dev_status(auth: tuple = Depends(require_auth)):
@@ -157,6 +158,8 @@ async def local_dev_status(auth: tuple = Depends(require_auth)):
         "enabled": cfg.enabled,
         "runtime": runtime,
         "agent": cfg.agent,
+        "llm_fallback_allowed": os.getenv("LOCAL_DEV_ALLOW_LLM_FALLBACK", "").lower()
+        in ("1", "true", "yes"),
         "cursor_model": cursor_model,
     }
 

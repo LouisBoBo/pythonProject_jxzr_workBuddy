@@ -148,6 +148,10 @@ class Config:
     CONTEXT_MAX_MESSAGES = max(0, int(os.getenv("CONTEXT_MAX_MESSAGES", "40")))
     # 单条历史回填最大字符；0 = 不截断
     CONTEXT_MAX_CHARS_PER_MSG = max(0, int(os.getenv("CONTEXT_MAX_CHARS_PER_MSG", "12000")))
+    # 系统提示词实体目录用紧凑一行式（省 token；字段细节走 describe_entity）
+    SYSTEM_PROMPT_COMPACT_CATALOG = os.getenv(
+        "SYSTEM_PROMPT_COMPACT_CATALOG", "true"
+    ).lower() in ("true", "1", "yes")
 
     # --- IDE 代码审核（M0 POC，默认关闭，不影响现网工具集）---
     IDE_REVIEW_ENABLED = os.getenv("IDE_REVIEW_ENABLED", "").lower() in (

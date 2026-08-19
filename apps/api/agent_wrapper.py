@@ -1007,23 +1007,13 @@ class AgentRunner:
         lane = resolve_workbuddy_lane(message or "", _ctx)
         if lane == LANE_PASTE_CODE:
             force_paste = (
-                "\n\n【系统强制路由·粘贴代码分析】\n"
-                "本轮意图=贴码分析（workbuddy_lane=paste_code）。\n"
-                "必须启用 Skill「paste-code-analyze」：直接分析用户粘贴的源码并给可落地修复建议。\n"
-                "禁止 :::cursor_dev_*、禁止先选仓库、禁止写码确认卡。\n"
-                "禁止 request_git_* / request_ide_*；禁止输出「🔍 代码审核报告」工程审核壳。\n"
+                "\n\n【路由·贴码】Skill「paste-code-analyze」；禁止审核壳与写码卡。\n"
             )
             body = f"{body}{force_paste}"
         elif lane == LANE_CODE_DEV:
             force_coding = (
-                "\n\n【系统强制路由·写码】\n"
-                "本轮意图=写码/改功能（workbuddy_lane=code_dev），与代码审核是另一条路由。\n"
-                "禁止调用：request_git_*、request_ide_*（含 list_source_files / read_batch / review）。\n"
-                "禁止 clone 仓库、禁止输出「代码审核报告」、禁止「筛选功能源码」。\n"
-                "禁止 read_file/write_file 本机绝对路径；路径只写入 propose.workspace。\n"
-                "只澄清需求并输出 :::cursor_dev_options 或 :::cursor_dev_propose；"
-                "默认 target=local（本机路径 + Cursor SDK Local Agent）；仅用户明确要 GitHub 时用 target=github（Cursor Cloud）。\n"
-                "消息里出现 GitHub 仓库名/分支仅表示要改哪个仓，不等于审核意图。\n"
+                "\n\n【路由·写码】Skill「cursor-dev-chat」；默认 target=local（Cursor SDK）；"
+                "禁止 request_git_* / request_ide_*。\n"
             )
             body = f"{body}{force_coding}"
         elif lane == LANE_CODE_REVIEW and (
@@ -1031,40 +1021,18 @@ class AgentRunner:
         ):
             if _git or "【Git仓库已确认】" in (message or ""):
                 force_git = (
-                    "\n\n【系统强制路由·公开 Git 全仓审核】\n"
-                    "本轮意图=代码审核（workbuddy_lane=code_review），与写码是另一条路由。\n"
-                    f"仓库：{_git or '见消息【Git仓库已确认】'}\n"
-                    "必须严格按序：\n"
-                    "1) request_git_list_source_files\n"
-                    "2) request_git_read_batch(batch_index=0,1,2…按序)直至 done_after=true；"
-                    "禁止跳批、禁止末批后再回补漏批\n"
-                    "3) 仅此时输出「## 🔍 代码审核报告」，禁止再调任何取码工具\n"
-                    "禁止：request_git_review 抽样结案；禁止 request_ide_*；"
-                    "禁止 :::cursor_dev_* 写码确认卡；禁止中途输出报告或英文过渡句。\n"
+                    "\n\n【路由·Git 审核】Skill「git-code-review」：list → read_batch(按序) → 终稿报告；"
+                    "禁止抽样 request_git_review。\n"
                 )
                 body = f"{body}{force_git}"
             elif _ide or "【本机工程已确认】" in (message or ""):
                 force_ide = (
-                    "\n\n【系统强制路由·本机代码审核】\n"
-                    "本轮意图=代码审核（workbuddy_lane=code_review），与写码是另一条路由。\n"
-                    f"工程：{_ide or '见消息【本机工程已确认】'}\n"
-                    "必须严格按序：request_ide_list_source_files → request_ide_read_batch → 终稿报告。\n"
-                    "末批 done_after=true 后：立刻输出「## 🔍 代码审核报告」，"
-                    "禁止再 request_ide_read_files 补读 pom/yml/Dockerfile 等配置。\n"
-                    "禁止 :::cursor_dev_*；禁止把本轮当成写功能/改界面。\n"
+                    "\n\n【路由·IDE 审核】Skill「ide-code-review」：list → read_batch(按序) → 终稿报告。\n"
                 )
                 body = f"{body}{force_ide}"
         elif lane is None and (_git or "【Git仓库已确认】" in (message or "")):
-            # 兼容未带 workbuddy_lane 的旧审核入口
             force_git = (
-                "\n\n【系统强制路由·公开 Git 全仓审核】\n"
-                f"仓库：{_git or '见消息【Git仓库已确认】'}\n"
-                "必须严格按序：\n"
-                "1) request_git_list_source_files\n"
-                "2) request_git_read_batch(batch_index=0)…直至 done_after=true\n"
-                "3) 仅此时输出「## 🔍 代码审核报告」\n"
-                "禁止：request_git_review 抽样结案；禁止 request_ide_*；"
-                "禁止中途输出报告或英文过渡句。\n"
+                "\n\n【路由·Git 审核】Skill「git-code-review」：list → read_batch → 终稿。\n"
             )
             body = f"{body}{force_git}"
 

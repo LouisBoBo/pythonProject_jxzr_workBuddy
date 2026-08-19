@@ -92,13 +92,29 @@ async def health():
     """存活探针（负载均衡可只看此接口）。"""
     from ha.fs_lock import instance_id
 
-    return {
+    payload: dict = {
         "status": "ok",
         "service": "MES Agent API",
         "data_dir": str(DATA_DIR),
         "instance_id": instance_id(),
         "pid": os.getpid(),
     }
+    repo_root = os.environ.get("WORKBUDDY_REPO_ROOT", "").strip()
+    if repo_root:
+        vf = Path(repo_root) / "version.json"
+        if vf.is_file():
+            try:
+                import json as _json
+
+                meta = _json.loads(vf.read_text(encoding="utf-8"))
+                if isinstance(meta, dict):
+                    if meta.get("desktop_version"):
+                        payload["desktop_version"] = meta["desktop_version"]
+                    if meta.get("git_commit"):
+                        payload["desktop_git"] = meta["git_commit"]
+            except Exception:
+                pass
+    return payload
 
 
 @app.get("/health/ready")

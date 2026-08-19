@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -181,6 +182,45 @@ def sync_app_sources() -> None:
     # 冻结布局下让 WORKBUDDY_REPO_ROOT 指向 app/
     marker = APP / ".workbuddy_bundle"
     marker.write_text(f"repo_root={APP}\n", encoding="utf-8")
+    write_version_manifest()
+
+
+def _read_desktop_version() -> str:
+    pkg = REPO / "desktop" / "package.json"
+    try:
+        data = json.loads(pkg.read_text(encoding="utf-8"))
+        return str(data.get("version") or "0.0.0").strip()
+    except Exception:
+        return "0.0.0"
+
+
+def _git_commit() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(REPO),
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return out.strip()
+    except Exception:
+        return ""
+
+
+def write_version_manifest() -> None:
+    """写入运行时版本清单，供 /health 与排查使用。"""
+    from datetime import datetime, timezone
+
+    manifest = {
+        "product": "ZR WorkBuddy",
+        "desktop_version": _read_desktop_version(),
+        "git_commit": _git_commit(),
+        "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "python": CPYTHON_VERSION,
+    }
+    path = APP / "version.json"
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _log(f"版本清单 → {path} ({manifest['desktop_version']})")
 
 
 def write_launchers() -> None:

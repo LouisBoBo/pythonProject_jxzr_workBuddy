@@ -16,6 +16,17 @@ need_cmd() {
 need_cmd npm
 need_cmd python3
 
+DESKTOP_VERSION="$(python3 - <<PY
+import json
+from pathlib import Path
+p = Path("${ROOT}") / "desktop" / "package.json"
+print(json.loads(p.read_text(encoding="utf-8"))["version"])
+PY
+)"
+GIT_COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+log "版本: ZR WorkBuddy ${DESKTOP_VERSION} (git ${GIT_COMMIT})"
+
 if [[ -f "$ROOT/.env" ]]; then
   log "提醒：不会把 .env 打进安装包；Key/ERP 由用户在界面配置"
 fi
@@ -60,6 +71,17 @@ TARGET="${1:-}"
 )
 
 log "完成。安装包目录: $ROOT/desktop/release"
-log "产物名：ZR WorkBuddy（见 desktop/package.json productName）"
+log "产物: ZR WorkBuddy-${DESKTOP_VERSION}.dmg / .zip"
+mkdir -p "$ROOT/desktop/release"
+cat > "$ROOT/desktop/release/build-info.json" <<EOF
+{
+  "product": "ZR WorkBuddy",
+  "version": "${DESKTOP_VERSION}",
+  "git_commit": "${GIT_COMMIT}",
+  "built_at": "${BUILD_TIME}",
+  "platform": "$(uname -s)-$(uname -m)"
+}
+EOF
+log "版本清单: desktop/release/build-info.json"
 log "同事：安装 → 打开 → 系统配置填写 LLM Key（及可选 ERP）→ 登录使用"
 log "macOS 未签名时：若拦截，请右键打开一次。"

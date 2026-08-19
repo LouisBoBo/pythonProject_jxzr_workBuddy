@@ -224,6 +224,8 @@ async function startBackend() {
     ...process.env,
     PYTHONUNBUFFERED: '1',
     WORKBUDDY_DESKTOP: '1',
+    USE_ERP: '1',
+    LOCAL_DEV_AGENT: 'cursor_sdk',
     DATA_DIR: dataDir,
     MES_SERVER_HOST: '127.0.0.1',
     MES_SERVER_PORT: String(apiPort),
@@ -257,7 +259,7 @@ function createWindow(apiPort) {
     height: 840,
     minWidth: 960,
     minHeight: 640,
-    title: 'ZR WorkBuddy',
+    title: `ZR WorkBuddy v${app.getVersion()}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
