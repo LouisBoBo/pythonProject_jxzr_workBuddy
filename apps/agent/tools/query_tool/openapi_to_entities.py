@@ -160,6 +160,88 @@ def _aliases_for(label: str, entity_id: str, last_seg: str) -> list[str]:
     return aliases[:12]
 
 
+def _path_derived_aliases(norm: str, label: str, ops: dict[str, dict[str, Any]]) -> list[str]:
+    """从路径片段与 OpenAPI 摘要推导通用别名（不写死某套 MES 实体 id）。"""
+    import re
+
+    out: list[str] = []
+    segs = _path_segments(norm)
+    while segs and segs[0].lower() in {"api", "v1", "v2", "v3"}:
+        segs = segs[1:]
+    for seg in segs:
+        seg_l = seg.lower()
+        if seg_l and seg_l not in out:
+            out.append(seg_l)
+        for part in re.split(r"[-_]", seg):
+            p = part.strip().lower()
+            if len(p) >= 2 and p not in out:
+                out.append(p)
+        compact = seg_l.replace("-", "").replace("_", "")
+        if compact and compact not in out:
+            out.append(compact)
+    get_op = ops.get("get") or {}
+    summary = str(get_op.get("summary") or "").strip()
+    if summary and summary not in out:
+        out.append(summary)
+    tags = get_op.get("tags")
+    if isinstance(tags, list):
+        for tag in tags:
+            t = str(tag or "").strip()
+            if t and t not in out:
+                out.append(t)
+    if label:
+        lbl = str(label).strip()
+        if lbl and lbl not in out:
+            out.append(lbl)
+        if lbl and "列表" not in lbl and "清单" not in lbl:
+            for suffix in ("列表", "清单"):
+                cand = lbl + suffix
+                if cand not in out:
+                    out.append(cand)
+    # 路径含 inventory/stock 等通用 token 时，补中文检索词（按 token，非写死 entity id）
+    _token_zh: dict[str, tuple[str, ...]] = {
+        "inventory": ("库存",),
+        "stock": ("库存", "存货"),
+        "warehouse": ("仓储", "仓库"),
+        "material": ("物料",),
+        "item": ("物料",),
+        "location": ("库位", "货位"),
+        "bin": ("库位", "货位"),
+    }
+    blob = " ".join(segs).lower()
+    for token, zh_words in _token_zh.items():
+        if token in blob or any(token in s for s in segs):
+            for w in zh_words:
+                if w not in out:
+                    out.append(w)
+                for suffix in ("列表", "清单", "明细"):
+                    cand = w + suffix
+                    if cand not in out:
+                        out.append(cand)
+    return out[:20]
+
+
+def enrich_entity_aliases(entity: dict[str, Any]) -> dict[str, Any]:
+    """合并 label/id/path 与 OpenAPI 摘要别名，便于自然语言命中。"""
+    out = dict(entity)
+    path = str(out.get("path") or "")
+    last = _path_segments(path)[-1] if path else str(out.get("id") or "")
+    label = str(out.get("label") or out.get("id") or "")
+    derived = _path_derived_aliases(path, label, {"get": {}})
+    existing = {
+        str(a).strip()
+        for a in (out.get("aliases") or [])
+        if str(a).strip()
+    }
+    merged: list[str] = []
+    for a in list(existing) + derived + [label, str(out.get("id") or "")]:
+        s = str(a or "").strip()
+        if s and s not in merged:
+            merged.append(s)
+    out["aliases"] = merged[:24]
+    return out
+
+
 def origin_from_url(url: str) -> str:
     raw = (url or "").strip()
     parsed = urlparse(raw)
@@ -525,6 +607,11 @@ def openapi_to_entities(doc: dict[str, Any]) -> dict[str, Any]:
             "ops": op_list,
             "fields": _fields_from_op(path_item, get_op),
         }
+        extra = _path_derived_aliases(norm, label, ops)
+        rec["aliases"] = list(
+            dict.fromkeys([*(rec.get("aliases") or []), *extra])
+        )
+        rec = enrich_entity_aliases(rec)
         columns = _response_fields_from_op(get_op, doc)
         if columns:
             rec["columns"] = columns

@@ -58,6 +58,7 @@ class LocalDevConfig:
     cursor_timeout_sec: int = 2700
     tool_result_max_chars: int = 12000
     tool_history_keep_rounds: int = 4
+    mes_profile_auto_sync: bool = True
 
 
 def get_config() -> LocalDevConfig:
@@ -80,6 +81,7 @@ def get_config() -> LocalDevConfig:
         cursor_timeout_sec=max(60, _env_int("LOCAL_DEV_CURSOR_TIMEOUT_SEC", 2700)),
         tool_result_max_chars=max(2000, _env_int("LOCAL_DEV_TOOL_RESULT_MAX_CHARS", 12000)),
         tool_history_keep_rounds=max(1, _env_int("LOCAL_DEV_TOOL_HISTORY_KEEP_ROUNDS", 4)),
+        mes_profile_auto_sync=_env_bool("MES_PROFILE_AUTO_SYNC", True),
     )
 
 

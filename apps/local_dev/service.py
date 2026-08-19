@@ -20,6 +20,7 @@ from .fs_snapshot import diff_snapshots, snapshot_sandbox
 from .import_check import find_broken_relative_imports, format_repair_prompt
 from .prompts import SYSTEM_PROMPT, TOOL_SPECS, build_user_prompt, parse_plan_steps_from_text
 from .sandbox import prepare_sandbox, sync_changed_to_target
+from .mes_profile_sync import format_profile_sync_summary, sync_mes_profile_after_dev
 from .stack_chain import looks_like_data_ui_change
 from .stack_chain_gate import format_gate_summary, run_stack_chain_gate
 from .tools_fs import SandboxFS
@@ -614,6 +615,21 @@ def run_job(
         if job_store.is_cancel_requested(data_dir, job_id):
             raise RuntimeError("任务已取消")
 
+        profile_sync: dict[str, Any] = {"skipped": True}
+        try:
+            profile_sync = sync_mes_profile_after_dev(
+                project_root=target,
+                synced_files=synced,
+                preview=preview,
+                enabled=cfg.mes_profile_auto_sync,
+            )
+        except Exception as sync_exc:  # noqa: BLE001
+            profile_sync = {
+                "skipped": False,
+                "ok": False,
+                "error": f"{type(sync_exc).__name__}: {sync_exc}",
+            }
+
         files_md = "\n".join(f"- `{p}`" for p in synced[:80])
         if preview_url:
             preview_md = (
@@ -627,6 +643,7 @@ def run_job(
             )
         gate_md = format_gate_summary(gate_result)
         gate_block = f"{gate_md}\n\n" if gate_md else ""
+        profile_sync_md = format_profile_sync_summary(profile_sync)
         accept_block = ""
         if looks_like_data_ui_change(requirement):
             try:
@@ -655,6 +672,7 @@ def run_job(
             f"变更文件（{len(synced)}）：\n{files_md}\n\n"
             f"{preview_md}\n"
             f"{gate_block}"
+            f"{profile_sync_md}"
             f"{accept_block}"
             f"沙箱 id：`{job_id}`\n\n"
             f"{'本机写码：Cursor SDK Local Agent（不经 GitHub Cloud / 不经 DeepSeek 工具环）。' if use_cursor else '本机写码：LLM 工具环（应急模式 LOCAL_DEV_AGENT=llm）。'}\n"

@@ -2,6 +2,16 @@
 
 版本号以 `desktop/package.json` 的 `version` 为准；安装包文件名形如 `ZR WorkBuddy-x.y.z.dmg`。
 
+## 0.1.6 — 2026-08-19
+
+- 写码成功后自动同步 MES 资料包（OpenAPI → entities.json，模型 → schema.md 增量）
+- 新增 `refresh_mes_profile_from_runtime`：从运行中本机 MES 合并刷新可查对象
+- 查数别名更智能：「库存列表」优先明细接口，降低看板汇总误匹配
+
+## 0.1.5 — 2026-08-19
+
+- 修复 Git 代码审核分批读源码崩溃（`_trim_file_contents` 误用 `None` 与整数比较）
+
 ## 0.1.4 — 2026-08-19
 
 - 收敛 token：审核/写码系统提示与强制路由块瘦身，审核批源码默认 64KB 上限

@@ -44,80 +44,34 @@ class ImportOpenApiUrlBody(BaseModel):
 
 
 def _reload_after_profile_change() -> None:
-    from mes_profile import invalidate_mes_data_caches
+    from mes_profile_persist import _reload_after_profile_change as _reload
 
-    invalidate_mes_data_caches()
-    try:
-        from agent_wrapper import AgentRunner
-
-        AgentRunner().reset_agent()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mes-profile 变更后 reset_agent 失败: %s", exc)
+    _reload()
 
 
 def _persist_openapi_text(pid: str, text: str, *, activate: bool, source_url: str = "") -> dict[str, Any]:
-    from mes_profile import (
-        ENTITIES_FILENAME,
-        OPENAPI_FILENAME,
-        ensure_profile_dir,
-        profile_status,
-    )
+    from mes_profile_persist import persist_openapi_text
     from settings_store import update_settings
-    from tools.query_tool.openapi_to_entities import generate_entities_from_openapi_text
 
-    try:
-        generated = generate_entities_from_openapi_text(text)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    entities = generated.get("entities") or []
-    meta = dict(generated.get("meta") or {})
-    if source_url:
-        meta["source_url"] = source_url
-        from mes_profile import origin_from_docs_url
-        from safe_http import assert_http_url_allowed, same_http_origin
-
-        origin = origin_from_docs_url(source_url)
-        if origin:
-            try:
-                origin = assert_http_url_allowed(origin, what="接口文档主机")
-            except ValueError:
-                origin = ""
-        doc_base = str(meta.get("api_base") or "")
-        if origin:
-            if doc_base and not same_http_origin(doc_base, origin):
-                meta["api_base"] = origin
-            elif not doc_base:
-                meta["api_base"] = origin
-
-    root = ensure_profile_dir(pid)
-    try:
-        parsed = json.loads(text)
-        openapi_text = json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
-    except json.JSONDecodeError:
-        openapi_text = text
-    (root / OPENAPI_FILENAME).write_text(openapi_text, encoding="utf-8")
-    (root / ENTITIES_FILENAME).write_text(
-        json.dumps({"entities": entities, "meta": meta}, ensure_ascii=False, indent=2)
-        + "\n",
-        encoding="utf-8",
-    )
     if activate:
         update_settings({"MES_PROFILE_ID": pid})
-    _reload_after_profile_change()
-    logger.info(
-        "mes openapi saved profile=%s entities=%s source=%s",
-        pid,
-        len(entities),
-        source_url or "upload",
-    )
+    try:
+        out = persist_openapi_text(
+            pid,
+            text,
+            source_url=source_url,
+            merge_existing=False,
+            reload_agent=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "ok": True,
-        "entity_count": len(entities),
-        "entity_ids": [e.get("id") for e in entities],
-        "meta": meta,
+        "entity_count": out.get("entity_count"),
+        "entity_ids": out.get("entity_ids"),
+        "meta": out.get("meta"),
         "fetched_from": source_url or "",
-        **profile_status(),
+        **{k: v for k, v in out.items() if k not in {"merge", "profile_dir"}},
     }
 
 
@@ -242,7 +196,10 @@ async def upload_openapi(
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="文件须为 UTF-8 文本") from exc
-    return _persist_openapi_text(pid, text, activate=activate)
+    try:
+        return _persist_openapi_text(pid, text, activate=activate)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(
@@ -269,7 +226,10 @@ async def import_openapi_url(
         text, used = fetch_openapi_text(body.url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _persist_openapi_text(pid, text, activate=body.activate, source_url=used)
+    try:
+        return _persist_openapi_text(pid, text, activate=body.activate, source_url=used)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(

@@ -46,7 +46,10 @@ from tools.schema_tool.capability_map import (
     list_platform_glossary,
 )
 from tools.schema_tool.schema_diff import compare_schema_vs_catalog
-from tools.schema_tool.profile_readiness import inspect_mes_profile
+from tools.schema_tool.profile_readiness import (
+    inspect_mes_profile,
+    refresh_mes_profile_from_runtime,
+)
 from tools.query_tool.dev_preflight import mes_change_preflight
 from tools.api_log_tool.api_health import (
     build_api_catalog,
@@ -102,6 +105,7 @@ TOOLS = [
     list_platform_glossary,
     compare_schema_vs_catalog,
     inspect_mes_profile,
+    refresh_mes_profile_from_runtime,
     mes_change_preflight,
     # API：文档接口测试一律默认沙箱探活再分析；live 仅明确要生产只读时
     build_api_catalog,

@@ -7,10 +7,43 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from mes_profile import resolve_entities_path
+
+_LIST_HINTS = ("列表", "清单", "明细", "list")
+_SUMMARY_HINTS = (
+    "看板",
+    "dashboard",
+    "kpi",
+    "汇总",
+    "summary",
+    "stats",
+    "趋势",
+    "trend",
+    "概览",
+    "overview",
+    "分布",
+    "distribution",
+)
+_QUERY_VERBS_RE = re.compile(r"^(查|查询|看看|获取|列出|显示|导出|查一下)\s*")
+_TOKEN_ZH: dict[str, tuple[str, ...]] = {
+    "inventory": ("库存",),
+    "stock": ("库存", "存货"),
+    "warehouse": ("仓储", "仓库"),
+    "material": ("物料",),
+    "item": ("物料",),
+    "location": ("库位", "货位"),
+    "bin": ("库位", "货位"),
+    "order": ("工单", "订单"),
+    "work": ("工单",),
+    "device": ("设备",),
+    "equipment": ("设备",),
+    "plan": ("计划",),
+    "quality": ("品质", "质量"),
+}
 
 _catalog_cache: list[dict[str, Any]] | None = None
 _catalog_meta_cache: dict[str, Any] | None = None
@@ -94,7 +127,8 @@ def resolve_entity_id(name: str) -> str | None:
 
     匹配顺序：
     1. 精确匹配 id / label / aliases（大小写不敏感）
-    2. 模糊：名称包含某个别名，或别名包含名称 → 取最长命中，避免短词误伤
+    2. 模糊：名称包含某个别名，或别名包含名称 → 取最长命中
+    3. 分词打分：路径 token / 通用中英文词对照；用户要「列表」时优先明细接口而非看板汇总
     """
     if not name:
         return None
@@ -110,9 +144,7 @@ def resolve_entity_id(name: str) -> str | None:
                 return e["id"]
 
     # 2) 包含匹配（最长别名优先）
-    # - 优先：别名出现在用户说法中（「查一下排程计划」含「排程计划」）
-    # - 其次：用户说法是别名的片段且长度≥3（避免「生产」同时命中工单/计划）
-    best: tuple[int, str] | None = None  # (score, entity_id)
+    best: tuple[int, str] | None = None
     for e in load_catalog():
         for term in _alias_terms(e):
             t = term.strip()
@@ -120,14 +152,102 @@ def resolve_entity_id(name: str) -> str | None:
                 continue
             tl = t.lower()
             if tl in key_lower:
-                score = len(t) + 100  # 别名⊆用户说法，优先
+                score = len(t) + 100
             elif len(key) >= 3 and key_lower in tl:
                 score = len(key)
             else:
                 continue
+            score += _entity_intent_adjustment(e, key)
             if best is None or score > best[0]:
                 best = (score, e["id"])
+
+    if best and best[0] >= 100:
+        return best[1]
+
+    # 3) 分词打分（无精确/强模糊命中时）
+    scored = _score_entities_by_tokens(key)
+    if scored and scored[0][0] >= 8:
+        return scored[0][1]
+
     return best[1] if best else None
+
+
+def _entity_intent_adjustment(entity: dict[str, Any], user_text: str) -> int:
+    """用户要列表/明细时，降低看板汇总类实体权重。"""
+    wants_list = any(h in user_text for h in _LIST_HINTS)
+    if not wants_list:
+        return 0
+    blob = " ".join(
+        [
+            str(entity.get("id") or ""),
+            str(entity.get("label") or ""),
+            str(entity.get("path") or ""),
+        ]
+    ).lower()
+    label = str(entity.get("label") or "")
+    adj = 0
+    if any(h in blob for h in _SUMMARY_HINTS):
+        adj -= 40
+    if any(h in label for h in ("列表", "清单", "明细")):
+        adj += 30
+    paging = entity.get("paging")
+    list_keys = entity.get("list_keys") or []
+    if isinstance(paging, dict) and paging:
+        adj += 15
+    if isinstance(list_keys, list) and list_keys == ["items"]:
+        adj += 10
+    return adj
+
+
+def _query_tokens(key: str) -> list[str]:
+    s = _QUERY_VERBS_RE.sub("", (key or "").strip())
+    tokens: list[str] = []
+    for m in re.finditer(r"[\u4e00-\u9fff]{2,}", s):
+        t = m.group()
+        if t not in tokens:
+            tokens.append(t)
+    for m in re.finditer(r"[a-zA-Z][a-zA-Z0-9_-]{1,}", s):
+        t = m.group().lower()
+        if t not in tokens:
+            tokens.append(t)
+    return tokens
+
+
+def _entity_search_blob(entity: dict[str, Any]) -> str:
+    parts = [
+        str(entity.get("id") or ""),
+        str(entity.get("label") or ""),
+        str(entity.get("path") or ""),
+    ]
+    parts.extend(str(a) for a in (entity.get("aliases") or []))
+    segs = [s for s in str(entity.get("path") or "").split("/") if s]
+    parts.extend(segs)
+    return " ".join(parts).lower()
+
+
+def _score_entities_by_tokens(key: str) -> list[tuple[int, str]]:
+    tokens = _query_tokens(key)
+    if not tokens:
+        return []
+    wants_list = any(h in key for h in _LIST_HINTS)
+    ranked: list[tuple[int, str]] = []
+    for e in load_catalog():
+        blob = _entity_search_blob(e)
+        score = 0
+        for tok in tokens:
+            tl = tok.lower()
+            if tl in blob:
+                score += len(tl) + 4
+            for seg_token, zh_words in _TOKEN_ZH.items():
+                if seg_token in blob and tok in zh_words:
+                    score += 12
+                if tl == seg_token and any(w in key for w in zh_words):
+                    score += 10
+        score += _entity_intent_adjustment(e, key)
+        if score > 0:
+            ranked.append((score, e["id"]))
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    return ranked
 
 
 def list_entity_ids() -> list[str]:

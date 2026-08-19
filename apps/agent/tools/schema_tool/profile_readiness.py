@@ -159,6 +159,22 @@ def inspect_mes_profile(
     ready_query_catalog = bool(query_layer.get("entity_count"))
     ready_query_live = bool(ready_query_catalog and cred["query_auth_ready"])
     kind = _intent_kind(user_intent or "")
+
+    entity_refresh_hint = ""
+    if (user_intent or "").strip() and ready_query_catalog and kind == "query":
+        try:
+            from tools.query_tool.entity_catalog import resolve_entity_id
+
+            if resolve_entity_id(user_intent or "") is None:
+                next_steps.append(
+                    "当前目录未命中用户说的对象：若接口刚在本机 MES 新增/变更，"
+                    "先调用 refresh_mes_profile_from_runtime() 合并最新 OpenAPI，"
+                    "再 list_platform_entities 选用正确 entity。"
+                )
+                entity_refresh_hint = "refresh_mes_profile_from_runtime"
+        except Exception:
+            pass
+
     blocked = False
     if kind == "survey" and not ready_survey:
         blocked = True
@@ -186,7 +202,12 @@ def inspect_mes_profile(
         if kind == "survey" and ready_survey:
             next_tool = "list_platform_capabilities"
         elif kind == "query" and ready_query_live:
-            next_tool = "list_platform_entities 或 query_platform_data（entity 必须来自当前目录）"
+            if entity_refresh_hint:
+                next_tool = (
+                    "refresh_mes_profile_from_runtime → list_platform_entities → query_platform_data"
+                )
+            else:
+                next_tool = "list_platform_entities 或 query_platform_data（entity 必须来自当前目录）"
         elif kind == "ops" and status.get("configured"):
             next_tool = "run_ops_scene 或 list_ops_scenes"
         elif kind in ("switch", "unknown"):
@@ -209,6 +230,7 @@ def inspect_mes_profile(
         "C_ops": ops_layer,
         "next_steps": next_steps[:8],
         "next_tool": next_tool,
+        "entity_refresh_hint": entity_refresh_hint or None,
         "reply_gate": {
             "may_survey": ready_survey,
             "may_query_catalog": ready_query_catalog,
@@ -360,3 +382,19 @@ def _ops_layer(query_layer: dict[str, Any], next_steps: list[str]) -> dict[str, 
         "scenes": scenes,
         "note": "探活默认沙箱；写操作仍须确认卡。场景随当前目录绑定，不写死某一套 MES。",
     }
+
+
+def refresh_mes_profile_from_runtime(
+    docs_url: Annotated[
+        str,
+        "可选。MES 的 /docs 或 /openapi.json；默认用资料包 meta.api_base 的 /docs",
+    ] = "",
+) -> dict[str, Any]:
+    """从本机运行中的 MES 拉最新 OpenAPI，合并写入当前资料包 entities.json。
+
+    写码新增接口后、或查数提示目录里没有某对象时调用；仅允许 localhost。
+    合并策略：新增/更新实体，保留旧实体与 api_base，不整包覆盖。
+    """
+    from mes_profile_refresh import refresh_mes_profile_from_runtime as _run
+
+    return _run(docs_url)

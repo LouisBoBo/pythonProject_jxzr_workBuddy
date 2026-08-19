@@ -93,8 +93,8 @@ def _trim_file_contents(result: dict[str, Any], *, max_chars: int | None = None)
         if not isinstance(item, dict):
             continue
         text = str(item.get("content") or "")
-        if used + len(text) > max_chars:
-            remain = max(0, max_chars - used)
+        if used + len(text) > cap:
+            remain = max(0, cap - used)
             if remain < 200:
                 out["file_contents_truncated"] = True
                 break
