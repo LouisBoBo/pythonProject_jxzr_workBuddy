@@ -61,6 +61,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+@app.on_event("startup")
+def _startup_daily_mes_profile_sync() -> None:
+    """打开/启动 WorkBuddy 时后台按日同步资料包（本机 MES OpenAPI）。"""
+    try:
+        import sys
+
+        agent_dir = Path(__file__).resolve().parents[1] / "agent"
+        if str(agent_dir) not in sys.path:
+            sys.path.insert(0, str(agent_dir))
+        from mes_profile_daily_sync import schedule_daily_sync_openapi
+
+        # 稍晚于 uvicorn 就绪，避免拖慢 /health
+        schedule_daily_sync_openapi(delay_sec=2.0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] daily MES profile sync not scheduled: {exc}")
+
 _cors_raw = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
 _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] or ["*"]
 app.add_middleware(

@@ -52,7 +52,7 @@ def query_platform_data(
         dict | None,
         "可选过滤条件，字段名以 describe_entity / 目录 fields 为准；会作为 API query 参数下发",
     ] = None,
-    limit: Annotated[int, "返回记录上限，默认 20"] = 20,
+    limit: Annotated[int, "返回记录上限，默认 50"] = 50,
 ) -> dict:
     """查询平台中指定实体的数据。
 
@@ -245,7 +245,7 @@ def query_metric(
     extra_filters: Annotated[
         dict | None, "额外筛选（会与口径 filters 一并下发给 MES），字段名以当前目录为准"
     ] = None,
-    limit: Annotated[int, "返回记录上限，默认 20"] = 20,
+    limit: Annotated[int, "返回记录上限，默认 50"] = 50,
 ) -> dict:
     """按指标口径查数：先绑定当前目录的实体与真实枚举，再把 filters 发给 MES。"""
     metric = find_metric(name)
@@ -297,13 +297,17 @@ def query_metric(
     merged: list[dict] = []
     seen: set[str] = set()
     calls: list[dict] = []
+    api_totals: list[int] = []
     extra = {k: v for k, v in (extra_filters or {}).items() if v is not None and v != ""}
+    fetch_cap = max(1, min(int(limit or 20), 100))
     for fs in bound.get("filter_sets") or []:
         filters = {**fs, **extra}
-        raw = client.query(bound["entity"], filters, max(1, min(int(limit or 20), 100)))
+        raw = client.query(bound["entity"], filters, fetch_cap)
         calls.append({"filters": filters, "error": raw.get("error") if isinstance(raw, dict) else None})
         if not isinstance(raw, dict) or "error" in raw:
             continue
+        if isinstance(raw.get("total"), int) and raw["total"] >= 0:
+            api_totals.append(int(raw["total"]))
         for rec in raw.get("records") or []:
             if not isinstance(rec, dict):
                 continue
@@ -313,8 +317,17 @@ def query_metric(
             seen.add(key)
             merged.append(rec)
 
+    # total：优先「单次 API total」；多 filter 时用合并去重条数（避免相加重复计）
+    if len(api_totals) == 1 and len(bound.get("filter_sets") or []) <= 1:
+        total_n = api_totals[0]
+    else:
+        total_n = len(merged)
+        # 若每一支路都报了 total 且只有一支，上面已覆盖；多支路用 merged
+        if len(api_totals) == 1 and not merged:
+            total_n = api_totals[0]
+
     presented = present_query_result(
-        {"entity": bound["entity"], "total": len(merged), "records": merged[: max(1, int(limit or 20))]},
+        {"entity": bound["entity"], "total": total_n, "records": merged[:fetch_cap]},
         filters=None,
         limit=limit,
     )
@@ -323,7 +336,11 @@ def query_metric(
     presented["metric_label"] = bound.get("label")
     presented["definition"] = bound.get("definition")
     presented["filter_sets"] = bound.get("filter_sets")
-    presented["caveats"] = bound.get("caveats") or []
+    presented["caveats"] = list(bound.get("caveats") or [])
+    if len(bound.get("filter_sets") or []) > 1 and total_n == len(merged) and fetch_cap <= 20:
+        presented["caveats"] = list(presented["caveats"]) + [
+            f"口径条数按本次合并去重 {total_n} 计（多条件拉取，limit={fetch_cap}）；勿当未截断的全库总数"
+        ]
     presented["api_calls"] = len(calls)
     caveats = bound.get("caveats") or []
     presented["reply_hint"] = (
@@ -399,8 +416,23 @@ def analyze_platform_brief(
                 if ks not in keys:
                     keys.append(ks)
     labels = field_label_map(str(presented.get("entity") or eid))
+    # 分组标签来自资料包 analysis 配置，现场无对应列则自动跳过
+    try:
+        from tools.query_tool.analysis_config import load_analysis_config
+
+        acfg = load_analysis_config()
+        want_labels = list(acfg.get("group_by_labels") or [])
+        brief_ids = {
+            str(x) for x in (acfg.get("brief_metric_ids") or []) if str(x).strip()
+        }
+        brief_cap = int(acfg.get("brief_metric_limit") or 4)
+    except Exception:
+        want_labels = ["状态", "优先级", "产线", "工序", "线体"]
+        brief_ids = {"wip", "unfinished", "urgent-unfinished", "completed-today"}
+        brief_cap = 4
+
     breakdowns: list[dict] = []
-    for want in ("状态", "优先级", "产线"):
+    for want in want_labels:
         field = resolve_group_by(want, keys, labels)
         if not field:
             continue
@@ -417,6 +449,19 @@ def analyze_platform_brief(
     if include_metrics:
         listed = list_query_metrics()
         for m in listed.get("metrics") or []:
+            mid = str(m.get("id") or "")
+            pack_m = None
+            try:
+                from tools.query_tool.metrics_pack import find_metric
+
+                pack_m = find_metric(mid)
+            except Exception:
+                pack_m = None
+            if brief_ids:
+                if mid not in brief_ids:
+                    continue
+            elif not bool((pack_m or {}).get("include_in_brief")):
+                continue
             if not m.get("bindable"):
                 metric_rows.append(
                     {
@@ -427,15 +472,11 @@ def analyze_platform_brief(
                     }
                 )
                 continue
-            mid = str(m.get("id") or "")
-            # 简报只抽与本实体相关、且最常用的口径，避免打太多请求
             if m.get("entity") and str(m.get("entity")) != str(presented.get("entity")):
                 continue
-            if mid not in ("wip", "unfinished", "urgent-unfinished", "completed-today"):
-                continue
-            if len([x for x in metric_rows if x.get("bindable") and "total" in x]) >= 3:
+            if len([x for x in metric_rows if x.get("bindable") and "total" in x]) >= brief_cap:
                 break
-            out = query_metric(mid, limit=min(20, cap))
+            out = query_metric(mid, limit=min(50, cap))
             metric_rows.append(
                 {
                     "id": mid,

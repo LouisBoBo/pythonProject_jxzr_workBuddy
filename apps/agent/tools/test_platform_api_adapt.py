@@ -79,10 +79,18 @@ class PlatformApiAdaptTests(unittest.TestCase):
         self.assertIn("limit=10", qs)
         self.assertIn("status=open", qs)
 
-    def test_query_values_are_urlencoded(self) -> None:
-        qs = _list_query_string({"limit": "limit"}, {"q": "a b&c"}, 10)
-        self.assertIn("q=a+b%26c", qs)
-        self.assertNotIn("q=a b&c", qs)
+    def test_list_filter_values_repeat_key(self) -> None:
+        """数组 filters 须重复 key，禁止 str(list) 整段塞进查询串。"""
+        qs = _list_query_string(
+            {"limit": "limit"},
+            {"status": ["pending", "in_progress"], "priority": "urgent"},
+            10,
+        )
+        self.assertIn("status=pending", qs)
+        self.assertIn("status=in_progress", qs)
+        self.assertIn("priority=urgent", qs)
+        self.assertNotIn("[", qs)
+        self.assertNotIn("'", qs)
 
     def test_unsafe_paging_name_ignored(self) -> None:
         qs = _list_query_string({"page_size": "size=1&x"}, None, 20)

@@ -2,6 +2,18 @@
 
 版本号以 `desktop/package.json` 的 `version` 为准；安装包文件名形如 `ZR WorkBuddy-x.y.z.dmg`。
 
+## 0.1.8 — 2026-08-20
+
+- 能力块 B：对话出图（ECharts）+ PCB 运营看板（KPI 顶栏、深色皮肤、点图下钻）
+- 演示编排：「打开 PCB 运营看板」；枚举中文展示（待开工/进行中等）
+- 查数口径：filters 数组正确下发；默认 limit 50；紧急未完工条数自洽
+- 资料包：每日打开自动同步；会话切换后图表/看板可恢复；正文流式输出修复
+
+## 0.1.7 — 2026-08-19
+
+- 重打包：纳入 0.1.6 晚间安全修复（路径穿越防护、safe_http loopback 校验、entities 原子写入）
+- 实体合并：同 path 保留旧 id、补充 columns 字段
+
 ## 0.1.6 — 2026-08-19
 
 - 写码成功后自动同步 MES 资料包（OpenAPI → entities.json，模型 → schema.md 增量）

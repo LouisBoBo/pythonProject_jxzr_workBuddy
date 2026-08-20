@@ -466,7 +466,7 @@ def _response_fields_from_op(op: dict[str, Any], doc: dict[str, Any]) -> list[di
             or key
         ).strip()
         fields.append({"name": key, "label": (label[:40] or key)})
-        if len(fields) >= 16:
+        if len(fields) >= 40:
             break
     return fields
 

@@ -196,6 +196,41 @@ _BUILTIN_SCENARIOS: list[dict[str, Any]] = [
             },
         ],
     },
+    {
+        "id": "pcb-process-quality",
+        "title": "PCB 工序与品质（AOI/过站/Lot）",
+        "aliases": [
+            "AOI",
+            "SPI",
+            "FQC",
+            "过孔",
+            "电镀",
+            "防焊",
+            "成型",
+            "拼板",
+            "Lot",
+            "工序在制",
+            "过站",
+            "报废",
+            "PCB品质",
+            "pcb process",
+        ],
+        "description": "PCB 常见工序执行、检测不良与批次相关表；文档无种子表时按中文/英文关键字匹配。",
+        "stages": [
+            {
+                "name": "工序与过站",
+                "tables": ["TBL_BD_PROCESS", "TBL_SFC_WS_LOG", "TBL_SFC_RECIPE_LOT"],
+            },
+            {
+                "name": "检测与品质",
+                "tables": ["TBL_QC_AOI", "TBL_QC_SPI", "TBL_QC_FQC", "TBL_QC_SCRAP"],
+            },
+            {
+                "name": "批次与拼板",
+                "tables": ["TBL_SFC_LOT", "TBL_SFC_PANEL", "TBL_SFC_PACKAGE"],
+            },
+        ],
+    },
 ]
 
 # 阶段关键字：当前文档没有 TBL_* 时按表名/中文匹配。资料包 business_scenarios.json 仍可整段覆盖。
@@ -231,6 +266,11 @@ _STAGE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     "spc-control": {
         "控制特性": ["spc", "控制图", "控制特性"],
         "规则与数据": ["spc", "过程控制"],
+    },
+    "pcb-process-quality": {
+        "工序与过站": ["工序", "过站", "电镀", "防焊", "成型", "过孔", "sfc", "process", "wip"],
+        "检测与品质": ["AOI", "SPI", "FQC", "报废", "不良", "检验", "aoi", "scrap", "defect"],
+        "批次与拼板": ["Lot", "拼板", "Panel", "条码", "lot", "panel", "package"],
     },
 }
 

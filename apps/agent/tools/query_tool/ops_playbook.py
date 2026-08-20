@@ -114,7 +114,7 @@ def run_ops_scene(
     output_format: Annotated[
         Literal["csv", "excel", "json"], "导出格式，默认 csv"
     ] = "csv",
-    limit: Annotated[int, "清单条数上限，默认 20"] = 20,
+    limit: Annotated[int, "清单条数上限，默认 50"] = 50,
 ) -> dict[str, Any]:
     """执行一条运维值班标准链：查询→汇总→可选导出；或审计/探活指引。"""
     spec = find_ops_scene(scene)
@@ -448,6 +448,7 @@ def _run_diagnose(spec: dict[str, Any]) -> dict[str, Any]:
 
 def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
     """值班简报：只跑当前目录能绑定的口径，绑不上就跳过；附状态分布与 markdown。"""
+    from tools.query_tool.analysis_chart import render_analysis_chart, series_from_groups
     from tools.query_tool.platform_query import (
         analyze_platform_brief,
         list_query_metrics,
@@ -457,7 +458,12 @@ def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
     listed = list_query_metrics()
     rows: list[dict[str, Any]] = []
     queried = 0
-    cap = 4
+    try:
+        from tools.query_tool.analysis_config import load_analysis_config
+
+        cap = int(load_analysis_config().get("brief_metric_limit") or 4)
+    except Exception:
+        cap = 4
     page_limit = max(3, min(int(limit or 8), 20))
     for m in listed.get("metrics") or []:
         item: dict[str, Any] = {
@@ -519,6 +525,32 @@ def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
                 lines.append(f"| {g.get('value')} | {g.get('count')} | {g.get('pct')}% |")
     lines.append("")
     lines.append("异常清单可再跑 `run_ops_scene('urgent-backlog')`；需要留档可加 `export=true`。")
+    if spec.get("id") == "plant-exception-daily" or spec.get("include_chart"):
+        lines.append("")
+        lines.append(
+            "（异常日报）出图由工具返回的 chart_option 自动渲染；"
+            "回复勿再贴 markdown_fence，勿重复贴完整分组表。"
+        )
+
+    chart_payload: dict[str, Any] | None = None
+    want_chart = bool(spec.get("include_chart")) or str(spec.get("id") or "") == "plant-exception-daily"
+    if want_chart and brief and brief.get("breakdowns"):
+        first = (brief.get("breakdowns") or [None])[0]
+        if isinstance(first, dict) and first.get("groups"):
+            cats, vals = series_from_groups(first.get("groups"))
+            chart_payload = render_analysis_chart(
+                chart_type="auto",
+                title=f"{brief.get('label') or '产线'}·按{first.get('group_by_label') or '分组'}分布",
+                categories=cats,
+                values=vals,
+                series_name="条数",
+                definition=str(spec.get("definition") or ""),
+                user_intent=str(spec.get("label") or "") + " 分布",
+                source_note=(
+                    f"轻量汇总：MES 共 {brief.get('total')} 条，"
+                    f"本次 {brief.get('returned')} 条，非全库 SQL"
+                ),
+            )
 
     return {
         "scene": spec.get("id"),
@@ -534,14 +566,20 @@ def _run_daily_brief(spec: dict[str, Any], *, limit: int) -> dict[str, Any]:
         }
         if brief
         else None,
+        "chart": chart_payload,
+        "chart_option": (chart_payload or {}).get("chart_option") if chart_payload else None,
+        "markdown_fence": (chart_payload or {}).get("markdown_fence") if chart_payload else None,
         "markdown_report": "\n".join(lines),
         "next_actions": [
             "run_ops_scene('urgent-backlog') 看紧急未完工",
             "run_ops_scene('urgent-backlog', export=true) 导出急单",
             "analyze_platform_brief() 看更完整分组分析",
+            "render_analysis_chart(...) 对分布出图",
         ],
         "reply_hint": (
             "直接展示 markdown_report；绑不上的口径如实跳过。"
+            "若工具已返回 chart_option，前端会自动出图；"
+            "**不要**再贴 markdown_fence，**不要**再贴与图重复的完整分组表。"
             "不要编造；不要默写；不要套其它 MES 的实体 id。"
             "可追问是否导出紧急清单。"
         ),

@@ -165,4 +165,38 @@
 | 换平台负向 | P · 08-19 | 空目录查数被挡，结果不含 `work-orders` |
 | D 闸门 | P · 08-19 | 加实际结束时间：补列并回填计划日 18:00 |
 
-自动化冒烟：`PYTHONPATH=apps/agent:apps python3 scripts/smoke_mes_acceptance_0819.py`
+---
+
+## TC-A-01 分析出图（柱状）
+
+| 项 | 内容 |
+|----|------|
+| **功能** | F-ANALYSIS-CHART |
+| **测试问题** | 工单按状态分布并出柱状图 |
+| **预期工具** | `summarize_platform_data` 或 `analyze_platform_brief` → `render_analysis_chart` |
+| **通过标准** | 对话内出现分析图气泡或 `:::analysis_chart`；categories/values 与汇总一致；含本页 caveat |
+| **验收** | （待测）详见 [`PCB数据分析验收话术.md`](PCB数据分析验收话术.md) A05 |
+
+## TC-A-02 产线异常日报
+
+| 项 | 内容 |
+|----|------|
+| **功能** | F-ANALYSIS-DAILY |
+| **测试问题** | 出一份产线异常日报 |
+| **预期工具** | `run_ops_scene('plant-exception-daily')` |
+| **通过标准** | 有 `markdown_report`；绑不上口径跳过；可有 chart |
+| **验收** | （待测）A08 |
+
+## TC-A-03 只读 SQL 默认关
+
+| 项 | 内容 |
+|----|------|
+| **功能** | F-ANALYSIS-SQL |
+| **测试问题** | 帮我直接 SQL 查全库在制 |
+| **期望** | 未开启时提示默认走 HTTP / 系统配置；不执行任意 SQL |
+| **验收** | （待测）A17；单测 `test_analysis_chart.py` |
+
+自动化冒烟：`PYTHONPATH=apps/agent:apps python3 scripts/smoke_mes_acceptance_0819.py`  
+图表/SQL 单测：`cd apps/agent && python -m unittest tools.query_tool.test_analysis_chart -v`
+
+更多 PCB 话术：[`PCB数据分析验收话术.md`](PCB数据分析验收话术.md)。

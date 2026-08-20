@@ -1,0 +1,42 @@
+{
+  "id": "pcb-ops-board",
+  "label": "PCB 运营看板",
+  "enabled": true,
+  "aliases": [
+    "打开PCB运营看板",
+    "打开 PCB 运营看板",
+    "PCB运营看板",
+    "PCB 运营看板",
+    "打开品质看板",
+    "品质运营看板",
+    "打开分析看板",
+    "pcb-ops-board",
+    "演示PCB早会",
+    "演示·PCB早会",
+    "PCB早会演示"
+  ],
+  "definition": "打开 PCB/品质运营看板：分析看板（资料包默认模板）+ 可选简报与急单样例。换厂靠资料包 metrics/analysis/dashboards，不写死实体。普通单图/指标查数仍走原工具。",
+  "steps": [
+    {
+      "id": "brief",
+      "kind": "ops_scene",
+      "scene": "ops-daily-brief",
+      "optional": true
+    },
+    {
+      "id": "board",
+      "kind": "dashboard",
+      "template_id": "auto",
+      "max_cards": 4,
+      "optional": false
+    },
+    {
+      "id": "urgent",
+      "kind": "ops_scene",
+      "scene": "urgent-backlog",
+      "limit": 8,
+      "optional": true
+    }
+  ],
+  "reply_hint": "按运营看板口吻：先 2～3 句结论（来自简报/缺口，禁止编造），再展示看板图，可附急单样例；缺口如实说；不要追问图表类型。"
+}

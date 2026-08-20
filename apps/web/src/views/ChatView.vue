@@ -55,6 +55,16 @@
             </template>
           </div>
           <div class="msg-body" v-if="msg.content" v-html="renderMarkdown(msg.content)"></div>
+          <AnalysisDashboardCard
+            v-for="(db, di) in (msg.dashboards || [])"
+            :key="db.id || ('dash-' + di)"
+            :board="db"
+          />
+          <AnalysisChartCard
+            v-for="(ch, ci) in (msg.charts || [])"
+            :key="ch.id || ('chart-' + ci)"
+            :chart="ch"
+          />
           <WriteConfirmCard
             v-for="card in (msg.confirms || [])"
             :key="card.action_id"
@@ -166,15 +176,25 @@
           <div
             v-if="streamContent || streamAnswerPending || streaming"
             class="msg-body"
-            :class="{ thinking: !streamContent }"
+            :class="{ thinking: !streamContent, 'streaming-body': !!streamContent }"
           >
             <span v-if="!streamContent" class="thinking-indicator">
               <span class="dot"></span>
               <span class="dot"></span>
               <span class="dot"></span>
             </span>
-            <span v-else v-html="renderMarkdown(hideCursorDevPropose(streamContent))"></span>
+            <span v-else v-html="streamDisplayHtml"></span>
           </div>
+          <AnalysisDashboardCard
+            v-for="(db, di) in streamDashboards"
+            :key="db.id || ('stream-dash-' + di)"
+            :board="db"
+          />
+          <AnalysisChartCard
+            v-for="(ch, ci) in streamCharts"
+            :key="ch.id || ('stream-chart-' + ci)"
+            :chart="ch"
+          />
           <WriteConfirmCard
             v-for="card in streamConfirms"
             :key="card.action_id"
@@ -321,6 +341,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob, fetchLocalDevStatus, fetchLocalWorkspacePref, saveLocalWorkspacePref, createLocalDevJob, streamLocalDevJob, cancelLocalDevJob, checkLocalDevWorkspace } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
+import AnalysisChartCard from '../components/AnalysisChartCard.vue'
+import AnalysisDashboardCard from '../components/AnalysisDashboardCard.vue'
 import IdeWorkspacePickCard from '../components/IdeWorkspacePickCard.vue'
 import GitRepoPickCard from '../components/GitRepoPickCard.vue'
 import CodeReviewSourcePickCard from '../components/CodeReviewSourcePickCard.vue'
@@ -332,7 +354,7 @@ import CodingPlanCard from '../components/CodingPlanCard.vue'
 import ScreenshotIntentCard from '../components/ScreenshotIntentCard.vue'
 import AiAvatarIcon from '../components/AiAvatarIcon.vue'
 import { getUsername, getUserId, authHeaders } from '../auth.js'
-import { renderMarkdown } from '../markdown.js'
+import { renderMarkdown, renderStreamingMarkdown } from '../markdown.js'
 import {
   cursorDevSpeedLabel,
   formatCursorDevUserError,
@@ -349,6 +371,8 @@ const input = ref('')
 const streaming = ref(false)
 const streamAbort = ref(null)
 const streamContent = ref('')
+/** 流式气泡展示用 HTML（节流刷新，避免表格每 token 重排闪烁） */
+const streamDisplayHtml = ref('')
 const streamProcess = ref([])
 const streamCodingPlan = ref([])
 const streamProcessCollapsed = ref(false)
@@ -356,6 +380,8 @@ const streamDurationText = ref('')
 const streamStartedAt = ref(0)
 const streamAnswerPending = ref(false)
 const streamConfirms = ref([])
+const streamCharts = ref([])
+const streamDashboards = ref([])
 const msgContainer = ref(null)
 const inputEl = ref(null)
 const fileInput = ref(null)
@@ -771,6 +797,8 @@ function pushAssistantMessage({
   content,
   processItems,
   confirms,
+  charts,
+  dashboards,
   durationText,
   stopped = false,
   cursorDevPick = null,
@@ -783,6 +811,8 @@ function pushAssistantMessage({
     content,
     process: processItems || [],
     confirms: confirms || [],
+    charts: charts || [],
+    dashboards: dashboards || [],
     processCollapsed: true,
     ...(cursorDevPick ? { cursorDevPick } : {}),
     ...(cursorDevOptions ? { cursorDevOptions } : {}),
@@ -889,12 +919,17 @@ async function stopStreaming() {
     content: finalContent,
     processItems,
     confirms,
+    charts: (streamCharts.value || []).map((c) => ({ ...c })),
+    dashboards: (streamDashboards.value || []).map((d) => ({ ...d })),
     durationText,
     stopped: true,
   })
   streamContent.value = ''
+  resetStreamDisplay()
   streamProcess.value = []
   streamConfirms.value = []
+  streamCharts.value = []
+  streamDashboards.value = []
   streamProcessCollapsed.value = false
   streamDurationText.value = ''
   streamAnswerPending.value = false
@@ -914,6 +949,69 @@ function scrollToBottom() {
       msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     }
   })
+}
+
+let streamPaintRaf = 0
+let streamScrollTimer = 0
+let streamLastPaintAt = 0
+let streamLastScrollAt = 0
+const STREAM_PAINT_MIN_MS = 120
+const STREAM_SCROLL_MIN_MS = 160
+
+function paintStreamDisplay(force = false) {
+  const now = Date.now()
+  if (!force && now - streamLastPaintAt < STREAM_PAINT_MIN_MS) {
+    if (!streamPaintRaf) {
+      streamPaintRaf = requestAnimationFrame(() => {
+        streamPaintRaf = 0
+        paintStreamDisplay(true)
+      })
+    }
+    return
+  }
+  streamLastPaintAt = now
+  if (streamPaintRaf) {
+    cancelAnimationFrame(streamPaintRaf)
+    streamPaintRaf = 0
+  }
+  const raw = hideCursorDevPropose(streamContent.value || '')
+  const next = raw ? renderStreamingMarkdown(raw) : ''
+  // 相同 HTML 不写回，减少无意义的 v-html 重挂载
+  if (next === streamDisplayHtml.value) return
+  streamDisplayHtml.value = next
+}
+
+function scrollToBottomThrottled() {
+  const el = msgContainer.value
+  if (!el) return
+  // 用户上翻阅读时不硬拽到底
+  const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (dist > 140) return
+  const now = Date.now()
+  if (now - streamLastScrollAt < STREAM_SCROLL_MIN_MS) {
+    if (streamScrollTimer) return
+    streamScrollTimer = setTimeout(() => {
+      streamScrollTimer = 0
+      scrollToBottomThrottled()
+    }, STREAM_SCROLL_MIN_MS - (now - streamLastScrollAt))
+    return
+  }
+  streamLastScrollAt = now
+  el.scrollTop = el.scrollHeight
+}
+
+function resetStreamDisplay() {
+  if (streamPaintRaf) {
+    cancelAnimationFrame(streamPaintRaf)
+    streamPaintRaf = 0
+  }
+  if (streamScrollTimer) {
+    clearTimeout(streamScrollTimer)
+    streamScrollTimer = 0
+  }
+  streamLastPaintAt = 0
+  streamLastScrollAt = 0
+  streamDisplayHtml.value = ''
 }
 
 function pendingItemToCard(item) {
@@ -1064,6 +1162,8 @@ function persistableMessages() {
     ...(m.meta ? { meta: m.meta } : {}),
     ...(m.process?.length ? { process: m.process } : {}),
     ...(m.confirms?.length ? { confirms: m.confirms } : {}),
+    ...(m.charts?.length ? { charts: m.charts } : {}),
+    ...(m.dashboards?.length ? { dashboards: m.dashboards } : {}),
     ...(m.idePick ? { idePick: m.idePick } : {}),
     ...(m.gitPick ? { gitPick: m.gitPick } : {}),
     ...(m.codeReviewPick ? { codeReviewPick: m.codeReviewPick } : {}),
@@ -1200,6 +1300,21 @@ async function loadSession(id) {
         process: m.process || [],
         confirms,
         files: Array.isArray(m.files) ? m.files : [],
+        ...(Array.isArray(m.charts) && m.charts.length
+          ? { charts: m.charts.map((c) => ({ ...c })) }
+          : {}),
+        ...(Array.isArray(m.dashboards) && m.dashboards.length
+          ? {
+              dashboards: m.dashboards.map((d) => ({
+                ...d,
+                charts: Array.isArray(d?.charts)
+                  ? d.charts.map((c) => ({ ...c }))
+                  : [],
+                kpis: Array.isArray(d?.kpis) ? d.kpis.map((k) => ({ ...k })) : [],
+                gaps: Array.isArray(d?.gaps) ? d.gaps.map((g) => ({ ...g })) : [],
+              })),
+            }
+          : {}),
         ...(m.idePick ? { idePick: { ...m.idePick } } : {}),
         ...(m.gitPick ? { gitPick: { ...m.gitPick } } : {}),
         ...(m.codeReviewPick ? { codeReviewPick: { ...m.codeReviewPick } } : {}),
@@ -2172,6 +2287,87 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
 
 const CURSOR_DEV_PROPOSE_START_RE = /:::cursor_dev_propose\b/i
 const CURSOR_DEV_OPTIONS_START_RE = /:::cursor_dev_options\b/i
+const ANALYSIS_CHART_START_RE = /:::analysis_chart\b/i
+
+/**
+ * 抽取 :::analysis_chart ... ::: 机器块，返回 { content, charts }。
+ */
+function parseAnalysisChartFences(text) {
+  let s = String(text || '')
+  const charts = []
+  let guard = 0
+  while (guard++ < 8) {
+    const m = ANALYSIS_CHART_START_RE.exec(s)
+    if (!m) break
+    const start = m.index
+    const afterTag = s.slice(start + m[0].length)
+    const bodyBeginRel = afterTag.match(/^\s*/)?.[0]?.length ?? 0
+    const bodyAndRest = afterTag.slice(bodyBeginRel)
+    const close = bodyAndRest.match(/\n[ \t]*:::[ \t]*(?:\n|$)/)
+    let body
+    let end
+    if (close && typeof close.index === 'number') {
+      body = bodyAndRest.slice(0, close.index).trim()
+      end = start + m[0].length + bodyBeginRel + close.index + close[0].length
+    } else {
+      body = bodyAndRest.replace(/\n?[ \t]*:::[ \t]*\s*$/, '').trim()
+      end = s.length
+    }
+    try {
+      const payload = JSON.parse(body)
+      if (payload && typeof payload === 'object' && payload.option) {
+        charts.push({
+          id: `fence-${charts.length}-${Date.now()}`,
+          title: payload.title || '分析图',
+          chart_type: payload.chart_type || 'bar',
+          option: payload.option,
+          definition: payload.definition || '',
+          caveats: Array.isArray(payload.caveats) ? payload.caveats : [],
+          layout: payload.layout || payload.option?._wb_layout || {},
+        })
+      }
+    } catch {
+      /* 非法 JSON 则原样保留该段 */
+      break
+    }
+    s = s.slice(0, start) + s.slice(end)
+  }
+  return { content: s.trim(), charts }
+}
+
+/** 图表指纹：避免 SSE 出图 + 正文 fence 各渲一次 */
+function chartFingerprint(ch) {
+  if (!ch || typeof ch !== 'object') return ''
+  const opt = ch.option || {}
+  const series = Array.isArray(opt.series) ? opt.series : []
+  const xdata = opt.xAxis?.data || opt.xAxis?.[0]?.data || []
+  const pie = series[0]?.data
+  try {
+    return [
+      String(ch.title || ''),
+      String(ch.chart_type || ''),
+      JSON.stringify(xdata),
+      JSON.stringify(pie || series[0]?.data || []),
+    ].join('|')
+  } catch {
+    return String(ch.title || '') + String(ch.chart_type || '')
+  }
+}
+
+function mergeUniqueCharts(...lists) {
+  const out = []
+  const seen = new Set()
+  for (const list of lists) {
+    for (const ch of list || []) {
+      if (!ch?.option) continue
+      const fp = chartFingerprint(ch)
+      if (fp && seen.has(fp)) continue
+      if (fp) seen.add(fp)
+      out.push(ch)
+    }
+  }
+  return out
+}
 
 /**
  * 抽取写码机器块：允许缺少结尾 :::（模型常漏写），避免主线确认卡消失。
@@ -5134,9 +5330,11 @@ async function startAssistantStream(
 
   streaming.value = true
   streamContent.value = ''
+  resetStreamDisplay()
   streamAnswerPending.value = false
   streamConfirms.value = []
-  // 本地先挂一条「分析中」，后续真实步骤会替换掉
+  streamCharts.value = []
+  streamDashboards.value = []
   const gitRepoUrl = String((opts && opts.gitRepoUrl) || '').trim()
   const gitRef = String((opts && opts.gitRef) || '').trim()
   const workbuddyLane = String((opts && opts.workbuddyLane) || '').trim()
@@ -5259,6 +5457,7 @@ async function startAssistantStream(
     const stable = buildImportSummaryMarkdown(card.preview)
     if (stable) {
       streamContent.value = stable
+      paintStreamDisplay(true)
       streamAnswerPending.value = true
     }
   }
@@ -5381,13 +5580,61 @@ async function startAssistantStream(
           streamAnswerPending.value = true
           streamProcessCollapsed.value = false
           scrollToBottom()
+        } else if (type === 'dashboard' && Array.isArray(event.charts) && event.charts.length) {
+          const id = String(event.id || `dashboard-${Date.now()}`)
+          const next = {
+            id,
+            title: event.title || '分析看板',
+            template_id: event.template_id || '',
+            presentation: !!event.presentation,
+            skin: event.skin || 'ops_dark',
+            kpis: Array.isArray(event.kpis) ? event.kpis : [],
+            charts: (event.charts || []).map((ch, i) => ({
+              id: ch.id || `${id}-${i}`,
+              title: ch.title || '分析图',
+              chart_type: ch.chart_type || 'bar',
+              option: ch.option,
+              definition: ch.definition || '',
+              caveats: Array.isArray(ch.caveats) ? ch.caveats : [],
+              layout: ch.layout || ch.option?._wb_layout || {},
+              drill: ch.drill || null,
+              entity: ch.entity || '',
+            })),
+            gaps: Array.isArray(event.gaps) ? event.gaps : [],
+          }
+          const idx = streamDashboards.value.findIndex((d) => d.id === id)
+          if (idx >= 0) streamDashboards.value[idx] = next
+          else streamDashboards.value = [...streamDashboards.value, next]
+          streamAnswerPending.value = true
+          streamProcessCollapsed.value = false
+          scrollToBottom()
+        } else if (type === 'chart' && event.option) {
+          const id = String(event.id || `chart-${Date.now()}`)
+          const next = {
+            id,
+            title: event.title || '分析图',
+            chart_type: event.chart_type || 'bar',
+            option: event.option,
+            definition: event.definition || '',
+            caveats: Array.isArray(event.caveats) ? event.caveats : [],
+            layout: event.layout || event.option?._wb_layout || {},
+          }
+          const idx = streamCharts.value.findIndex((c) => c.id === id)
+          if (idx >= 0) streamCharts.value[idx] = next
+          else streamCharts.value = [...streamCharts.value, next]
+          streamAnswerPending.value = true
+          streamProcessCollapsed.value = false
+          scrollToBottom()
         } else if (type === 'token') {
           const text = event.text != null ? event.text : event.token
           if (!text) return
           // 已有写确认预览表时，忽略模型后续散文 token，保持表格稳定
           if (streamConfirms.value.length) return
-          flushStepsNow = true
-          await stepRevealChain
+          // 只在首段正文到来时等步骤错峰链；每个 token 都 await 会把后续 SSE 堵在缓冲里，结束后整段蹦出
+          if (!flushStepsNow) {
+            flushStepsNow = true
+            await stepRevealChain
+          }
           streamAnswerPending.value = true
           streamProcessCollapsed.value = false
           if (!streamDurationText.value) {
@@ -5397,8 +5644,30 @@ async function startAssistantStream(
           streamProcess.value = streamProcess.value.filter(
             (i) => !(i.type === 'status' && i.phase === 'generating')
           )
-          streamContent.value += text
-          scrollToBottom()
+          // 大段终稿：含表格时禁止按行假流式（每行重绘会抖）；仅散文渐进
+          const looksTable =
+            /\|.+\|/.test(text) || /\|.+\|/.test(streamContent.value || '')
+          if (text.length > 96 && !looksTable) {
+            const base = streamContent.value || ''
+            const target = base + text
+            let i = base.length
+            const total = text.length
+            const step = total > 2500 ? 48 : total > 1200 ? 32 : 24
+            const delay = total > 2500 ? 8 : 12
+            while (i < target.length) {
+              if (requestId !== activeRequestId || threadId.value !== currentThread) return
+              i = Math.min(target.length, i + step)
+              streamContent.value = target.slice(0, i)
+              paintStreamDisplay()
+              scrollToBottomThrottled()
+              await new Promise((r) => setTimeout(r, delay))
+            }
+            streamContent.value = target
+          } else {
+            streamContent.value += text
+          }
+          paintStreamDisplay()
+          scrollToBottomThrottled()
         }
       },
       async () => {
@@ -5520,11 +5789,22 @@ async function startAssistantStream(
           const parsed = parseCursorDevMachineBlocks(finalContent)
           finalContent = parsed.content
         }
-        if (finalContent || processItems.length || confirms.length || cursorDevPick || cursorDevOptions || cursorDevAnchor) {
+        const fenceParsed = parseAnalysisChartFences(finalContent)
+        finalContent = fenceParsed.content
+        // SSE 已推送图表时，只剥 fence 不再二次挂载，避免同一张图出现两次
+        const fromStream = (streamCharts.value || []).map((c) => ({ ...c }))
+        const charts = mergeUniqueCharts(
+          fromStream,
+          fromStream.length ? [] : fenceParsed.charts || [],
+        )
+        const dashboards = (streamDashboards.value || []).map((d) => ({ ...d }))
+        if (finalContent || processItems.length || confirms.length || charts.length || dashboards.length || cursorDevPick || cursorDevOptions || cursorDevAnchor) {
           pushAssistantMessage({
             content: finalContent,
             processItems,
             confirms,
+            charts,
+            dashboards,
             durationText,
             stopped: false,
             cursorDevPick,
@@ -5538,13 +5818,18 @@ async function startAssistantStream(
               '[错误] 本轮未生成审核正文。请点「重新开始审核」再试一次。',
             processItems: [],
             confirms: [],
+            charts: [],
+            dashboards: [],
             durationText,
             stopped: false,
           })
         }
         streamContent.value = ''
+        resetStreamDisplay()
         streamProcess.value = []
         streamConfirms.value = []
+        streamCharts.value = []
+        streamDashboards.value = []
         streamProcessCollapsed.value = false
         streamDurationText.value = ''
         streamAnswerPending.value = false
@@ -5565,12 +5850,17 @@ async function startAssistantStream(
           content: '[错误] 请求失败：' + errText,
           processItems: (streamProcess.value || []).filter((i) => i.type === 'step' && i.id !== 'boot'),
           confirms: (streamConfirms.value || []).map((c) => ({ ...c })),
+          charts: (streamCharts.value || []).map((c) => ({ ...c })),
+          dashboards: (streamDashboards.value || []).map((d) => ({ ...d })),
           durationText: streamDurationText.value || '',
           stopped: false,
         })
         streamContent.value = ''
+        resetStreamDisplay()
         streamProcess.value = []
         streamConfirms.value = []
+        streamCharts.value = []
+        streamDashboards.value = []
         streamProcessCollapsed.value = false
         streamDurationText.value = ''
         streamAnswerPending.value = false
@@ -5593,6 +5883,7 @@ async function startAssistantStream(
       streaming.value
     ) {
       streamContent.value = ''
+      resetStreamDisplay()
       streamProcess.value = []
       streamConfirms.value = []
       streamProcessCollapsed.value = false
@@ -5931,7 +6222,47 @@ onUnmounted(() => {
   chatViewAlive = false
   window.removeEventListener('keydown', onLightboxKeydown)
   closeImageLightbox()
-  // 会话切换会整页重挂载：必须停掉流式请求与写码轮询，否则旧定时器继续改 DOM 导致点击无响应
+  // 会话切换会整页重挂载：先把流式缓冲区里的图/看板并入 messages 并尽力落盘，
+  // 再掐断请求；否则 onDone 因 requestId 失效直接 return，图只存在于内存就丢了。
+  try {
+    const charts = (streamCharts.value || []).map((c) => ({ ...c }))
+    const dashboards = (streamDashboards.value || []).map((d) => ({ ...d }))
+    const streamText = (streamContent.value || '').trimEnd()
+    const chartIds = new Set(charts.map((c) => c?.id).filter(Boolean))
+    const dashIds = new Set(dashboards.map((d) => d?.id).filter(Boolean))
+    const alreadyPersisted = messages.value.some((m) => {
+      if (chartIds.size && (m.charts || []).some((c) => c?.id && chartIds.has(c.id))) return true
+      if (dashIds.size && (m.dashboards || []).some((d) => d?.id && dashIds.has(d.id))) return true
+      return false
+    })
+    if (
+      !alreadyPersisted &&
+      (charts.length || dashboards.length || (streaming.value && streamText))
+    ) {
+      pushAssistantMessage({
+        content: streamText || '',
+        processItems: (streamProcess.value || []).filter(
+          (i) => i.type === 'step' && i.id !== 'boot',
+        ),
+        confirms: (streamConfirms.value || []).map((c) => ({ ...c })),
+        charts,
+        dashboards,
+        durationText: streamDurationText.value || '',
+        stopped: true,
+      })
+    }
+    streamCharts.value = []
+    streamDashboards.value = []
+    streamContent.value = ''
+    streamProcess.value = []
+    streamConfirms.value = []
+    if (threadId.value && messages.value.length) {
+      void persistSession()
+    }
+  } catch (e) {
+    console.warn('会话卸载前保存图表失败', e)
+  }
+  // 必须停掉流式请求与写码轮询，否则旧定时器继续改 DOM 导致点击无响应
   activeRequestId += 1
   try {
     streamAbort.value?.abort()
@@ -6049,6 +6380,7 @@ onUnmounted(() => {
 
 .message.assistant {
   justify-content: flex-start;
+  width: 100%;
 }
 
 .msg-content {
@@ -6061,6 +6393,7 @@ onUnmounted(() => {
 
 .message.assistant .msg-content {
   width: 100%;
+  max-width: 100%;
 }
 
 .message.user .msg-content {
@@ -6110,9 +6443,24 @@ onUnmounted(() => {
   border-radius: 16px 16px 16px 4px;
 }
 
+/* 流式输出固定气泡宽度，避免表格列变宽时左右抽动 */
+.message.assistant .msg-body.streaming-body {
+  width: 100%;
+  max-width: 100%;
+  contain: layout style;
+}
+
 /* 确认卡与同条消息体同宽（跟随较宽的表格气泡拉伸） */
 .message.assistant .msg-content :deep(.write-confirm),
 .message.assistant .msg-content :deep(.ide-ws-pick) {
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+/* 分析看板/单图与消息区同宽，避免格子又窄又长 */
+.message.assistant .msg-content :deep(.analysis-dashboard-card),
+.message.assistant .msg-content :deep(.analysis-chart-card) {
   align-self: stretch;
   width: 100%;
   max-width: 100%;
@@ -6253,6 +6601,7 @@ onUnmounted(() => {
   font-size: 13px;
   display: block;
   overflow-x: auto;
+  table-layout: fixed;
 }
 
 :deep(.md-table td),
@@ -6260,11 +6609,44 @@ onUnmounted(() => {
   padding: 6px 10px;
   border: 1px solid var(--ui-border);
   text-align: left;
+  word-break: break-word;
 }
 
 :deep(.md-table th) {
   background: var(--ui-panel);
   font-weight: 500;
+}
+
+:deep(.md-stream-pending) {
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ui-text-muted);
+  white-space: pre-wrap;
+  opacity: 0.85;
+  border-left: 2px solid var(--ui-border);
+}
+
+/* 流式阶段表格：等宽预排，固定宽度，禁止 HTML table 列宽重算 */
+:deep(.md-table-plain) {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  overflow-x: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--ui-text);
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
 }
 
 :deep(.md-h1) { font-size: 15px; font-weight: 600; margin: 12px 0 6px; }

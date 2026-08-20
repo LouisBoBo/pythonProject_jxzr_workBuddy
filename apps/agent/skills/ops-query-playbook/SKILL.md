@@ -33,6 +33,7 @@ run_ops_scene(scene="<id或中文>", export=false|true)
 | 没有可查对象 | `catalog-empty-help` | 引导 MES 接入 |
 | 查不到数据 / 故障排查 | `ops-diagnose` | 只读就绪状态+日志分支，不写 MES |
 | 值班简报 / 产线日报 | `ops-daily-brief` | 口径摘要 + 主对象状态/优先级分布（`markdown_report`）；绑不上则跳过 |
+| 产线异常日报（PCB） | `plant-exception-daily` | 日报套版；可含 `chart` / `markdown_fence`，前端出图 |
 | 分析概况 / 异常分布 | （也可）`analyze_platform_brief` | 轻量分析简报，非 SQL |
 
 也可直接用 `query_metric("紧急未完工")` / `query_write_audit` / `analyze-api-health` 六步。与场景等价时 **优先 `run_ops_scene`**。

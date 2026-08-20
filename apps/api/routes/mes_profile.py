@@ -81,12 +81,34 @@ def _persist_openapi_text(pid: str, text: str, *, activate: bool, source_url: st
     description=(
         "返回当前系统名称、可用列表，以及表结构/实体/能力地图的实际路径与来源"
         "（override / profile / none）。未配置时 source=none，须先接入 MES。"
+        "打开本页或应用时会后台触发「每日资料包同步」（本机 MES OpenAPI 合并），失败不影响本接口。"
     ),
 )
 async def get_mes_profile(_auth: tuple = Depends(require_auth)) -> dict[str, Any]:
     from mes_profile import profile_status
 
-    return profile_status()
+    try:
+        from mes_profile_daily_sync import schedule_daily_sync_openapi
+
+        # 用户打开设置/应用即触发；已同步过则瞬间跳过
+        schedule_daily_sync_openapi(delay_sec=0.3)
+    except Exception:
+        pass
+
+    status = profile_status()
+    try:
+        from mes_profile import profile_dir
+        from mes_profile_daily_sync import _read_stamp, daily_sync_enabled
+
+        pdir = profile_dir()
+        stamp = _read_stamp(pdir) if pdir else {}
+        status["daily_openapi_sync"] = {
+            "enabled": daily_sync_enabled(),
+            "last": stamp or None,
+        }
+    except Exception:
+        pass
+    return status
 
 
 @router.put(

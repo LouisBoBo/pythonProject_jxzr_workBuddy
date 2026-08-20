@@ -486,8 +486,22 @@ def build_system_prompt() -> str:
         "分组字段必须是本次返回记录里真实存在的列，不要臆造",
         "- 「分析一下 / 产线概况 / 异常分布 / 帮我看看工单情况」调用 analyze_platform_brief，"
         "直接展示 markdown_report（含状态/优先级分布与可绑定指标）",
-        "- 「在制 / 未完工 / 紧急未完工 / 当日完工」调用 query_metric（可先 list_query_metrics）；"
+        "- 「出图 / 柱状图 / 饼图 / 折线图 / 分布图 / 趋势图」：先取数或汇总，再 render_analysis_chart"
+        "（传入真实 groups 或 categories/values，并传 user_intent=用户原话）；"
+        "图表类型自动选：用户点名最高优先；趋势→折线；分布/占比→饼；其余→柱。"
+        "**禁止**追问用户用什么图。"
+        "回复只写结论与口径，**不要**再贴 markdown_fence，**不要**再贴与图重复的完整分组表。",
+        "- 「打开PCB运营看板 / PCB运营看板 / 打开品质看板」：run_analysis_demo(playbook='pcb-ops-board')；"
+        "展示多图看板（标题用看板名，勿用「早会演示」）；缺口如实说；禁止编造工序在制或 Lot。"
+        "仅要单模板出图、不跑编排时仍可用 render_analysis_dashboard。",
+        "- 「在制 / 未完工 / 紧急未完工 / 当日完工 / 工序在制 / AOI不良 / 报废 / 当日产出」"
+        "调用 query_metric（可先 list_query_metrics）；"
         "口径随当前目录绑定，禁止套用其它 MES 的实体 id 或状态值；绑不上或日期筛不了要如实说",
+        "- **PCB / 行业扩展**：通用分析走 Skill `analyze-mes-data`；"
+        "PCB 可选包仅当资料包 `metric_packs` 含 pcb 或自建 metrics 时可用（Skill `analyze-pcb-mes`）。"
+        "换平台靠资料包 metrics.json / analysis.json，禁止写死实体 id。",
+        "- **只读 SQL**（仅当工具已挂载且用户明确要对账/跨表统计）：readonly_sql；"
+        "默认应走 HTTP；未开启时提示系统配置，禁止编造 SQL 结果",
         "- **运维值班**：紧急工单/急单堆积 **必须** `run_ops_scene('urgent-backlog')` 或 `query_metric('紧急未完工')`；"
         "禁止只用 `priority=urgent`（口径含紧急+高优先级且未完工）。"
         "谁导入了/导入失败/接口通不通/401 → list_ops_scenes / run_ops_scene；"
@@ -506,7 +520,7 @@ def build_system_prompt() -> str:
         "### 谁导入了文件 / 导入操作记录",
         "用户问「谁导入了」「导入记录」「谁写过 MES」时：",
         '- 调用 query_write_audit(event="write_confirmed")；默认只查近 30 天，不是全量',
-        "- 数据多时：收窄 since/until，或 offset 翻页；每页默认 20 条",
+        "- 数据多时：收窄 since/until，或 offset 翻页；每页默认 50 条",
         "- 需要更久历史时显式传 since，或加大 lookback_days",
         "- 用表格列出：时间、操作人 username、文件、目标实体、行数",
         "- 回复时说明查询时间窗（如「近 30 天」），避免用户以为是全部历史",

@@ -1,0 +1,142 @@
+{
+  "id": "pcb_ops",
+  "label": "PCB / 品质运营看板",
+  "description": "资料包通用模板：按 entity_hints / metric 绑定当前目录；缺卡诚实缺口。换平台只改资料包，不改本文件实体 id。",
+  "presentation": {
+    "skin": "ops_dark",
+    "lead_metric": "unfinished",
+    "lead_label": "未完工",
+    "kpi": [
+      {
+        "id": "urgent",
+        "label": "急单",
+        "chart_id": "K2",
+        "agg": "sum",
+        "hint": "急单堆积合计"
+      },
+      {
+        "id": "defect_top",
+        "label": "不良合计",
+        "chart_id": "K4",
+        "agg": "sum",
+        "hint": "不良 Top 合计"
+      },
+      {
+        "id": "yield_avg",
+        "label": "均良率",
+        "chart_id": "K5",
+        "agg": "avg",
+        "unit": "%",
+        "hint": "工序良率均值"
+      },
+      {
+        "id": "output",
+        "label": "产出合计",
+        "chart_id": "K3",
+        "agg": "sum",
+        "hint": "日产出概览合计"
+      }
+    ]
+  },
+  "cards": [
+    {
+      "id": "K2",
+      "title": "急单堆积",
+      "kind": "metric_groups",
+      "metric": "urgent-unfinished",
+      "group_by_hints": ["优先级", "priority", "pri"],
+      "chart_intent": "分布",
+      "series_name": "条数"
+    },
+    {
+      "id": "K4",
+      "title": "检测/品质不良 Top",
+      "kind": "entity_series",
+      "entity_hints": [
+        "Top 不良项",
+        "不良分布",
+        "quality-top-defects",
+        "quality-defect-distribution",
+        "top-defects"
+      ],
+      "category_fields": ["defect_type", "name", "label", "process", "key"],
+      "value_fields": ["quantity", "value", "count", "qty"],
+      "chart_intent": "分布",
+      "series_name": "数量",
+      "limit": 20
+    },
+    {
+      "id": "K5",
+      "title": "工序良率 / 报废相关",
+      "kind": "entity_series",
+      "entity_hints": [
+        "工序良率",
+        "品质 KPI",
+        "quality-process-yield",
+        "quality-kpi",
+        "process-yield"
+      ],
+      "category_fields": ["process", "label", "name", "key", "production_line"],
+      "value_fields": ["yield_rate", "value", "scrap_count", "defect_count", "total_inspected"],
+      "chart_type": "line",
+      "chart_intent": "折线",
+      "series_name": "良率",
+      "limit": 30
+    },
+    {
+      "id": "K3",
+      "title": "日产出概览",
+      "kind": "entity_series",
+      "entity_hints": [
+        "设备产量排行",
+        "device-output",
+        "生产看板",
+        "kanban-production",
+        "生产概览（经典版）",
+        "production-overview",
+        "生产概览（联动版）",
+        "production-overview-v2"
+      ],
+      "category_fields": [
+        "name",
+        "label",
+        "code",
+        "time",
+        "device_name",
+        "production_line",
+        "line",
+        "product_model",
+        "key"
+      ],
+      "value_fields": [
+        "today_output",
+        "week_output",
+        "lot_output",
+        "model_output",
+        "today_completed",
+        "today_area_output",
+        "quantity",
+        "value",
+        "output",
+        "actual_qty",
+        "count"
+      ],
+      "chart_intent": "对比",
+      "series_name": "产量",
+      "limit": 30,
+      "soft_gap": "若各产量接口均无法抽成类目/数值，可改问「生产概览」看原始看板"
+    },
+    {
+      "id": "K1",
+      "title": "工序在制",
+      "kind": "gap",
+      "gap_reason": "需工序/过站维 WIP 接口。仅有产线 WIP 快照或工单在制时，请改问「在制工单」或「产线在制」，勿声称工序在制。"
+    },
+    {
+      "id": "K_LOT",
+      "title": "Lot / 拼板追溯",
+      "kind": "gap",
+      "gap_reason": "当前通用模板不假定 Lot/Panel/条码链路；资料包无对应实体时保持缺口。"
+    }
+  ]
+}

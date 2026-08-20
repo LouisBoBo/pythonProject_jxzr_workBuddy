@@ -63,9 +63,9 @@ flowchart TB
 | 能力块 | 现有底座（已落地） | 主要缺口 |
 |--------|-------------------|----------|
 | **A 懂平台** | 资料包表结构；无 overlay 可推断能力地图（含 `markdown_summary`）；场景表关键字匹配；`inspect_mes_profile`；`compare_schema_vs_catalog`（含对照 markdown） | 现场长期校准流水线；摸底 10 句仍需人工抽检对话质量 |
-| **B 数据分析** | 真 ERP 查数/筛选/汇总/导出；中文 `markdown_table`；过程区优先中文表；指标口径 + 当日完工无日期筛参诚实降级；**`analyze_platform_brief` 轻量分析简报** | 只读 SQL；字段级权限；固定产线异常日报套版；前端独立结果表组件（过程区已可读） |
+| **B 数据分析** | 真 ERP 查数/筛选/汇总/导出；中文表；指标口径；分析简报；**`render_analysis_chart` + ECharts**；**资料包 `metrics.json` / `analysis.json` / 可选 `metric_packs`**；产线异常日报；可选只读 SQL | 字段级权限；跨引擎只读 SQL；现场口径校准；**通用 BI / PCB 六看板见 [`通用BI与PCB分析里程碑.md`](../MES业务/通用BI与PCB分析里程碑.md)** |
 | **C 协助运维** | `list_ops_scenes` / `run_ops_scene`；紧急/401/探活/简报/故障树；值班简报含分布 markdown + 导出提示；写确认与审计 | 日志/告警只读接入；变更窗口与双人确认 |
-| **D 加功能** | 本机/GitHub 写码与审码；`mes_change_preflight`（含 `acceptance_markdown`）；`stack_chain` + 同步后 SQLite 闸门；**写码摘要附改后验收清单** | 改后自动跑查数；非 SQLite 库的迁移/回填 |
+| **D 加功能** | 本机/GitHub 写码与审码；`mes_change_preflight`（含 `acceptance_markdown`）；`stack_chain` + 同步后 SQLite 闸门；**写码摘要附改后验收清单**；**本机写码后数据侧自动轻量查数**（`MES_POST_DEV_QUERY`，失败不挡成功） | 非 SQLite 库的迁移/回填；GitHub 写码车道尚无自动查数 |
 
 ---
 
@@ -244,7 +244,7 @@ flowchart TB
 | D2 | GitHub 写码车道 | 白名单、确认后 Cloud Agent、默认工作分支 | P0（已有） |
 | D3 | 审码 | 本机配对 / 远程只读克隆报告 | P0（已有） |
 | D4 | 「改功能」前置清单 | 写码前可选对照当前目录；加字段须界面→接口→库表→写入；本机写码同步后闸门自动补列/回填 | P1（已落地 mes_change_preflight + stack_chain + stack_chain_gate） |
-| D5 | 验收话术包 | 前置工具返回 acceptance_hints，写入 propose | P1（已落地提示；不自动跑查数） |
+| D5 | 验收话术包 | 前置工具返回 acceptance_hints；本机写码成功后对数据侧变更自动轻量查数（可关，失败不挡成功） | P1（已落地提示 + 本机自动查数；不替代对话完整验收） |
 | D6 | 与桌面双交付 | 安装包配置 Key/ERP 后可用写码；网页不回退 | P0（已有） |
 
 ### 5.3 技术落点

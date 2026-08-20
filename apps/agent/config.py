@@ -160,6 +160,16 @@ class Config:
         "yes",
     )
 
+    # --- 只读 SQL（默认关；须 DSN + 表白名单）---
+    READONLY_SQL_ENABLED = (
+        _resolve("READONLY_SQL_ENABLED", "") or os.getenv("READONLY_SQL_ENABLED", "")
+    ).lower() in ("1", "true", "yes")
+    READONLY_SQL_DSN = _resolve("READONLY_SQL_DSN", "") or os.getenv("READONLY_SQL_DSN", "")
+    READONLY_SQL_TABLE_WHITELIST = (
+        _resolve("READONLY_SQL_TABLE_WHITELIST", "")
+        or os.getenv("READONLY_SQL_TABLE_WHITELIST", "")
+    )
+
     # --- 截图理解（主模型多为纯文本时，先走视觉模型再注入）---
     # 优先 VISION_*，兼容 ZHIPU_*
     VISION_API_KEY = _effective_vision_api_key()
@@ -196,6 +206,16 @@ class Config:
         cls.ERP_PASSWORD = _resolve("MES_API_PASSWORD", "") or os.getenv("ERP_PASSWORD", "")
         cls.ERP_ENTERPRISE_CODE = (
             _resolve("MES_API_ENTERPRISE_CODE", "") or os.getenv("ERP_ENTERPRISE_CODE", "")
+        )
+        cls.READONLY_SQL_ENABLED = (
+            _resolve("READONLY_SQL_ENABLED", "") or os.getenv("READONLY_SQL_ENABLED", "")
+        ).lower() in ("1", "true", "yes")
+        cls.READONLY_SQL_DSN = (
+            _resolve("READONLY_SQL_DSN", "") or os.getenv("READONLY_SQL_DSN", "")
+        )
+        cls.READONLY_SQL_TABLE_WHITELIST = (
+            _resolve("READONLY_SQL_TABLE_WHITELIST", "")
+            or os.getenv("READONLY_SQL_TABLE_WHITELIST", "")
         )
 
     @classmethod

@@ -144,7 +144,22 @@ def _list_query_string(
         n = safe_query_name(str(name or ""))
         if not n:
             return False
-        pairs.append((n, str(value)))
+        # 禁止把 list 直接 str() 成 "['a','b']"（MES 会当非法枚举 → 0 条）
+        if isinstance(value, (list, tuple, set)):
+            ok_any = False
+            for item in value:
+                if item is None or item == "":
+                    continue
+                sv = str(item).strip()
+                if not sv or len(sv) > 200:
+                    continue
+                pairs.append((n, sv))
+                ok_any = True
+            return ok_any
+        sv = str(value)
+        if len(sv) > 500:
+            sv = sv[:500]
+        pairs.append((n, sv))
         return True
 
     cap = max(1, min(int(limit or 20), 100))

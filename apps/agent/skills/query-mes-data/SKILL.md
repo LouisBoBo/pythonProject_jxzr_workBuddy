@@ -15,7 +15,8 @@ description: >-
 - 需要先弄清平台有哪些可查对象再查询
 - 查询结果为空或失败，需要排查是否选错实体
 - 用户要「按状态各多少」一类轻量汇总
-- 用户问「在制」「未完工」「紧急单」「当日完工」等指标口径
+- 用户问「在制」「未完工」「紧急单」「插单」「当日完工」「出图」等指标/分析
+- 跨平台通用分析：Skill `analyze-mes-data`；PCB 可选扩展：`analyze-pcb-mes`（须资料包启用）
 
 ## 工具选用
 
@@ -25,8 +26,10 @@ description: >-
 4. 查列表：`query_platform_data(entity="<英文id>", filters=?, limit=?)`
 5. 看字段：`describe_entity(entity="<英文id>")`（`filter_fields` 才是可下发的筛选名）
 6. 轻量汇总：`summarize_platform_data(entity="<英文id>", group_by=?, filters=?)`
-7. **分析简报**：`analyze_platform_brief(entity=?)`（状态/优先级分布 + 可绑定指标；展示 `markdown_report`）
-8. 指标口径：先 `list_query_metrics`，再 `query_metric`；「紧急工单/急单」用 `query_metric("紧急未完工")` 或 `run_ops_scene("urgent-backlog")`，**不要**只传 `filters={"priority":"urgent"}`
+7. **分析简报**：`analyze_platform_brief(entity=?)`（分组标签来自资料包 analysis 配置）
+8. **出图**：先有 groups/categories+values，再 `render_analysis_chart(groups=…, user_intent=用户原话)`；`chart_type` 默认 `auto`（趋势→折线、分布→饼、默认柱；用户点名最高优先）。**禁止**追问用户用什么图。前端自动出图，**不要**再贴 `markdown_fence`，**不要**再贴与图相同的完整分组表
+9. 指标口径：先 `list_query_metrics`，再 `query_metric`；「紧急工单/急单/插单」用 `query_metric("紧急未完工")` 或 `run_ops_scene("urgent-backlog")`，**不要**只传 `filters={"priority":"urgent"}`
+10. 产线/异常日报：`run_ops_scene("plant-exception-daily")`（口径随当前资料包，不写死实体）
 
 `entity` **必须用英文 id**（来自当前目录），不要传中文。口径名用中文或 id 均可，**禁止**把其它 MES 的实体 id 写进口径查询。
 
@@ -48,9 +51,11 @@ description: >-
 3. 用工具返回的 `markdown_table`（或 `display_rows`）展示，列名用中文
 4. 「各多少 / 按状态汇总」用 `summarize_platform_data` 的 `groups`，不要臆造字段或分组值
 5. 「分析一下 / 概况 / 异常分布」用 `analyze_platform_brief`，展示 `markdown_report`
-6. 「在制 / 未完工 / 紧急未完工 / 当日完工」用 `query_metric`，先复述工具返回的 `definition` 与 `filter_sets`；绑不上就如实说，不要套 pending/work-orders
-7. 若返回含 `caveats`（常见：当日完工接口无日期筛参）：**必须**把 caveat 说给用户，禁止说成「今天完工了 N 条」；只能说「按已完工状态查出 N 条，未能限定当天」
-8. 用户要导出时走 `export_platform_data`，报绝对路径 `file` 和行数 `rows`
+6. 「出图 / 分析一下并可视化」用 `render_analysis_chart(user_intent=用户原话)`，**勿问用柱/折/饼**；series 必须来自工具
+7. 「在制 / 未完工 / 紧急未完工 / 当日完工 / 工序在制 / AOI / 报废」用 `query_metric`，先复述工具返回的 `definition` 与 `filter_sets`；绑不上就如实说，不要套 pending/work-orders
+8. 若返回含 `caveats`（常见：当日完工接口无日期筛参）：**必须**把 caveat 说给用户，禁止说成「今天完工了 N 条」；只能说「按已完工状态查出 N 条，未能限定当天」
+9. 用户要导出时走 `export_platform_data`，报绝对路径 `file` 和行数 `rows`
+10. 「产线异常日报」优先 `run_ops_scene('plant-exception-daily')`
 
 ## 自检
 

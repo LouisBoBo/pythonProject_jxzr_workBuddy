@@ -133,10 +133,15 @@ _TOOL_LABELS = {
     "query_platform_data": "查询平台数据",
     "summarize_platform_data": "汇总平台数据分组",
     "analyze_platform_brief": "平台轻量分析简报",
+    "render_analysis_chart": "渲染分析图表",
+    "render_analysis_dashboard": "渲染分析看板",
+    "run_analysis_demo": "打开运营看板",
+    "readonly_sql": "只读 SQL 查询",
     "list_query_metrics": "列出指标口径",
     "query_metric": "按指标口径查询",
     "list_ops_scenes": "列出运维场景",
     "run_ops_scene": "执行运维值班场景",
+    "list_analysis_demos": "列出运营看板编排",
     "list_platform_entities": "列出可查实体",
     "get_platform_summary": "汇总平台数据",
     "describe_entity": "查看实体结构",
@@ -363,13 +368,15 @@ def _input_detail(name: str, inp: Any) -> str:
         return text[:240] + ("…" if len(text) > 240 else "") if text else ""
 
     lines: list[str] = []
-    if name in ("query_platform_data", "summarize_platform_data", "analyze_platform_brief", "query_metric", "run_ops_scene"):
+    if name in ("query_platform_data", "summarize_platform_data", "analyze_platform_brief", "query_metric", "run_ops_scene", "render_analysis_chart", "render_analysis_dashboard", "run_analysis_demo", "readonly_sql"):
         if data.get("entity"):
             lines.append(f"实体：{data['entity']}")
         if data.get("name") and name == "query_metric":
             lines.append(f"口径：{data['name']}")
         if data.get("scene") and name == "run_ops_scene":
             lines.append(f"场景：{data['scene']}")
+        if data.get("playbook") and name == "run_analysis_demo":
+            lines.append(f"演示剧本：{data['playbook']}")
         if data.get("export") is not None and name == "run_ops_scene":
             lines.append(f"导出：{data['export']}")
         if data.get("group_by"):
@@ -558,6 +565,40 @@ def _result_detail(name: str, out: Any) -> tuple[str, list[str]]:
             if data.get("local_fill"):
                 summary += "（本机直读）"
             return summary, files[:8]
+
+        if data.get("chart_option") or data.get("charts") or (
+            name
+            in (
+                "render_analysis_chart",
+                "render_analysis_dashboard",
+                "run_analysis_demo",
+            )
+            and data.get("ok")
+        ):
+            title = str(data.get("title") or data.get("label") or "分析图")
+            ctype = str(data.get("chart_type") or "bar")
+            pts = data.get("point_count") or data.get("chart_count")
+            if data.get("charts") and isinstance(data.get("charts"), list):
+                summary = f"看板已生成：{title}（{len(data['charts'])} 图"
+                gaps = data.get("gap_count")
+                if gaps:
+                    summary += f"，{gaps} 缺口"
+                summary += "）"
+            else:
+                summary = f"图表已生成：{title}（{ctype}，{pts} 点）"
+            preview = []
+            for c in (data.get("caveats") or [])[:3]:
+                if str(c).strip():
+                    preview.append(f"说明：{c}")
+            for g in (data.get("gaps") or [])[:4]:
+                if isinstance(g, dict) and g.get("title"):
+                    preview.append(f"缺口：{g.get('title')} — {g.get('reason') or ''}")
+            cats = data.get("categories") or []
+            vals = data.get("values") or []
+            for i, cat in enumerate(cats[:6]):
+                v = vals[i] if i < len(vals) else ""
+                preview.append(f"{cat} = {v}")
+            return summary, preview
 
         if "total" in data or "records" in data or data.get("markdown_table") or data.get("display_rows") or data.get("markdown_report"):
             if data.get("markdown_report") and not data.get("records") and not data.get("display_rows"):
@@ -1298,6 +1339,165 @@ class AgentRunner:
                     if batch_idx is not None:
                         end_ev["batch_index"] = batch_idx
                     yield end_ev
+                    # 分析图表：看板一次推送 / 单图或多图 SSE
+                    chart_events: list[dict] = []
+                    dashboard_event: dict | None = None
+                    if isinstance(parsed, dict):
+                        multi = parsed.get("charts")
+                        as_board = (
+                            name
+                            in (
+                                "render_analysis_dashboard",
+                                "run_analysis_demo",
+                            )
+                            or bool(parsed.get("template_id"))
+                            or bool(parsed.get("demo"))
+                            or (
+                                isinstance(multi, list)
+                                and len(multi) >= 2
+                                and parsed.get("ok")
+                            )
+                        )
+
+                        def _norm_chart_item(ch: dict, idx: int) -> dict | None:
+                            opt = ch.get("chart_option") or ch.get("option")
+                            if not isinstance(opt, dict):
+                                return None
+                            layout = (
+                                ch.get("layout")
+                                if isinstance(ch.get("layout"), dict)
+                                else None
+                            ) or opt.get("_wb_layout") or {}
+                            series = opt.get("series")
+                            series_type = ""
+                            if isinstance(series, list):
+                                for s in series:
+                                    if isinstance(s, dict) and s.get("type") in (
+                                        "pie",
+                                        "bar",
+                                        "line",
+                                    ):
+                                        series_type = str(s["type"])
+                                        break
+                            return {
+                                "id": str(ch.get("id") or f"{run_id}-{idx}"),
+                                "title": str(
+                                    ch.get("title") or parsed.get("title") or "分析图"
+                                ),
+                                "chart_type": series_type
+                                or str(ch.get("chart_type") or "bar"),
+                                "option": opt,
+                                "definition": str(ch.get("definition") or "")[:300],
+                                "caveats": list(ch.get("caveats") or [])[:5],
+                                "layout": layout,
+                                "drill": ch.get("drill")
+                                if isinstance(ch.get("drill"), dict)
+                                else None,
+                                "entity": ch.get("entity"),
+                            }
+
+                        if isinstance(multi, list) and multi and as_board:
+                            board_charts: list[dict] = []
+                            for i, ch in enumerate(multi):
+                                if not isinstance(ch, dict):
+                                    continue
+                                item = _norm_chart_item(ch, i)
+                                if item:
+                                    board_charts.append(item)
+                            if board_charts:
+                                gaps_raw = parsed.get("gaps")
+                                gaps_out: list[dict] = []
+                                if isinstance(gaps_raw, list):
+                                    for g in gaps_raw[:8]:
+                                        if isinstance(g, dict):
+                                            gaps_out.append(
+                                                {
+                                                    "id": g.get("id"),
+                                                    "title": g.get("title") or g.get("id"),
+                                                    "reason": str(g.get("reason") or "")[
+                                                        :300
+                                                    ],
+                                                }
+                                            )
+                                dashboard_event = {
+                                    "type": "dashboard",
+                                    "id": run_id,
+                                    "tool": name,
+                                    "title": str(
+                                        parsed.get("label")
+                                        or parsed.get("title")
+                                        or "分析看板"
+                                    ),
+                                    "template_id": str(
+                                        parsed.get("template_id") or ""
+                                    ),
+                                    "presentation": bool(
+                                        parsed.get("presentation") or parsed.get("demo")
+                                    ),
+                                    "skin": str(parsed.get("skin") or "ops_dark"),
+                                    "kpis": [
+                                        k
+                                        for k in (parsed.get("kpis") or [])
+                                        if isinstance(k, dict)
+                                    ][:6],
+                                    "charts": board_charts,
+                                    "gaps": gaps_out,
+                                }
+                        elif isinstance(multi, list) and multi:
+                            for i, ch in enumerate(multi):
+                                if not isinstance(ch, dict):
+                                    continue
+                                item = _norm_chart_item(ch, i)
+                                if not item:
+                                    continue
+                                chart_events.append(
+                                    {
+                                        "type": "chart",
+                                        "tool": name,
+                                        **item,
+                                    }
+                                )
+                        else:
+                            chart_opt = parsed.get("chart_option")
+                            chart_title = ""
+                            chart_type = ""
+                            chart_def = ""
+                            chart_caveats: list = []
+                            if not chart_opt and isinstance(parsed.get("chart"), dict):
+                                chart_opt = parsed["chart"].get("chart_option")
+                                chart_title = str(parsed["chart"].get("title") or "")
+                                chart_type = str(parsed["chart"].get("chart_type") or "")
+                                chart_def = str(parsed["chart"].get("definition") or "")
+                                chart_caveats = list(parsed["chart"].get("caveats") or [])
+                            if chart_opt and isinstance(chart_opt, dict):
+                                item = _norm_chart_item(
+                                    {
+                                        "title": chart_title
+                                        or str(parsed.get("title") or "分析图"),
+                                        "chart_type": chart_type
+                                        or str(parsed.get("chart_type") or "bar"),
+                                        "option": chart_opt,
+                                        "definition": chart_def
+                                        or str(parsed.get("definition") or ""),
+                                        "caveats": chart_caveats
+                                        or list(parsed.get("caveats") or [])[:5],
+                                        "layout": parsed.get("layout"),
+                                    },
+                                    0,
+                                )
+                                if item:
+                                    chart_events.append(
+                                        {
+                                            "type": "chart",
+                                            "id": run_id,
+                                            "tool": name,
+                                            **item,
+                                        }
+                                    )
+                    if dashboard_event:
+                        yield dashboard_event
+                    for ev in chart_events:
+                        yield ev
                     emitted_any = False
                     for confirm in confirms:
                         aid = str(confirm.get("action_id") or "")

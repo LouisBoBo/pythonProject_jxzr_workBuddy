@@ -11,13 +11,41 @@ from tools.query_tool.entity_catalog import load_catalog
 from tools.query_tool.query_present import _fold_field, resolve_group_by
 
 _DEFAULT_PATH = Path(__file__).resolve().parent / "metrics_default.json"
-_MAX_FILTER_SETS = 8
+_MAX_FILTER_SETS = 24
 
 
 def load_metrics_pack() -> dict[str, Any]:
-    """内置模板 + 资料包 metrics.json（按 id 覆盖）。"""
+    """内置通用模板 + 可选行业包（资料包声明）+ 资料包 metrics.json（按 id 覆盖）。
+
+    换平台：不写死实体 id；靠 entity_hints 绑定当前目录，或用 metrics.json 覆盖 hints。
+    """
     data = _read_json(_DEFAULT_PATH) or {"version": 1, "metrics": []}
     metrics = [m for m in (data.get("metrics") or []) if isinstance(m, dict) and m.get("id")]
+    by_id = {str(m["id"]): m for m in metrics}
+
+    # 可选行业包：仅当 analysis 配置声明 metric_packs 时合并
+    try:
+        from tools.query_tool.analysis_config import load_analysis_config, packs_dir
+
+        acfg = load_analysis_config()
+        for pack_name in acfg.get("metric_packs") or []:
+            safe = "".join(c for c in str(pack_name) if c.isalnum() or c in "-_")
+            if not safe:
+                continue
+            pack_path = packs_dir() / f"{safe}.json"
+            if not pack_path.is_file():
+                continue
+            pack_data = _read_json(pack_path) or {}
+            for m in pack_data.get("metrics") or []:
+                if not isinstance(m, dict) or not m.get("id"):
+                    continue
+                if m.get("disabled"):
+                    by_id.pop(str(m["id"]), None)
+                    continue
+                by_id[str(m["id"])] = m
+    except Exception:
+        pass
+
     overlay_path = None
     try:
         from mes_profile import resolve_metrics_path
@@ -27,7 +55,6 @@ def load_metrics_pack() -> dict[str, Any]:
         overlay_path = None
     if overlay_path:
         extra = _read_json(Path(overlay_path)) or {}
-        by_id = {str(m["id"]): m for m in metrics}
         for m in extra.get("metrics") or []:
             if not isinstance(m, dict) or not m.get("id"):
                 continue
@@ -35,9 +62,8 @@ def load_metrics_pack() -> dict[str, Any]:
                 by_id.pop(str(m["id"]), None)
                 continue
             by_id[str(m["id"])] = m
-        metrics = list(by_id.values())
         data = dict(extra) if extra else dict(data)
-    data["metrics"] = metrics
+    data["metrics"] = list(by_id.values())
     return data
 
 
@@ -124,6 +150,19 @@ def bind_metric(
             }
         clauses_out.append(bound)
     if not clauses_out:
+        # 看板/汇总类接口：无筛参也可整表拉取（须资料包显式 allow_unfiltered）
+        if metric.get("allow_unfiltered"):
+            return {
+                "id": metric.get("id"),
+                "label": metric.get("label"),
+                "definition": metric.get("definition") or "",
+                "entity": eid,
+                "entity_label": rec.get("label") or eid,
+                "clauses": [],
+                "filter_sets": [{}],
+                "caveats": caveats
+                + ["该口径未下发筛选条件，使用接口默认列表/汇总（非全库 SQL）"],
+            }
         return {
             "error": "口径无法绑定到当前接口的可筛选字段。",
             "metric": metric.get("id"),
@@ -131,6 +170,14 @@ def bind_metric(
             "caveats": caveats,
         }
     sets = _filter_sets(clauses_out)
+    # 笛卡尔积截断会导致漏拉组合（如急单少计）
+    axes_len = 1
+    for c in clauses_out:
+        axes_len *= max(1, len(c.get("values") or []))
+    if axes_len > len(sets):
+        caveats = list(caveats) + [
+            f"口径筛选组合共 {axes_len} 种，本次仅执行前 {len(sets)} 种（上限 {_MAX_FILTER_SETS}），条数可能偏少"
+        ]
     return {
         "id": metric.get("id"),
         "label": metric.get("label"),

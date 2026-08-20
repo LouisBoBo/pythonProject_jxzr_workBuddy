@@ -60,6 +60,10 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         # Git 审码拉仓：HTTPS 镜像前缀（国内加速；可逗号分隔多个）
         "IDE_GIT_HTTPS_MIRROR",
         "IDE_GIT_MIRROR_FIRST",
+        # 可选只读 SQL（默认关）
+        "READONLY_SQL_ENABLED",
+        "READONLY_SQL_DSN",
+        "READONLY_SQL_TABLE_WHITELIST",
     }
 )
 

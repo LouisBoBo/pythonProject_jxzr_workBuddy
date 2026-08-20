@@ -122,17 +122,36 @@ _FIELD_META: list[dict[str, str]] = [
         "label": "优先走镜像拉仓",
         "secret": "0",
     },
+    {
+        "key": "READONLY_SQL_ENABLED",
+        "group": "mes_analysis",
+        "label": "开启只读 SQL（默认关）",
+        "secret": "0",
+    },
+    {
+        "key": "READONLY_SQL_DSN",
+        "group": "mes_analysis",
+        "label": "只读 SQL DSN（本期 sqlite 路径）",
+        "secret": "0",
+    },
+    {
+        "key": "READONLY_SQL_TABLE_WHITELIST",
+        "group": "mes_analysis",
+        "label": "只读表白名单（逗号分隔）",
+        "secret": "0",
+    },
 ]
 
 _GROUP_LABELS = {
     "llm": "对话模型",
     "vision": "视觉模型",
     "mes": "MES / ERP 接入",
+    "mes_analysis": "MES 数据分析（高级）",
     "cursor_dev": "写码车道",
     "git_review": "Git 审码拉仓",
 }
 
-_GROUP_ORDER = ("llm", "vision", "mes", "cursor_dev", "git_review")
+_GROUP_ORDER = ("llm", "vision", "mes", "mes_analysis", "cursor_dev", "git_review")
 
 
 class SettingsUpdateBody(BaseModel):

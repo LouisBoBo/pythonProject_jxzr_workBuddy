@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "pack_id": "pcb",
+  "note": "可选行业包。仅当资料包声明 metric_packs 含 pcb 时加载。禁止写死实体 id；看板类接口用 allow_unfiltered。",
+  "metrics": [
+    {
+      "id": "wip-by-process",
+      "label": "工序在制",
+      "aliases": ["工序在制", "各工序在制", "过站在制", "WIP by process"],
+      "entity_hints": [
+        "工序在制", "过站", "SFC", "工艺路线", "wip-by-process", "station-wip"
+      ],
+      "definition": "按工序/站点维度的在制清单。无工序维 WIP 接口时绑不上（产线 WIP 快照不算工序在制）。",
+      "include_in_brief": false,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "wipStatus", "processStatus", "状态"],
+          "include_values": ["in_progress", "processing", "wip", "running", "进行中", "在制", "生产中"]
+        }
+      ]
+    },
+    {
+      "id": "scrap-rate",
+      "label": "报废/工序良率",
+      "aliases": ["报废", "报废率", "工序良率", "scrap", "yield"],
+      "entity_hints": [
+        "工序良率",
+        "品质 KPI",
+        "quality-process-yield",
+        "quality-kpi",
+        "process-yield",
+        "报废"
+      ],
+      "definition": "品质汇总/工序良率（可能含报废或良率字段）。无匹配实体时绑不上；禁止口算良率。",
+      "include_in_brief": false,
+      "allow_unfiltered": true,
+      "clauses": []
+    },
+    {
+      "id": "aoi-fail-topn",
+      "label": "检测不良 Top",
+      "aliases": [
+        "AOI不良",
+        "AOI 不良",
+        "SPI不良",
+        "FQC不良",
+        "检测不良",
+        "不良 Top",
+        "Top 不良",
+        "aoi fail"
+      ],
+      "entity_hints": [
+        "Top 不良项",
+        "不良分布",
+        "quality-top-defects",
+        "quality-defect-distribution",
+        "top-defects",
+        "检测不良"
+      ],
+      "definition": "检测/品质不良 Top 或分布。本厂若无 AOI 专名接口，绑定泛品质不良即可；禁止编造良率。",
+      "include_in_brief": false,
+      "allow_unfiltered": true,
+      "clauses": []
+    },
+    {
+      "id": "daily-output-overview",
+      "label": "日产出概览",
+      "aliases": ["日产出", "当日产出", "产量趋势", "产出概览", "daily output"],
+      "entity_hints": [
+        "生产概览（联动版）",
+        "生产概览",
+        "production-overview-v2",
+        "production-overview",
+        "生产看板",
+        "kanban-production",
+        "设备产量排行",
+        "device-output"
+      ],
+      "definition": "生产概览/看板类日产出（接口结构因厂而异）。无法解析 series 时看板卡会标缺口。",
+      "include_in_brief": false,
+      "allow_unfiltered": true,
+      "clauses": []
+    }
+  ]
+}

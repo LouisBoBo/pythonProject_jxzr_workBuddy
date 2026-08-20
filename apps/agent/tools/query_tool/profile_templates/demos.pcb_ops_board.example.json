@@ -1,0 +1,29 @@
+{
+  "id": "pcb-ops-board",
+  "label": "PCB 运营看板",
+  "enabled": true,
+  "_comment": "复制到资料包 demos/pcb_ops_board.json 可覆盖；analysis.json 可用 analysis_demos.pcb-ops-board.enabled=false 关闭。",
+  "aliases": [
+    "打开PCB运营看板",
+    "打开 PCB 运营看板",
+    "PCB运营看板",
+    "打开品质看板"
+  ],
+  "steps": [
+    { "id": "brief", "kind": "ops_scene", "scene": "ops-daily-brief", "optional": true },
+    {
+      "id": "board",
+      "kind": "dashboard",
+      "template_id": "auto",
+      "max_cards": 4,
+      "optional": false
+    },
+    {
+      "id": "urgent",
+      "kind": "ops_scene",
+      "scene": "urgent-backlog",
+      "limit": 8,
+      "optional": true
+    }
+  ]
+}

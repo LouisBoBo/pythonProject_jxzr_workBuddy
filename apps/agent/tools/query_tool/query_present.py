@@ -174,7 +174,14 @@ def display_rows(
     columns: list[str],
     labels: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
+    from tools.query_tool.value_labels import (
+        _role_for_field,
+        label_enum_value,
+        load_value_labels,
+    )
+
     labels = labels or {}
+    value_maps = load_value_labels()
     rows: list[dict[str, str]] = []
     for rec in records:
         if not isinstance(rec, dict):
@@ -182,7 +189,11 @@ def display_rows(
         row: dict[str, str] = {}
         for col in columns:
             header = labels.get(col) or col
-            row[header] = compact_cell(rec.get(col))
+            raw = rec.get(col)
+            if _role_for_field(col) and raw is not None and raw != "":
+                row[header] = label_enum_value(col, raw, value_maps)
+            else:
+                row[header] = compact_cell(raw)
         rows.append(row)
     return rows
 
@@ -277,12 +288,18 @@ def summarize_records(
     records: list[dict[str, Any]],
     group_by: str,
 ) -> list[dict[str, Any]]:
+    from tools.query_tool.value_labels import label_enum_value, load_value_labels
+
+    maps = load_value_labels()
     values: list[str] = []
     for rec in records:
         if not isinstance(rec, dict):
             continue
         raw = rec.get(group_by)
-        values.append(compact_cell(raw) if raw is not None and raw != "" else "(空)")
+        if raw is None or raw == "":
+            values.append("(空)")
+        else:
+            values.append(label_enum_value(group_by, raw, maps) or compact_cell(raw))
     total = len(values) or 1
     groups: list[dict[str, Any]] = []
     for value, count in Counter(values).most_common():
@@ -315,7 +332,7 @@ def _narrow_urgent_filter_hint(applied: dict[str, Any] | None) -> str | None:
 def present_query_result(
     raw: dict[str, Any],
     filters: dict | None = None,
-    limit: int = 20,
+    limit: int = 50,
 ) -> dict[str, Any]:
     """给 Agent 可读的查数结果：中文列、条数、已下发的 filters。"""
     if not isinstance(raw, dict):

@@ -27,6 +27,9 @@ from tools.query_tool.platform_query import (
     list_query_metrics,
     query_metric,
 )
+from tools.query_tool.analysis_chart import render_analysis_chart
+from tools.query_tool.analysis_dashboard import render_analysis_dashboard
+from tools.query_tool.analysis_demo import list_analysis_demos, run_analysis_demo
 from tools.query_tool.ops_playbook import list_ops_scenes, run_ops_scene
 from tools.schema_tool.schema_query import (
     list_schema_domains,
@@ -84,6 +87,10 @@ TOOLS = [
     analyze_platform_brief,
     list_query_metrics,
     query_metric,
+    render_analysis_chart,
+    render_analysis_dashboard,
+    list_analysis_demos,
+    run_analysis_demo,
     list_ops_scenes,
     run_ops_scene,
     import_file_to_platform,
@@ -237,6 +244,12 @@ def create_agent(model=None, checkpointer=None):
         tools.append(request_ide_review)
         tools.append(request_ide_read_files)
         system_prompt = system_prompt + _REVIEW_LANE_BRIEF
+
+    # 可选只读 SQL（默认关）
+    if Config.READONLY_SQL_ENABLED:
+        from tools.query_tool.readonly_sql import readonly_sql
+
+        tools.append(readonly_sql)
 
     # 公开 Git 仓审核与 VS Code Bridge 解耦：桌面默认不开 IDE_REVIEW 也能审公开仓
     from tools.ide_review import (

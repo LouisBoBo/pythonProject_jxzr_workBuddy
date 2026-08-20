@@ -21,6 +21,7 @@ from .import_check import find_broken_relative_imports, format_repair_prompt
 from .prompts import SYSTEM_PROMPT, TOOL_SPECS, build_user_prompt, parse_plan_steps_from_text
 from .sandbox import prepare_sandbox, sync_changed_to_target
 from .mes_profile_sync import format_profile_sync_summary, sync_mes_profile_after_dev
+from .post_dev_query import format_post_dev_query_summary, run_post_dev_query
 from .stack_chain import looks_like_data_ui_change
 from .stack_chain_gate import format_gate_summary, run_stack_chain_gate
 from .tools_fs import SandboxFS
@@ -630,6 +631,22 @@ def run_job(
                 "error": f"{type(sync_exc).__name__}: {sync_exc}",
             }
 
+        # D→B：数据侧变更后轻量自动查数；失败只写摘要，绝不影响写码成功
+        post_query: dict[str, Any] = {"skipped": True}
+        try:
+            post_query = run_post_dev_query(
+                requirement=requirement,
+                synced_files=synced,
+                enabled=cfg.mes_post_dev_query,
+            )
+        except Exception as pq_exc:  # noqa: BLE001
+            post_query = {
+                "skipped": False,
+                "ok": False,
+                "error": f"{type(pq_exc).__name__}: {pq_exc}",
+                "notes": ["自动查数异常已捕获，写码结果不受影响"],
+            }
+
         files_md = "\n".join(f"- `{p}`" for p in synced[:80])
         if preview_url:
             preview_md = (
@@ -644,6 +661,7 @@ def run_job(
         gate_md = format_gate_summary(gate_result)
         gate_block = f"{gate_md}\n\n" if gate_md else ""
         profile_sync_md = format_profile_sync_summary(profile_sync)
+        post_query_md = format_post_dev_query_summary(post_query)
         accept_block = ""
         if looks_like_data_ui_change(requirement):
             try:
@@ -673,6 +691,7 @@ def run_job(
             f"{preview_md}\n"
             f"{gate_block}"
             f"{profile_sync_md}"
+            f"{post_query_md}"
             f"{accept_block}"
             f"沙箱 id：`{job_id}`\n\n"
             f"{'本机写码：Cursor SDK Local Agent（不经 GitHub Cloud / 不经 DeepSeek 工具环）。' if use_cursor else '本机写码：LLM 工具环（应急模式 LOCAL_DEV_AGENT=llm）。'}\n"

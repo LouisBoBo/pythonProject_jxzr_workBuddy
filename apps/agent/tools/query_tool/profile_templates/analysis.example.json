@@ -1,0 +1,23 @@
+{
+  "group_by_labels": ["状态", "优先级", "产线", "工序"],
+  "brief_metric_ids": ["wip", "unfinished", "urgent-unfinished", "completed-today"],
+  "brief_metric_limit": 4,
+  "metric_packs": [],
+  "dashboard_template": "pcb_ops",
+  "value_labels": {
+    "status": {
+      "pending": "待开工",
+      "in_progress": "进行中",
+      "completed": "已完成",
+      "cancelled": "已取消",
+      "closed": "已关闭"
+    },
+    "priority": {
+      "urgent": "紧急",
+      "high": "高",
+      "normal": "普通",
+      "low": "低"
+    }
+  },
+  "_comment": "PCB 厂可设 metric_packs:[\"pcb\"]；value_labels 覆盖枚举英文码的中文展示（查数 filters 仍传英文）；可用 dashboards/pcb_ops.json 覆盖内置看板"
+}

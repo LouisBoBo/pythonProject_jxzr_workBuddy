@@ -96,9 +96,17 @@
     {
       "id": "ops-daily-brief",
       "label": "值班口径简报",
-      "aliases": ["值班简报", "产线日报", "异常日报", "今日简报", "运维简报"],
+      "aliases": ["值班简报", "产线日报", "今日简报", "运维简报"],
       "kind": "daily_brief",
-      "definition": "对当前目录能绑定的指标口径做只读摘要；绑不上则跳过，不套其它 MES。"
+      "definition": "对当前目录能绑定的指标口径做只读摘要；绑不上则跳过，不套其它 MES。可附状态分布图。"
+    },
+    {
+      "id": "plant-exception-daily",
+      "label": "产线异常日报",
+      "aliases": ["产线异常日报", "异常日报", "产线日报", "厂内异常简报", "PCB产线日报"],
+      "kind": "daily_brief",
+      "include_chart": true,
+      "definition": "异常/产线日报套版：当前目录可绑定口径 + 主对象分布；分组字段由资料包 analysis.json 配置。可含图。换平台靠 metrics/analysis 覆盖，不写死实体。"
     }
   ]
 }

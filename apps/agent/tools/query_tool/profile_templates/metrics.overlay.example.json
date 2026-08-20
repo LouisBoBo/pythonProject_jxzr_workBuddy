@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "note": "复制到 mes_profiles/{平台名}/metrics.json 后按本厂改 entity_hints / include_values。不要写死其它厂的实体 id。",
+  "metrics": [
+    {
+      "id": "wip",
+      "label": "在制",
+      "aliases": ["在制", "WIP"],
+      "entity_hints": ["请改成当前目录里的中文名或别名"],
+      "definition": "按本厂状态定义在制",
+      "include_in_brief": true,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "状态"],
+          "include_values": ["请改成本厂枚举值"]
+        }
+      ]
+    }
+  ]
+}

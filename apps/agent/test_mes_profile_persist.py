@@ -40,6 +40,34 @@ class MergeEntitiesUnitTests(unittest.TestCase):
         self.assertEqual(stats["updated"], ["legacy-stock"])
         self.assertEqual(stats["preserved"], [])
 
+    def test_merge_columns_adds_new_fields(self) -> None:
+        existing = [
+            {
+                "id": "work-orders",
+                "label": "生产工单列表",
+                "path": "/api/work-orders",
+                "columns": [
+                    {"name": "id", "label": "Id"},
+                    {"name": "order_no", "label": "Order No"},
+                ],
+            }
+        ]
+        generated = [
+            {
+                "id": "work-orders",
+                "label": "生产工单列表",
+                "path": "/api/work-orders",
+                "columns": [
+                    {"name": "id", "label": "Id"},
+                    {"name": "order_no", "label": "Order No"},
+                    {"name": "updated_at", "label": "Updated At"},
+                ],
+            }
+        ]
+        merged, _stats = merge_entities(existing, generated)
+        cols = [c["name"] for c in merged[0]["columns"]]
+        self.assertEqual(cols, ["id", "order_no", "updated_at"])
+
 
 OPENAPI = """{
   "openapi": "3.0.0",

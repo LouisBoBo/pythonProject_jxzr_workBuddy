@@ -17,11 +17,50 @@ def _normalize_path(path: str) -> str:
     return s.rstrip("/") or "/"
 
 
+def _merge_named_lists(
+    old_list: Any,
+    new_list: Any,
+) -> list[Any]:
+    """按 name 增量合并 columns/fields：保留旧项，补全新项；不删旧字段。"""
+    out: list[Any] = []
+    seen: set[str] = set()
+
+    def _append(item: Any) -> None:
+        if isinstance(item, dict) and item.get("name") is not None:
+            name = str(item.get("name") or "").strip()
+            if not name or name in seen:
+                # 同名：补 label
+                if name and name in seen:
+                    for prev in out:
+                        if isinstance(prev, dict) and str(prev.get("name") or "") == name:
+                            if not prev.get("label") and item.get("label"):
+                                prev["label"] = item.get("label")
+                            break
+                return
+            seen.add(name)
+            out.append(dict(item))
+            return
+        key = str(item or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(item)
+
+    for item in old_list or []:
+        _append(item)
+    for item in new_list or []:
+        _append(item)
+    return out
+
+
 def merge_entities(
     existing: list[dict[str, Any]],
     generated: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """合并实体目录：新增/更新来自 OpenAPI 的项，保留旧目录中未出现在新文档里的实体。"""
+    """合并实体目录：新增/更新来自 OpenAPI 的项，保留旧目录中未出现在新文档里的实体。
+
+    - path / paging / list_keys / ops：有新值则覆盖（跟进接口）
+    - fields / columns：按 name 增量合并（补新字段，不丢旧列）
+    """
     by_id: dict[str, dict[str, Any]] = {}
     by_path: dict[str, dict[str, Any]] = {}
     for item in existing or []:
@@ -50,9 +89,12 @@ def merge_entities(
 
         if old:
             out = dict(old)
-            for key in ("path", "paging", "list_keys", "fields", "columns", "ops"):
-                if gen.get(key) and not out.get(key):
+            for key in ("path", "paging", "list_keys", "ops"):
+                if gen.get(key):
                     out[key] = gen[key]
+            for key in ("fields", "columns"):
+                if gen.get(key):
+                    out[key] = _merge_named_lists(out.get(key), gen.get(key))
             old_aliases = {
                 str(x).strip()
                 for x in (out.get("aliases") or [])

@@ -59,6 +59,8 @@ class LocalDevConfig:
     tool_result_max_chars: int = 12000
     tool_history_keep_rounds: int = 4
     mes_profile_auto_sync: bool = True
+    # 写码成功后对数据侧变更自动轻量查数（失败不挡写码）
+    mes_post_dev_query: bool = True
 
 
 def get_config() -> LocalDevConfig:
@@ -82,6 +84,7 @@ def get_config() -> LocalDevConfig:
         tool_result_max_chars=max(2000, _env_int("LOCAL_DEV_TOOL_RESULT_MAX_CHARS", 12000)),
         tool_history_keep_rounds=max(1, _env_int("LOCAL_DEV_TOOL_HISTORY_KEEP_ROUNDS", 4)),
         mes_profile_auto_sync=_env_bool("MES_PROFILE_AUTO_SYNC", True),
+        mes_post_dev_query=_env_bool("MES_POST_DEV_QUERY", True),
     )
 
 

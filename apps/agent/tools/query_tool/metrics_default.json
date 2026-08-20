@@ -1,13 +1,14 @@
 {
   "version": 1,
-  "note": "通用指标口径模板。实体/字段/取值在运行时绑定当前资料包；换平台可在资料包放 metrics.json 按 id 覆盖。不要把某一套 MES 的实体 id 写进本文件。",
+  "note": "通用指标口径模板（跨 MES）。仅用 entity_hints / field_hints 运行时绑定当前资料包；禁止写死实体 id。换平台：在 mes_profiles/{平台}/metrics.json 按 id 覆盖，或声明 metric_packs。",
   "metrics": [
     {
       "id": "wip",
       "label": "在制",
       "aliases": ["在制", "在制工单", "进行中", "生产中"],
-      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo", "ticket"],
       "definition": "状态属于进行中/在制（已开工、尚未完工），不含待开工与已完工。",
+      "include_in_brief": true,
       "clauses": [
         {
           "field_role": "status",
@@ -20,8 +21,9 @@
       "id": "pending",
       "label": "待处理",
       "aliases": ["待处理", "待开工", "未开始", "pending"],
-      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo", "ticket"],
       "definition": "状态属于待处理/待开工，尚未开始生产。",
+      "include_in_brief": false,
       "clauses": [
         {
           "field_role": "status",
@@ -34,23 +36,25 @@
       "id": "unfinished",
       "label": "未完工",
       "aliases": ["未完工", "未完成", "还没完"],
-      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo", "ticket"],
       "definition": "状态不属于已完工/已关闭。",
+      "include_in_brief": true,
       "clauses": [
         {
           "field_role": "status",
           "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
-          "include_values": ["pending", "in_progress", "processing", "producing", "wip", "draft", "进行中", "待处理", "在制"],
-          "exclude_values": ["completed", "closed", "done", "finished", "cancelled", "已完成", "已关闭", "完工"]
+          "include_values": ["pending", "in_progress", "processing", "producing", "wip", "draft", "进行中", "待处理", "待开工", "在制", "未开始"],
+          "exclude_values": ["completed", "closed", "done", "finished", "cancelled", "canceled", "已完成", "已关闭", "已取消", "完工"]
         }
       ]
     },
     {
       "id": "urgent-unfinished",
       "label": "紧急未完工",
-      "aliases": ["紧急未完工", "紧急单", "急单", "高优先级未完工", "紧急工单", "紧急工单有哪些"],
-      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "aliases": ["紧急未完工", "紧急单", "急单", "插单", "插单未完工", "高优先级未完工", "紧急工单", "紧急工单有哪些"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo", "ticket"],
       "definition": "优先级为紧急/高，且状态尚未完工/关闭。",
+      "include_in_brief": true,
       "clauses": [
         {
           "field_role": "priority",
@@ -60,8 +64,8 @@
         {
           "field_role": "status",
           "field_hints": ["status", "state", "billStatus", "orderStatus", "woStatus", "docStatus", "状态"],
-          "include_values": ["pending", "in_progress", "processing", "producing", "wip", "draft", "进行中", "待处理", "在制"],
-          "exclude_values": ["completed", "closed", "done", "finished", "cancelled", "已完成", "已关闭", "完工"]
+          "include_values": ["pending", "in_progress", "processing", "producing", "wip", "draft", "进行中", "待处理", "待开工", "在制", "未开始"],
+          "exclude_values": ["completed", "closed", "done", "finished", "cancelled", "canceled", "已完成", "已关闭", "已取消", "完工"]
         }
       ]
     },
@@ -69,8 +73,9 @@
       "id": "completed",
       "label": "已完工",
       "aliases": ["已完工", "已完成", "完工"],
-      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo", "ticket"],
       "definition": "状态属于已完工/已完成。",
+      "include_in_brief": false,
       "clauses": [
         {
           "field_role": "status",
@@ -83,8 +88,9 @@
       "id": "completed-today",
       "label": "当日完工",
       "aliases": ["当日完工", "今天完工", "今日完工"],
-      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo"],
+      "entity_hints": ["生产工单", "工单", "派工单", "制造工单", "生产任务", "作业单", "work order", "work-order", "mo", "ticket"],
       "definition": "已完工，且接口支持日期筛选时限定当天；否则只按完工状态查并注明未能限定当日。",
+      "include_in_brief": true,
       "clauses": [
         {
           "field_role": "status",
@@ -95,6 +101,46 @@
           "field_role": "date",
           "field_hints": ["end_date", "finished_at", "completed_at", "complete_date", "finish_date", "endTime", "actual_end_time"],
           "relative": "today"
+        }
+      ]
+    },
+    {
+      "id": "daily-output",
+      "label": "当日产出",
+      "aliases": ["当日产出", "今天产出", "今日产出", "当日过站"],
+      "entity_hints": [
+        "生产工单", "工单", "过站", "产出", "报工", "work order", "output", "production", "ticket"
+      ],
+      "definition": "当日产出相关记录；优先带日期筛参。无日期参数时只按完工/产出状态查并 caveat。",
+      "include_in_brief": false,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "状态"],
+          "include_values": ["completed", "done", "finished", "output", "已完成", "完工", "已产出"]
+        },
+        {
+          "field_role": "date",
+          "field_hints": [
+            "end_date", "finished_at", "completed_at", "output_date", "prod_date",
+            "report_date", "actual_end_time"
+          ],
+          "relative": "today"
+        }
+      ]
+    },
+    {
+      "id": "line-throughput",
+      "label": "产线产出",
+      "aliases": ["产线产出", "产线吞吐量", "线体产出", "throughput"],
+      "entity_hints": ["生产工单", "工单", "产线", "线体", "work order", "line", "throughput", "ticket"],
+      "definition": "按产线相关的已完工/产出清单（轻量）。",
+      "include_in_brief": false,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "状态"],
+          "include_values": ["completed", "done", "finished", "已完成", "完工"]
         }
       ]
     }

@@ -152,6 +152,8 @@ export function streamMessage(
               } else if (type === 'token' || data.token != null) {
                 const text = data.text != null ? data.text : data.token
                 await handleEvent({ type: 'token', text, token: text })
+                // 正文 token 也要让出一帧，否则积压的多段会在同一 tick 刷完，看起来像非流式
+                await paintFrame()
               } else if (type === 'status' || type === 'step' || type === 'confirm') {
                 await handleEvent(data)
                 await paintFrame()
@@ -160,6 +162,10 @@ export function streamMessage(
                 }
               } else {
                 await handleEvent(data)
+                // 图表/看板挂载较重，让出一帧再继续读后续正文
+                if (type === 'chart' || type === 'dashboard') {
+                  await paintFrame()
+                }
               }
             } catch (e) {
               // ignore parse errors
