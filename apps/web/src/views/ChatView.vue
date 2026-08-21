@@ -185,16 +185,7 @@
             </span>
             <span v-else v-html="streamDisplayHtml"></span>
           </div>
-          <AnalysisDashboardCard
-            v-for="(db, di) in streamDashboards"
-            :key="db.id || ('stream-dash-' + di)"
-            :board="db"
-          />
-          <AnalysisChartCard
-            v-for="(ch, ci) in streamCharts"
-            :key="ch.id || ('stream-chart-' + ci)"
-            :chart="ch"
-          />
+          <!-- 图表/看板：流式期间只缓冲，等正文 token 结束并落入终稿消息后再展示，避免图先出、说明还在打字 -->
           <WriteConfirmCard
             v-for="card in streamConfirms"
             :key="card.action_id"

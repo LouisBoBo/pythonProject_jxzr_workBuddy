@@ -17,6 +17,20 @@ _DEFAULT_BRIEF_METRIC_IDS = [
     "completed-today",
 ]
 _DEFAULT_METRIC_PACKS: list[str] = []  # 行业包默认不加载，由资料包声明
+# 时间维提示：仅作 field_hints 补充，不写死某一厂列名
+_DEFAULT_TIME_FIELD_HINTS = [
+    "end_date",
+    "finished_at",
+    "completed_at",
+    "complete_date",
+    "finish_date",
+    "output_date",
+    "prod_date",
+    "report_date",
+    "actual_end_time",
+    "endTime",
+    "record_at",
+]
 
 
 def load_analysis_config() -> dict[str, Any]:
@@ -27,6 +41,7 @@ def load_analysis_config() -> dict[str, Any]:
         "metric_packs": list(_DEFAULT_METRIC_PACKS),
         "brief_metric_limit": 4,
         "dashboard_template": "pcb_ops",
+        "time_field_hints": list(_DEFAULT_TIME_FIELD_HINTS),
         "value_labels": {},
         "analysis_demos": {},
         "source": "defaults",
@@ -93,6 +108,12 @@ def _merge_analysis_dict(cfg: dict[str, Any], extra: dict[str, Any]) -> None:
         safe = "".join(c for c in raw if c.isalnum() or c in "-_")
         if safe:
             cfg["dashboard_template"] = safe
+    # 时间维字段提示（资料包可覆盖；用于当日/趋势口径绑定）
+    tf = extra.get("time_field_hints")
+    if isinstance(tf, list) and tf:
+        hints = [str(x).strip() for x in tf if str(x).strip()]
+        if hints:
+            cfg["time_field_hints"] = hints[:24]
     # 枚举展示名：按字段角色合并（status/priority…），资料包覆盖内置
     vl = extra.get("value_labels")
     if isinstance(vl, dict):

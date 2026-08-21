@@ -484,9 +484,13 @@ def build_system_prompt() -> str:
         "回复须含：中文实体名 + 英文 id、条数（total/returned）、关键列中文名；有 filters_applied 须复述",
         "- 「各有多少 / 按状态汇总」调用 summarize_platform_data，按 groups 回复；"
         "分组字段必须是本次返回记录里真实存在的列，不要臆造",
+        "- 「最近N天/周趋势 / 产量走势 / 完工趋势」调用 analyze_time_trend"
+        "（grain=day|week，可传 time_field / value_field）；无日期列须如实说，禁止编造日期轴；"
+        "默认会出折线图，须复述 caveats（本页分桶≠全库）",
         "- 「分析一下 / 产线概况 / 异常分布 / 帮我看看工单情况」调用 analyze_platform_brief，"
         "直接展示 markdown_report（含状态/优先级分布与可绑定指标）",
-        "- 「出图 / 柱状图 / 饼图 / 折线图 / 分布图 / 趋势图」：先取数或汇总，再 render_analysis_chart"
+        "- 「出图 / 柱状图 / 饼图 / 折线图 / 分布图 / 趋势图」：先取数、汇总或 analyze_time_trend，"
+        "再 render_analysis_chart"
         "（传入真实 groups 或 categories/values，并传 user_intent=用户原话）；"
         "图表类型自动选：用户点名最高优先；趋势→折线；分布/占比→饼；其余→柱。"
         "**禁止**追问用户用什么图。"

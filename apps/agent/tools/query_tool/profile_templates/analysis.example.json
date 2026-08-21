@@ -4,6 +4,13 @@
   "brief_metric_limit": 4,
   "metric_packs": [],
   "dashboard_template": "pcb_ops",
+  "time_field_hints": [
+    "end_date",
+    "finished_at",
+    "completed_at",
+    "output_date",
+    "record_at"
+  ],
   "value_labels": {
     "status": {
       "pending": "待开工",
@@ -18,6 +25,5 @@
       "normal": "普通",
       "low": "低"
     }
-  },
-  "_comment": "PCB 厂可设 metric_packs:[\"pcb\"]；value_labels 覆盖枚举英文码的中文展示（查数 filters 仍传英文）；可用 dashboards/pcb_ops.json 覆盖内置看板"
+  }
 }

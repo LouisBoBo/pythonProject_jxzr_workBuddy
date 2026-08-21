@@ -59,12 +59,12 @@ M0 基线冻结（1～2 天）
 
 | ID | 任务 | 模块路径 | 说明 | 验收 |
 |----|------|----------|------|------|
-| M1-1 | **服务端聚合 API 封装** | `apps/agent/tools/query_tool/platform_query.py` 或新建 `aggregate.py` | 优先调 MES 若有 stats/aggregate；否则白名单 `readonly_sql` 聚合；统一返回 `{groups,total,caveats}` | 汇总条数与 MES/SQL 一致 |
-| M1-2 | `summarize_platform_data` 升级 | 同工具链 | 有聚合能力时走 M1-1；否则 caveat「本页 returned」不可删 | 单测 + 对话冒烟 |
-| M1-3 | **时间维契约** | `analysis_config.py` + `metrics*.json` | 资料包声明 `time_field_hints`；metric 绑定日期筛参；绑不上强制 caveat | A03 不得说「今天完工了 N」除非有筛参 |
-| M1-4 | 趋势 series 生成 | `analysis_chart.py` + 新 `build_time_series` | 按日/周 buckets → 自动 `line` | 「最近 7 天产量趋势」出折线 |
-| M1-5 | 聚合结果上限与审计 | API / agent_wrapper | 点数、超时、SQL 审计日志 | 超限拒绝可读 |
-| M1-6 | 文档 | `资料包分析配置说明.md` | 增加 `time_field` / 聚合说明 | 实施可自助配 |
+| M1-1 | **服务端聚合 API 封装** | `aggregate.py` | 默认页内；实体可选 `aggregate` 声明走 MES stats；SQL 仍默认关 | ✅ 契约 + 单测；无声明不改行为 |
+| M1-2 | `summarize_platform_data` 升级 | `platform_query.py` | 走 `aggregate_by_field`；页内 `caveats` 不可删；失败降级 | ✅ |
+| M1-3 | **时间维契约** | `analysis_config` + `metrics_pack` + `query_metric` | `time_field_hints`；绑不上 → `time_filter_applied=false` + 强制 caveat | ✅ |
+| M1-4 | 趋势 series 生成 | `time_series.py` + `analyze_time_trend` | 按日/周 buckets → 自动 `line`；无日期列诚实失败 | ✅ |
+| M1-5 | 聚合结果上限与审计 | API / agent_wrapper | 点数、超时、SQL 审计日志 | ⬜ |
+| M1-6 | 文档 | `资料包分析配置说明.md` | 增加 `time_field_hints` / 实体 `aggregate` / 趋势 | ✅ |
 
 **依赖**：试点厂至少一个带日期的 list/聚合接口，或只读 SQL 可达。
 
@@ -89,9 +89,9 @@ M0 基线冻结（1～2 天）
 
 | ID | 任务 | 模块路径 | 说明 |
 |----|------|----------|------|
-| M2-1 | 扩展 `metric_packs/pcb.json` | `apps/agent/tools/query_tool/metric_packs/pcb.json` | 补 `daily-output`、缺陷码 Top、报废率分子分母字段角色；仍用 `entity_hints` |
-| M2-2 | 试点厂 `metrics.json` 校准 | `data/mes_profiles/{试点}/metrics.json` | 按真实状态/结果枚举覆盖；禁用绑不上的 id |
-| M2-3 | 看板编排配置 | 新建 `dashboard_templates/pcb_ops.json` + `analysis_config` 加载 | 六卡 layout：metric_id、chart intent、drill entity |
+| M2-1 | 扩展 `metric_packs/pcb.json` | `metric_packs/pcb.json` + `build_measure_contract` | ✅ 补 `daily-output`、缺陷码 Top、报废分子/分母角色；仍用 `entity_hints` |
+| M2-2 | 试点厂 `metrics.json` 校准 | `mes_profiles/江西中软…/metrics.json` + 入库模板 `metrics.jx-zhongruan.example.json` | ✅ 日产出→设备排行；不良/良率/工序在制（报表）覆盖；换厂勿照抄 |
+| M2-3 | 看板编排配置 | `dashboard_templates/pcb_ops.json` | ✅ K1→在制品报表；K3→设备产量优先；顺序 K1–K5；Lot 仍缺口 |
 | M2-4 | 看板渲染工具 | 新建 `tools/query_tool/dashboard.py`：`render_pcb_dashboard` / `render_analysis_dashboard` | 一次跑多 metric → 多 `chart_option` SSE |
 | M2-5 | 前端多图卡片 | `apps/web/src/components/` + `ChatView.vue` | 支持一轮回复多图；可选简易 Dashboard 页 |
 | M2-6 | Skill | `analyze-pcb-mes/SKILL.md`、`analyze-mes-data` | 「打开 PCB 运营看板」→ 调 dashboard；禁止追问图表类型 |
@@ -178,7 +178,14 @@ M0 基线冻结（1～2 天）
 - [x] P0 运营大屏：顶栏 KPI（来自已出图/口径，不编造）+ 深色演示皮肤
 - [x] P1 点图下钻：点击扇区/柱 → 侧栏明细（有 rows 才筛；否则提示对话追问）
 - [ ] 对话冒烟：「打开PCB运营看板」→ KPI+深色四图；点急单饼图出明细
-- [ ] 开分支继续 M1 服务端聚合（非本轮）
+- [x] M1-1/1-2：通用聚合模块 + `summarize_platform_data` 强制页内 caveat；可选实体 `aggregate` 声明
+- [x] M1-3：`analysis.time_field_hints` + 当日口径 `time_filter_applied` / 禁止「今天完工了 N」
+- [x] M1-4：`analyze_time_trend` 日/周分桶 + 折线；无日期列诚实失败
+- [x] M2-1：扩展 `metric_packs/pcb`（daily-output / 缺陷 Top / 报废分子分母角色）
+- [x] M2-2：江西中软 `metrics.json` 校准（日产出→设备排行；工序在制→在制品报表）
+- [x] 看板六卡对齐：K1 报表工序在制、K3 设备产量优先、顺序 K1–K5 + Lot 缺口
+- [ ] A09–A13 / 「打开PCB运营看板」对话冒烟
+- [ ] M1-5：聚合上限与审计（按需）
 
 ---
 

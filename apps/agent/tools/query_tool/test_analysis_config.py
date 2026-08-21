@@ -23,6 +23,19 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertNotIn("work-orders", blob)
         self.assertIn("状态", cfg["group_by_labels"])
         self.assertIn("wip", cfg["brief_metric_ids"])
+        self.assertTrue(cfg.get("time_field_hints"))
+
+    def test_time_field_hints_override(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            (pdir / "analysis.json").write_text(
+                json.dumps({"time_field_hints": ["BizDate", "FinishTime"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with patch("mes_profile.profile_dir", return_value=pdir):
+                cfg = load_analysis_config()
+            self.assertEqual(cfg["time_field_hints"], ["BizDate", "FinishTime"])
+            self.assertEqual(cfg["source"], "analysis.json")
 
     def test_analysis_json_overrides_group_labels(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -53,7 +66,10 @@ class AnalysisConfigTests(unittest.TestCase):
 
 class MetricPackOptionalTests(unittest.TestCase):
     def test_pcb_metrics_absent_without_pack(self) -> None:
-        with patch("tools.query_tool.analysis_config.load_analysis_config") as m:
+        with (
+            patch("tools.query_tool.analysis_config.load_analysis_config") as m,
+            patch("mes_profile.resolve_metrics_path", return_value=(None, "none")),
+        ):
             m.return_value = {
                 "group_by_labels": ["状态"],
                 "brief_metric_ids": ["wip"],
@@ -81,7 +97,18 @@ class MetricPackOptionalTests(unittest.TestCase):
         ids = {str(x.get("id")) for x in pack.get("metrics") or []}
         self.assertIn("aoi-fail-topn", ids)
         self.assertIn("scrap-rate", ids)
+        self.assertIn("daily-output", ids)
         self.assertIsNotNone(find_metric("AOI不良", pack))
+        self.assertIsNotNone(find_metric("日产出", pack))
+        scrap = find_metric("报废率", pack)
+        self.assertIsNotNone(scrap)
+        assert scrap is not None
+        self.assertTrue(scrap.get("numerator_field_hints"))
+        self.assertTrue(scrap.get("denominator_field_hints"))
+        aoi = find_metric("缺陷码 Top", pack)
+        self.assertIsNotNone(aoi)
+        assert aoi is not None
+        self.assertTrue(aoi.get("category_field_hints"))
 
 
 if __name__ == "__main__":

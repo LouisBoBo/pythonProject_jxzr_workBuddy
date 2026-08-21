@@ -105,12 +105,43 @@ class TestAllowUnfiltered(unittest.TestCase):
 
 class TestDashboard(unittest.TestCase):
     def test_load_builtin_template(self) -> None:
-        tmpl = load_dashboard_template("pcb_ops")
+        with patch("mes_profile.profile_dir", return_value=None):
+            tmpl = load_dashboard_template("pcb_ops")
         self.assertTrue(tmpl.get("cards"))
         self.assertIn("builtin", tmpl.get("_source") or "")
+        k1 = next(c for c in tmpl["cards"] if c.get("id") == "K1")
+        self.assertEqual(k1.get("kind"), "entity_series")
 
     def test_dashboard_partial_ok_and_gaps(self) -> None:
         client = MagicMock()
+
+        catalog = _CATALOG + [
+            {
+                "id": "device-output",
+                "label": "设备产量排行",
+                "aliases": ["设备产量排行", "device-output"],
+                "columns": [
+                    {"name": "name", "label": "Name"},
+                    {"name": "today_output", "label": "Today"},
+                    {"name": "week_output", "label": "Week"},
+                ],
+            },
+            {
+                "id": "production-overview-v2",
+                "label": "生产概览（联动版）",
+                "aliases": ["生产概览（联动版）", "production-overview-v2"],
+                "columns": [],
+            },
+            {
+                "id": "reports-wip",
+                "label": "在制品报表",
+                "aliases": ["在制品报表", "reports-wip"],
+                "columns": [
+                    {"name": "current_process", "label": "工序"},
+                    {"name": "wip_quantity", "label": "在制数"},
+                ],
+            },
+        ]
 
         def fake_query(entity, filters, limit):
             if entity == "quality-top-defects":
@@ -129,31 +160,23 @@ class TestDashboard(unittest.TestCase):
                     "entity": entity,
                     "total": 2,
                     "records": [
-                        {"name": "贴片A", "today_output": 50, "week_output": 200},
-                        {"name": "贴片B", "today_output": 30, "week_output": 100},
+                        {"name": "贴片A", "today_output": 0, "week_output": 200},
+                        {"name": "贴片B", "today_output": 0, "week_output": 100},
+                    ],
+                }
+            if entity == "reports-wip":
+                return {
+                    "entity": entity,
+                    "total": 3,
+                    "records": [
+                        {"current_process": "AOI检测", "wip_quantity": 100},
+                        {"current_process": "AOI检测", "wip_quantity": 50},
+                        {"current_process": "焊接", "wip_quantity": 80},
                     ],
                 }
             return {"entity": entity, "total": 0, "records": []}
 
         client.query.side_effect = fake_query
-
-        catalog = _CATALOG + [
-            {
-                "id": "device-output",
-                "label": "设备产量排行",
-                "aliases": ["设备产量排行", "device-output"],
-                "columns": [
-                    {"name": "name", "label": "Name"},
-                    {"name": "today_output", "label": "Today"},
-                ],
-            },
-            {
-                "id": "production-overview-v2",
-                "label": "生产概览（联动版）",
-                "aliases": ["生产概览（联动版）", "production-overview-v2"],
-                "columns": [],
-            },
-        ]
 
         def fake_query_metric(name, limit=20, extra_filters=None):
             if "urgent" in str(name) or name == "urgent-unfinished":
@@ -177,15 +200,38 @@ class TestDashboard(unittest.TestCase):
                 max_cards=6,
             )
         self.assertTrue(out.get("ok"))
-        self.assertGreaterEqual(out.get("chart_count") or 0, 2)
+        self.assertGreaterEqual(out.get("chart_count") or 0, 3)
+        k1 = next(c for c in out["cards"] if c.get("id") == "K1")
+        self.assertEqual(k1.get("status"), "ok", k1)
+        self.assertEqual(k1.get("entity"), "reports-wip")
         k3 = next(c for c in out["cards"] if c.get("id") == "K3")
         self.assertEqual(k3.get("status"), "ok", k3)
         self.assertEqual(k3.get("entity"), "device-output")
         k4 = next(c for c in out["cards"] if c.get("id") == "K4")
         self.assertEqual(k4.get("status"), "ok")
         self.assertEqual(k4.get("chart_type"), "pie")
-        self.assertTrue(any(c.get("id") == "K1" and c.get("status") == "gap" for c in out["cards"]))
         self.assertTrue(any(c.get("id") == "K_LOT" and c.get("status") == "gap" for c in out["cards"]))
+
+    def test_k1_gap_without_wip_entity(self) -> None:
+        client = MagicMock()
+        client.query.return_value = {"entity": "x", "total": 0, "records": []}
+        with (
+            patch("mes_profile.profile_dir", return_value=None),
+            patch(
+                "tools.query_tool.analysis_dashboard.load_catalog",
+                return_value=_CATALOG,
+            ),
+            patch("tools.platform_api.get_client", return_value=client),
+            patch(
+                "tools.query_tool.platform_query.query_metric",
+                return_value={"error": "skip"},
+            ),
+        ):
+            out = render_analysis_dashboard(template_id="pcb_ops", max_cards=6)
+        k1_out = next(c for c in out["cards"] if c.get("id") == "K1")
+        self.assertEqual(k1_out.get("status"), "gap")
+        reason = str(k1_out.get("reason") or "")
+        self.assertTrue("在制" in reason or "匹配" in reason or "可查对象" in reason)
 
 
 if __name__ == "__main__":

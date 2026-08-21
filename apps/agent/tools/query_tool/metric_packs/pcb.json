@@ -1,17 +1,25 @@
 {
   "version": 1,
   "pack_id": "pcb",
-  "note": "可选行业包。仅当资料包声明 metric_packs 含 pcb 时加载。禁止写死实体 id；看板类接口用 allow_unfiltered。",
+  "note": "可选行业包。仅当资料包声明 metric_packs 含 pcb 时加载。禁止写死实体 id；用 entity_hints + 字段角色；看板类可用 allow_unfiltered。报废率必须分子+分母或现成 rate 字段，否则只报件数。",
   "metrics": [
     {
       "id": "wip-by-process",
       "label": "工序在制",
       "aliases": ["工序在制", "各工序在制", "过站在制", "WIP by process"],
       "entity_hints": [
-        "工序在制", "过站", "SFC", "工艺路线", "wip-by-process", "station-wip"
+        "工序在制",
+        "过站",
+        "SFC",
+        "工艺路线",
+        "wip-by-process",
+        "station-wip",
+        "process-wip"
       ],
-      "definition": "按工序/站点维度的在制清单。无工序维 WIP 接口时绑不上（产线 WIP 快照不算工序在制）。",
+      "definition": "按工序/站点维度的在制清单。无工序维 WIP 接口时绑不上（产线 WIP 快照、工单在制均不算工序在制）。",
       "include_in_brief": false,
+      "category_field_hints": ["process", "station", "operation", "step", "工序", "站点"],
+      "value_field_hints": ["qty", "quantity", "wip_qty", "count", "amount"],
       "clauses": [
         {
           "field_role": "status",
@@ -21,20 +29,118 @@
       ]
     },
     {
-      "id": "scrap-rate",
-      "label": "报废/工序良率",
-      "aliases": ["报废", "报废率", "工序良率", "scrap", "yield"],
-      "entity_hints": [
-        "工序良率",
-        "品质 KPI",
-        "quality-process-yield",
-        "quality-kpi",
-        "process-yield",
-        "报废"
+      "id": "daily-output",
+      "label": "当日/日产出",
+      "aliases": [
+        "当日产出",
+        "日产出",
+        "今天产出",
+        "今日产出",
+        "产量趋势",
+        "日产出趋势",
+        "当日过站",
+        "daily output"
       ],
-      "definition": "品质汇总/工序良率（可能含报废或良率字段）。无匹配实体时绑不上；禁止口算良率。",
+      "entity_hints": [
+        "生产概览（联动版）",
+        "production-overview-v2",
+        "生产概览",
+        "production-overview",
+        "生产看板",
+        "kanban-production",
+        "设备产量排行",
+        "device-output",
+        "产出",
+        "报工",
+        "生产工单",
+        "工单",
+        "output",
+        "production"
+      ],
+      "definition": "日产出相关：优先生产概览/看板/设备产量；否则工单完工清单。趋势图建议 analyze_time_trend（按 end_date/record_at 分桶，可对 actual_quantity 求和）。无日期筛参时不得说「今天产出了 N」。",
+      "include_in_brief": false,
+      "time_field_hints": [
+        "end_date",
+        "record_at",
+        "output_date",
+        "prod_date",
+        "finished_at",
+        "actual_end_time",
+        "complete_date"
+      ],
+      "value_field_hints": [
+        "actual_quantity",
+        "actual_qty",
+        "today_output",
+        "week_output",
+        "quantity",
+        "output",
+        "qty"
+      ],
+      "prefer_trend_tool": "analyze_time_trend",
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "state", "billStatus", "orderStatus", "Status", "状态"],
+          "include_values": ["completed", "done", "finished", "output", "closed", "已完成", "完工", "已产出", "已关闭"]
+        },
+        {
+          "field_role": "date",
+          "field_hints": [
+            "end_date",
+            "finished_at",
+            "completed_at",
+            "output_date",
+            "prod_date",
+            "report_date",
+            "actual_end_time",
+            "record_at"
+          ],
+          "relative": "today"
+        }
+      ]
+    },
+    {
+      "id": "daily-output-overview",
+      "label": "日产出概览",
+      "aliases": ["日产出概览", "产出概览", "产量看板"],
+      "entity_hints": [
+        "生产概览（联动版）",
+        "production-overview-v2",
+        "生产概览",
+        "production-overview",
+        "生产看板",
+        "kanban-production",
+        "设备产量排行",
+        "device-output"
+      ],
+      "definition": "看板/概览类日产出（接口结构因厂而异）。无法解析 series 时看板卡会标缺口；细粒度趋势改用 daily-output + analyze_time_trend。",
       "include_in_brief": false,
       "allow_unfiltered": true,
+      "category_field_hints": [
+        "name",
+        "label",
+        "code",
+        "device_name",
+        "production_line",
+        "line",
+        "product_model",
+        "time",
+        "key"
+      ],
+      "value_field_hints": [
+        "today_output",
+        "week_output",
+        "lot_output",
+        "model_output",
+        "today_completed",
+        "actual_qty",
+        "actual_quantity",
+        "quantity",
+        "output",
+        "value",
+        "count"
+      ],
       "clauses": []
     },
     {
@@ -48,6 +154,8 @@
         "检测不良",
         "不良 Top",
         "Top 不良",
+        "缺陷码 Top",
+        "不良分布",
         "aoi fail"
       ],
       "entity_hints": [
@@ -56,30 +164,82 @@
         "quality-top-defects",
         "quality-defect-distribution",
         "top-defects",
-        "检测不良"
+        "检测不良",
+        "品质异常",
+        "quality-anomalies"
       ],
-      "definition": "检测/品质不良 Top 或分布。本厂若无 AOI 专名接口，绑定泛品质不良即可；禁止编造良率。",
+      "definition": "检测/品质不良 Top 或缺陷码分布。本厂若无 AOI 专名接口，绑定泛品质不良即可；禁止编造良率或缺陷占比以外的 KPI。",
       "include_in_brief": false,
       "allow_unfiltered": true,
+      "category_field_hints": [
+        "defect_type",
+        "defect_code",
+        "defect_name",
+        "defect",
+        "code",
+        "name",
+        "label",
+        "process",
+        "key"
+      ],
+      "value_field_hints": [
+        "quantity",
+        "qty",
+        "count",
+        "value",
+        "fail_count",
+        "defect_count",
+        "ng_count"
+      ],
       "clauses": []
     },
     {
-      "id": "daily-output-overview",
-      "label": "日产出概览",
-      "aliases": ["日产出", "当日产出", "产量趋势", "产出概览", "daily output"],
+      "id": "scrap-rate",
+      "label": "报废/工序良率",
+      "aliases": ["报废", "报废率", "工序良率", "scrap", "yield", "良率"],
       "entity_hints": [
-        "生产概览（联动版）",
-        "生产概览",
-        "production-overview-v2",
-        "production-overview",
-        "生产看板",
-        "kanban-production",
-        "设备产量排行",
-        "device-output"
+        "工序良率",
+        "品质 KPI",
+        "quality-process-yield",
+        "quality-kpi",
+        "process-yield",
+        "报废",
+        "品质指标"
       ],
-      "definition": "生产概览/看板类日产出（接口结构因厂而异）。无法解析 series 时看板卡会标缺口。",
+      "definition": "品质汇总/工序良率。优先用现成 yield_rate/scrap_rate；否则须同时有报废分子与投入/检验分母才可算率。仅有分子时只报报废件数，禁止口算良率/报废率。",
       "include_in_brief": false,
       "allow_unfiltered": true,
+      "rate_field_hints": [
+        "yield_rate",
+        "pass_rate",
+        "scrap_rate",
+        "defect_rate",
+        "良率",
+        "报废率"
+      ],
+      "numerator_field_hints": [
+        "scrap_count",
+        "scrap_qty",
+        "reject_count",
+        "defect_count",
+        "ng_count",
+        "fail_count",
+        "报废数",
+        "不良数"
+      ],
+      "denominator_field_hints": [
+        "total_inspected",
+        "inspect_qty",
+        "input_qty",
+        "total_qty",
+        "lot_qty",
+        "plan_qty",
+        "投入数",
+        "检验数"
+      ],
+      "category_field_hints": ["process", "label", "name", "key", "production_line", "line"],
+      "rate_policy": "prefer_rate_field_else_ratio_if_both_else_count_only",
+      "caveat_if_incomplete": "仅有报废/不良件数、缺少投入或检验总数时，只报件数，禁止口算报废率或良率。",
       "clauses": []
     }
   ]

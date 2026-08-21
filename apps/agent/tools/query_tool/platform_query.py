@@ -73,11 +73,12 @@ def summarize_platform_data(
     filters: Annotated[dict | None, "可选过滤条件，与 query_platform_data 相同，会发给 MES"] = None,
     limit: Annotated[int, "参与汇总的记录上限，默认 100（受接口分页限制）"] = 100,
 ) -> dict:
-    """按返回记录里真实存在的字段做轻量分组计数（如按状态各多少）。
+    """按字段分组计数。默认页内汇总并强制 caveat；若资料包实体声明了聚合接口则优先走服务端。
 
-    分组字段来自本次返回列或用户指定；不写死某一套 MES 的字段名。
-    不是数据库 COUNT(*)；MES 总条数大于本次 returned 时，比例只覆盖本页。
+    不写死某一套 MES 字段名。不是数据库 COUNT(*)；无可靠全库聚合时比例只覆盖本页。
     """
+    from tools.query_tool.aggregate import aggregate_by_field
+
     client = get_client()
     cap = max(1, min(int(limit or 100), 100))
     raw = client.query(entity, filters, cap)
@@ -85,49 +86,18 @@ def summarize_platform_data(
         return raw
     records = raw.get("records") if isinstance(raw.get("records"), list) else []
     presented = present_query_result(raw, filters=filters, limit=cap)
-    keys: list[str] = []
-    for rec in records:
-        if isinstance(rec, dict):
-            for k in rec.keys():
-                ks = str(k)
-                if ks not in keys:
-                    keys.append(ks)
-    labels = field_label_map(str(presented.get("entity") or entity))
-    field = resolve_group_by(group_by, keys, labels)
-    if not field:
-        return {
-            "error": (
-                f"无法按 {group_by!r} 汇总：该字段不在本次返回记录中。"
-                if group_by
-                else "无法自动选择分组字段：本次记录没有状态/优先级等常见列。"
-            ),
-            "available_fields": keys,
-            "entity": presented.get("entity"),
-            "label": presented.get("label"),
-            "hint": "group_by 必须是本次返回记录里真实存在的字段（可用中文标签，如「状态」）。",
-        }
-    groups = summarize_records(records, field)
-    total = presented.get("total") or 0
-    returned = presented.get("returned") or 0
-    note = "按本次返回记录分组，不是数据库全表 COUNT。"
-    if isinstance(total, int) and isinstance(returned, int) and total > returned:
-        note += f" MES 共 {total} 条，本次只用了 {returned} 条，比例仅覆盖本页。"
-    return {
-        "entity": presented.get("entity"),
-        "label": presented.get("label"),
-        "group_by": field,
-        "group_by_label": labels.get(field) or field,
-        "filters_applied": presented.get("filters_applied") or {},
-        "total": total,
-        "returned": returned,
-        "groups": groups,
-        "note": note,
-        "reply_hint": (
-            f"说明「{presented.get('label')}」(`{presented.get('entity')}`) "
-            f"按「{labels.get(field) or field}」分组；列出 groups 的 value/count/pct；"
-            "有 filters_applied 须复述。不要编造未出现的分组值。"
-        ),
-    }
+    meta = get_entity(str(presented.get("entity") or entity))
+    entity_meta = meta if isinstance(meta, dict) and "error" not in meta else None
+    return aggregate_by_field(
+        entity=str(entity),
+        group_by=group_by,
+        filters=filters,
+        limit=cap,
+        client=client,
+        entity_meta=entity_meta,
+        records=records if isinstance(records, list) else [],
+        presented=presented if isinstance(presented, dict) else {},
+    )
 
 
 def describe_entity(
@@ -342,7 +312,24 @@ def query_metric(
             f"口径条数按本次合并去重 {total_n} 计（多条件拉取，limit={fetch_cap}）；勿当未截断的全库总数"
         ]
     presented["api_calls"] = len(calls)
-    caveats = bound.get("caveats") or []
+    if bound.get("measure"):
+        presented["measure"] = bound["measure"]
+    if bound.get("prefer_trend_tool"):
+        presented["prefer_trend_tool"] = bound["prefer_trend_tool"]
+    # 时间维：未能限定当日 → 禁止「今天完工了 N」
+    date_unbound = any(
+        ("未能限定当日" in str(c)) or ("日期筛选" in str(c) and "未能" in str(c))
+        for c in (presented.get("caveats") or [])
+    )
+    presented["time_filter_applied"] = not date_unbound
+    if date_unbound:
+        presented["caveats"] = list(presented["caveats"]) + [
+            "禁止把本次条数说成「今天/当日完工了 N 条」；只能说明已按其它条件查询并原样复述 caveats。"
+        ]
+    measure = bound.get("measure") if isinstance(bound.get("measure"), dict) else {}
+    if measure.get("rate_mode") == "count_only":
+        presented["caveats"] = list(presented["caveats"] or []) + list(measure.get("caveats") or [])
+    caveats = presented.get("caveats") or []
     presented["reply_hint"] = (
         f"先复述口径「{bound.get('label')}」：{bound.get('definition')}；"
         f"查的是「{bound.get('entity_label')}」(`{bound.get('entity')}`)，"
@@ -351,8 +338,24 @@ def query_metric(
         "有 caveats 必须原样告诉用户（例如接口无日期筛参时不得说成「今天完工了 N 条」）。"
         "不要编造未返回的记录。"
     )
+    if measure.get("rate_mode") == "count_only":
+        presented["reply_hint"] += " measure.rate_mode=count_only：只报件数，禁止口算报废率/良率。"
+    elif measure.get("rate_mode") == "ratio":
+        presented["reply_hint"] += (
+            f" 可用 `{measure.get('numerator_field')}` / `{measure.get('denominator_field')}` 算率，"
+            "须同时展示分子分母。"
+        )
+    elif measure.get("rate_mode") == "rate_field":
+        presented["reply_hint"] += f" 使用现成率字段 `{measure.get('rate_field')}`，勿另编。"
+    if bound.get("prefer_trend_tool") == "analyze_time_trend":
+        presented["reply_hint"] += (
+            " 若用户要「最近N天/趋势」，优先改调 analyze_time_trend"
+            "（time_field/value_field 见 measure hints）。"
+        )
     if caveats:
         presented["reply_hint"] += " 本次 caveats：" + "；".join(str(c) for c in caveats[:3])
+    if date_unbound:
+        presented["reply_hint"] += " time_filter_applied=false：严禁「今天完工了 N」表述。"
     if any(c.get("error") for c in calls) and not merged:
         presented["error"] = "按口径请求 MES 失败"
         presented["call_errors"] = [c for c in calls if c.get("error")]
@@ -539,3 +542,146 @@ def analyze_platform_brief(
             "有 caveats 的口径必须原样告知。不要编造未出现的分组或条数。"
         ),
     }
+
+
+def analyze_time_trend(
+    entity: Annotated[str, "实体英文 id 或中文别名"],
+    grain: Annotated[
+        str,
+        "分桶粒度：day（默认，按日）或 week（按 ISO 周）",
+    ] = "day",
+    window: Annotated[int, "窗口长度：最近 N 天或 N 周，默认 7，最大 90/52"] = 7,
+    time_field: Annotated[
+        str | None,
+        "时间字段英文名；不传则用 analysis.time_field_hints + 记录列启发式",
+    ] = None,
+    value_field: Annotated[
+        str | None,
+        "数值字段：不传则按条数计数；传入则对该字段求和（如 actual_qty）",
+    ] = None,
+    filters: Annotated[dict | None, "可选过滤，与 query_platform_data 相同"] = None,
+    limit: Annotated[int, "拉取记录上限，默认 100（受接口分页限制）"] = 100,
+    include_chart: Annotated[bool, "是否自动出折线图，默认 true"] = True,
+    user_intent: Annotated[str, "用户原话，传给出图选型"] = "",
+    as_of: Annotated[
+        str | None,
+        "可选：窗口右端日期 YYYY-MM-DD（默认今天）；验收/复现时可用",
+    ] = None,
+) -> dict:
+    """最近 N 天/周趋势：查数 → 时间分桶 → 可选折线图。
+
+    无可靠日期列时诚实失败，禁止编造日期轴。本页抽样，非全库时间序列。
+    """
+    from tools.query_tool.analysis_config import load_analysis_config
+    from tools.query_tool.time_series import build_time_series, _parse_to_date
+
+    client = get_client()
+    cap = max(1, min(int(limit or 100), 100))
+    grain_l = str(grain or "day").lower()
+    is_week = grain_l in ("week", "weekly", "周", "周度") or grain_l.startswith("w")
+    win_cap = 52 if is_week else 90
+    win = max(1, min(int(window or 7), win_cap))
+    raw = client.query(entity, filters, cap)
+    if isinstance(raw, dict) and "error" in raw:
+        return raw
+    records = raw.get("records") if isinstance(raw.get("records"), list) else []
+    presented = present_query_result(raw, filters=filters, limit=cap)
+    hints: list[str] = []
+    try:
+        cfg = load_analysis_config()
+        raw_hints = cfg.get("time_field_hints") or []
+        if isinstance(raw_hints, list):
+            hints = [str(x).strip() for x in raw_hints if str(x).strip()]
+    except Exception:
+        hints = []
+
+    today_d = _parse_to_date(as_of) if as_of else None
+
+    series = build_time_series(
+        records if isinstance(records, list) else [],
+        time_field=time_field,
+        value_field=value_field,
+        grain=grain,
+        window=win,
+        today=today_d,
+        time_field_hints=hints,
+    )
+    if "error" in series:
+        series["entity"] = presented.get("entity")
+        series["label"] = presented.get("label")
+        series["returned"] = presented.get("returned")
+        return series
+
+    caveats = list(series.get("caveats") or [])
+    total = presented.get("total")
+    returned = presented.get("returned")
+    try:
+        t_i = int(total) if total is not None else None
+        r_i = int(returned) if returned is not None else None
+    except (TypeError, ValueError):
+        t_i, r_i = None, None
+    if t_i is not None and r_i is not None and t_i > r_i:
+        caveats.append(f"MES 声明 total={t_i}，本次只用了 {r_i} 条参与分桶。")
+
+    out: dict = {
+        "ok": True,
+        "entity": presented.get("entity"),
+        "label": presented.get("label"),
+        "filters_applied": presented.get("filters_applied") or filters or {},
+        "total": total,
+        "returned": returned,
+        "grain": series.get("grain"),
+        "window": series.get("window"),
+        "time_field": series.get("time_field"),
+        "value_field": series.get("value_field"),
+        "mode": series.get("mode"),
+        "categories": series.get("categories"),
+        "values": series.get("values"),
+        "points_with_data": series.get("points_with_data"),
+        "records_used": series.get("records_used"),
+        "caveats": caveats[:8],
+        "reply_hint": (
+            f"说明「{presented.get('label')}」最近 {series.get('window')} 个"
+            f"{'周' if series.get('grain') == 'week' else '日'}趋势；"
+            f"时间列 `{series.get('time_field')}`，"
+            f"{'求和 ' + str(series.get('value_field')) if series.get('value_field') else '按条数'}。"
+            "必须原样告知 caveats（本页≠全库）。"
+            "前端若已出图，勿再贴 fence；禁止编造日期或数值。"
+        ),
+    }
+
+    if include_chart and series.get("categories") and series.get("values") is not None:
+        from tools.query_tool.analysis_chart import render_analysis_chart
+
+        intent = (user_intent or "").strip() or (
+            f"最近{win}{'周' if str(grain).lower().startswith('w') or grain == '周' else '天'}趋势"
+        )
+        title = f"{presented.get('label') or entity}·{'周' if series.get('grain') == 'week' else '日'}趋势"
+        source = "；".join(caveats[:2])
+        chart = render_analysis_chart(
+            chart_type="line",
+            title=title,
+            categories=list(series.get("categories") or []),
+            values=list(series.get("values") or []),
+            series_name="合计" if series.get("mode") == "sum" else "条数",
+            definition=f"按 {series.get('time_field')} 分桶（{series.get('grain')}）",
+            source_note=source,
+            user_intent=intent,
+        )
+        if isinstance(chart, dict) and chart.get("ok"):
+            out["chart"] = {
+                "ok": True,
+                "chart_type": chart.get("chart_type"),
+                "title": chart.get("title"),
+                "markdown_fence": chart.get("markdown_fence"),
+                "caveats": chart.get("caveats") or [],
+            }
+            # 供前端拦截出图（与 render_analysis_chart 同形）
+            out["markdown_fence"] = chart.get("markdown_fence")
+            out["chart_option"] = chart.get("chart_option")
+        elif isinstance(chart, dict) and chart.get("error"):
+            out["chart_error"] = chart.get("error")
+            caveats.append("自动出图失败，已返回 categories/values，可再调 render_analysis_chart。")
+            out["caveats"] = caveats[:8]
+    return out
+

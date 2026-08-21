@@ -58,10 +58,10 @@
 
 | 能力 | 判定 | 依据 | 产品侧怎么用 |
 |------|------|------|--------------|
-| **工序在制** | 🔶 半有 | **表** `wip_snapshots`（产线/产品/状态/数量，**无工序字段**）；**无** WIP list API。品质侧有 `process` 字段与 `quality-process-yield`，那是良率不是在制。 | 可做「产线 WIP 快照」须补 API 或开只读 SQL；**不能**声称工序 WIP，除非加工序维或过站表 |
+| **工序在制** | 🔶 半有 | **HTTP**：`reports-wip`（`current_process` / `wip_quantity`，报表维）；**表** `wip_snapshots` 无工序字段；**无** SFC 过站 list。 | M2-2 已把 `wip-by-process` 指到在制品报表；话术须说明非过站 WIP |
 | **AOI** | 🔶 半有（泛品质，非 AOI 专名） | **HTTP**：`quality-anomalies` / `quality-top-defects` / `defect-distribution` / `process-yield` / `kpi` / `trend`。**表**：`quality_*`。全文 **无 AOI/SPI/FQC** 字样。 | 可做「不良 Top / 工序良率 / 品质趋势」；话术勿写死「AOI」，应说「检测/品质不良」 |
 | **报废** | ✅ 可做（汇总级） | **表** `quality_metrics.scrap_count` + `total_inspected`（可算报废率）；HTTP 有品质 KPI/工序良率，需看返回是否含 scrap。无独立「报废单」实体。 | 优先 `quality-kpi` / `process-yield`；缺字段再只读 SQL 打 `quality_metrics` |
-| **按日产出** | 🔶 半有 | **表** `production_output_records`（`record_at`/`actual_qty`，可按日聚）。**HTTP**：`production-overview` / `overview-v2`（有 `period=day\|week\|month`）、`device-output`、`kanban-production`。无产量事实 list API。 | 对话「日产出/趋势」走 overview-v2 / kanban；细到工单×日须补 API 或 SQL |
+| **按日产出** | 🔶 半有 | **HTTP**：`device-output`（today/week）；overview/kanban 常空或无日期。工单有 `end_date`+`actual_quantity` 可趋势。 | M2-2：`daily-output`→设备排行；「最近N天」→ `analyze_time_trend` 工单 |
 | **Lot / 拼板追溯** | ❌ 无 | 表/OpenAPI **无** Lot、Panel、拼板、条码、SFC、过站。仅有 `process_card_no`（流程卡号）在产量事实表。 | A12 固定缺口文案；不要假装全链路追溯 |
 
 ### 已较强、可先做的分析

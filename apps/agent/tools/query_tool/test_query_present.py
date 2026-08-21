@@ -143,7 +143,11 @@ class QueryPresentTests(unittest.TestCase):
             {"status": "done"},
             {"status": None},
         ]
-        groups = summarize_records(records, "status")
+        with patch(
+            "tools.query_tool.value_labels.load_value_labels",
+            return_value={},
+        ):
+            groups = summarize_records(records, "status")
         by_val = {g["value"]: g for g in groups}
         self.assertEqual(by_val["pending"]["count"], 2)
         self.assertEqual(by_val["done"]["count"], 1)
@@ -173,14 +177,18 @@ class QueryPresentTests(unittest.TestCase):
 
         with (
             patch("tools.query_tool.platform_query.get_client", return_value=FakeClient()),
+            patch("tools.query_tool.platform_query.get_entity", return_value=_META),
             patch("tools.query_tool.query_present.get_entity", return_value=_META),
         ):
             out = summarize_platform_data("work-orders", group_by="状态")
         self.assertEqual(out["group_by"], "status")
         self.assertEqual(out["group_by_label"], "状态")
+        self.assertEqual(out.get("mode"), "page")
+        self.assertTrue(out.get("caveats"))
         by_val = {g["value"]: g["count"] for g in out["groups"]}
-        self.assertEqual(by_val["pending"], 2)
-        self.assertEqual(by_val["done"], 1)
+        # 展示可能是英文码或中文枚举标签，只校验计数
+        self.assertEqual(sum(by_val.values()), 3)
+        self.assertEqual(max(by_val.values()), 2)
 
     def test_analyze_platform_brief_builds_report(self) -> None:
         from tools.query_tool.platform_query import analyze_platform_brief

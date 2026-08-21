@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "note": "江西中软MES系统 · M2-2 口径覆盖（可入库模板）。复制到 mes_profiles/江西中软MES系统/metrics.json。仅本厂目录有效；换平台勿整份照抄。",
+  "metrics": [
+    {
+      "id": "wip",
+      "label": "在制",
+      "aliases": ["在制", "WIP", "在制工单"],
+      "entity_hints": ["生产工单列表", "生产工单", "work-orders"],
+      "definition": "本厂：工单 status=in_progress（进行中）。",
+      "include_in_brief": true,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "Status"],
+          "include_values": ["in_progress", "进行中"]
+        }
+      ]
+    },
+    {
+      "id": "unfinished",
+      "label": "未完工",
+      "aliases": ["未完工", "未完成", "未结案"],
+      "entity_hints": ["生产工单列表", "生产工单", "work-orders"],
+      "definition": "本厂：待开工+进行中（pending / in_progress）。",
+      "include_in_brief": true,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "Status"],
+          "include_values": ["pending", "in_progress", "待开工", "进行中"]
+        }
+      ]
+    },
+    {
+      "id": "urgent-unfinished",
+      "label": "紧急未完工",
+      "aliases": ["急单", "紧急未完工", "插单未完工", "紧急单"],
+      "entity_hints": ["生产工单列表", "生产工单", "work-orders"],
+      "definition": "本厂：priority∈{urgent,high} ∩ status∈{pending,in_progress}。",
+      "include_in_brief": true,
+      "clauses": [
+        {
+          "field_role": "priority",
+          "field_hints": ["priority", "Priority"],
+          "include_values": ["urgent", "high", "紧急", "高"]
+        },
+        {
+          "field_role": "status",
+          "field_hints": ["status", "Status"],
+          "include_values": ["pending", "in_progress", "待开工", "进行中"]
+        }
+      ]
+    },
+    {
+      "id": "completed-today",
+      "label": "当日完工",
+      "aliases": ["今天完工", "今日完工", "当日完工"],
+      "entity_hints": ["生产工单列表", "生产工单", "work-orders"],
+      "definition": "本厂工单已完成；OpenAPI 未声明 end_date 筛参时不得说「今天完工了 N」。趋势用 analyze_time_trend(end_date)。",
+      "include_in_brief": false,
+      "clauses": [
+        {
+          "field_role": "status",
+          "field_hints": ["status", "Status"],
+          "include_values": ["completed", "closed", "已完成", "已关闭"]
+        },
+        {
+          "field_role": "date",
+          "field_hints": ["end_date", "actual_end_time"],
+          "relative": "today"
+        }
+      ]
+    },
+    {
+      "id": "daily-output",
+      "label": "当日/日产出",
+      "aliases": [
+        "当日产出",
+        "日产出",
+        "今天产出",
+        "今日产出",
+        "产量趋势",
+        "日产出趋势",
+        "daily output"
+      ],
+      "entity_hints": ["设备产量排行", "device-output", "生产工单列表", "生产工单"],
+      "definition": "本厂快照：设备产量排行 today_output/week_output（非全库日曲线）。「最近N天产量趋势」请用 analyze_time_trend，实体用工单、time_field=end_date、value_field=actual_quantity。勿优先空的 production-overview-v2。",
+      "include_in_brief": true,
+      "allow_unfiltered": true,
+      "prefer_trend_tool": "analyze_time_trend",
+      "time_field_hints": ["end_date", "actual_end_time"],
+      "value_field_hints": [
+        "today_output",
+        "week_output",
+        "actual_quantity",
+        "actual_qty"
+      ],
+      "category_field_hints": ["name", "code", "production_line"],
+      "clauses": []
+    },
+    {
+      "id": "daily-output-overview",
+      "label": "日产出概览",
+      "aliases": ["日产出概览", "产出概览", "产量看板"],
+      "entity_hints": ["设备产量排行", "device-output"],
+      "definition": "本厂改绑设备产量排行（overview/kanban 常无列表或无日期）。展示 today_output/week_output。",
+      "include_in_brief": false,
+      "allow_unfiltered": true,
+      "category_field_hints": ["name", "code"],
+      "value_field_hints": ["today_output", "week_output"],
+      "clauses": []
+    },
+    {
+      "id": "aoi-fail-topn",
+      "label": "检测不良 Top",
+      "aliases": [
+        "AOI不良",
+        "AOI 不良",
+        "检测不良",
+        "不良 Top",
+        "Top 不良",
+        "缺陷码 Top",
+        "不良分布"
+      ],
+      "entity_hints": [
+        "Top 不良项",
+        "不良分布",
+        "quality-top-defects",
+        "quality-defect-distribution"
+      ],
+      "definition": "本厂无 AOI 专名接口：绑 Top 不良项 / 不良分布（defect_type 或 name + quantity/value）。禁止编造良率。",
+      "include_in_brief": true,
+      "allow_unfiltered": true,
+      "category_field_hints": [
+        "defect_type",
+        "name",
+        "defect_code",
+        "process",
+        "label"
+      ],
+      "value_field_hints": ["quantity", "value", "count", "qty"],
+      "clauses": []
+    },
+    {
+      "id": "scrap-rate",
+      "label": "报废/工序良率",
+      "aliases": ["报废", "报废率", "工序良率", "良率", "scrap", "yield"],
+      "entity_hints": ["工序良率", "quality-process-yield", "品质 KPI", "quality-kpi"],
+      "definition": "本厂：工序良率 yield_rate + total_inspected；无 scrap_count。只报良率/检验数；100%-良率仅可作粗算说明，禁止称为精确报废率。",
+      "include_in_brief": false,
+      "allow_unfiltered": true,
+      "rate_field_hints": ["yield_rate", "pass_rate"],
+      "numerator_field_hints": ["scrap_count", "defect_count"],
+      "denominator_field_hints": ["total_inspected"],
+      "category_field_hints": ["process", "label", "name"],
+      "rate_policy": "prefer_rate_field_else_ratio_if_both_else_count_only",
+      "caveat_if_incomplete": "本厂无报废分子字段时只报良率或件数，禁止口算报废率。",
+      "clauses": []
+    },
+    {
+      "id": "wip-by-process",
+      "label": "工序在制",
+      "aliases": ["工序在制", "各工序在制", "过站在制", "WIP by process"],
+      "entity_hints": ["在制品报表", "reports-wip"],
+      "definition": "本厂：在制品报表按 current_process / wip_quantity（报表维，非 SFC 过站）。缺报表时改问在制工单。",
+      "include_in_brief": false,
+      "allow_unfiltered": true,
+      "category_field_hints": ["current_process", "process"],
+      "value_field_hints": ["wip_quantity", "actual_quantity", "plan_quantity"],
+      "clauses": []
+    }
+  ]
+}

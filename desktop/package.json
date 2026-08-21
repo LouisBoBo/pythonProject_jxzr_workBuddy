@@ -1,6 +1,6 @@
 {
   "name": "zr-workbuddy-desktop",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "ZR WorkBuddy 桌面壳：内置 Python 运行时 + API + 前端，安装后配置 Key 即可使用",
   "main": "main.js",

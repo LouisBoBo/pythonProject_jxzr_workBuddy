@@ -11,7 +11,12 @@ _AGENT = Path(__file__).resolve().parents[2]
 if str(_AGENT) not in sys.path:
     sys.path.insert(0, str(_AGENT))
 
-from tools.query_tool.metrics_pack import bind_metric, find_metric, load_metrics_pack
+from tools.query_tool.metrics_pack import (
+    bind_metric,
+    build_measure_contract,
+    find_metric,
+    load_metrics_pack,
+)
 
 _TICKETS = [
     {
@@ -32,19 +37,40 @@ _DEVICES = [
 ]
 
 
+def _no_profile_overlay():
+    return (
+        patch("mes_profile.resolve_metrics_path", return_value=(None, "none")),
+        patch(
+            "tools.query_tool.analysis_config.load_analysis_config",
+            return_value={
+                "metric_packs": [],
+                "group_by_labels": ["状态"],
+                "brief_metric_ids": ["wip"],
+                "brief_metric_limit": 4,
+                "source": "defaults",
+            },
+        ),
+    )
+
+
 def _wip() -> dict:
-    pack = load_metrics_pack()
-    m = find_metric("在制", pack)
+    a, b = _no_profile_overlay()
+    with a, b:
+        pack = load_metrics_pack()
+        m = find_metric("在制", pack)
     assert m is not None
     return m
 
 
 class MetricsPackTests(unittest.TestCase):
     def test_find_metric_by_alias(self) -> None:
-        self.assertEqual(find_metric("在制")["id"], "wip")
-        self.assertEqual(find_metric("紧急未完工")["id"], "urgent-unfinished")
-        self.assertEqual(find_metric("紧急工单有哪些")["id"], "urgent-unfinished")
-        self.assertEqual(find_metric("当日完工")["id"], "completed-today")
+        a, b = _no_profile_overlay()
+        with a, b:
+            pack = load_metrics_pack()
+            self.assertEqual(find_metric("在制", pack)["id"], "wip")
+            self.assertEqual(find_metric("紧急未完工", pack)["id"], "urgent-unfinished")
+            self.assertEqual(find_metric("紧急工单有哪些", pack)["id"], "urgent-unfinished")
+            self.assertEqual(find_metric("当日完工", pack)["id"], "completed-today")
 
     def test_bind_uses_catalog_entity_not_work_orders(self) -> None:
         bound = bind_metric(
@@ -64,7 +90,9 @@ class MetricsPackTests(unittest.TestCase):
         self.assertNotIn("work-orders", json.dumps(bound, ensure_ascii=False))
 
     def test_urgent_cross_product_uses_observed_enums(self) -> None:
-        m = find_metric("紧急未完工")
+        a, b = _no_profile_overlay()
+        with a, b:
+            m = find_metric("紧急未完工", load_metrics_pack())
         bound = bind_metric(
             m,
             catalog=_TICKETS,
@@ -81,7 +109,9 @@ class MetricsPackTests(unittest.TestCase):
         self.assertFalse(any(s.get("billStatus") == "completed" for s in sets))
 
     def test_completed_today_skips_unfilterable_date(self) -> None:
-        m = find_metric("当日完工")
+        a, b = _no_profile_overlay()
+        with a, b:
+            m = find_metric("当日完工", load_metrics_pack())
         bound = bind_metric(
             m,
             catalog=_TICKETS,
@@ -129,6 +159,198 @@ class MetricsPackTests(unittest.TestCase):
         wip = find_metric("在制", pack)
         self.assertEqual(wip["label"], "在制任务")
         self.assertEqual(wip["entity_hints"], ["任务"])
+
+
+class MeasureContractTests(unittest.TestCase):
+    def test_scrap_ratio_when_both_fields(self) -> None:
+        metric = {
+            "id": "scrap-rate",
+            "rate_field_hints": ["yield_rate"],
+            "numerator_field_hints": ["scrap_count"],
+            "denominator_field_hints": ["total_inspected"],
+            "caveat_if_incomplete": "只报件数",
+        }
+        m = build_measure_contract(
+            metric, ["process", "scrap_count", "total_inspected"]
+        )
+        self.assertEqual(m["rate_mode"], "ratio")
+        self.assertEqual(m["numerator_field"], "scrap_count")
+        self.assertEqual(m["denominator_field"], "total_inspected")
+
+    def test_scrap_count_only_without_denominator(self) -> None:
+        metric = {
+            "id": "scrap-rate",
+            "numerator_field_hints": ["scrap_count"],
+            "denominator_field_hints": ["total_inspected"],
+            "caveat_if_incomplete": "只报件数，禁止口算",
+        }
+        m = build_measure_contract(metric, ["scrap_count", "process"])
+        self.assertEqual(m["rate_mode"], "count_only")
+        self.assertTrue(any("禁止口算" in str(c) for c in m["caveats"]))
+
+    def test_prefer_rate_field(self) -> None:
+        metric = {
+            "rate_field_hints": ["yield_rate"],
+            "numerator_field_hints": ["scrap_count"],
+            "denominator_field_hints": ["total_inspected"],
+        }
+        m = build_measure_contract(metric, ["yield_rate", "scrap_count"])
+        self.assertEqual(m["rate_mode"], "rate_field")
+        self.assertEqual(m["rate_field"], "yield_rate")
+
+    def test_pcb_pack_has_no_hardcoded_work_orders(self) -> None:
+        path = Path(__file__).resolve().parent / "metric_packs" / "pcb.json"
+        blob = path.read_text(encoding="utf-8")
+        self.assertNotIn("work-orders", blob)
+        data = json.loads(blob)
+        ids = {m["id"] for m in data["metrics"]}
+        self.assertIn("daily-output", ids)
+        self.assertIn("aoi-fail-topn", ids)
+        self.assertIn("scrap-rate", ids)
+
+
+class JiangxiOverlayBindTests(unittest.TestCase):
+    """M2-2：试点 metrics 覆盖绑定（不依赖本机激活资料包）。"""
+
+    def _catalog(self) -> list[dict]:
+        return [
+            {
+                "id": "work-orders",
+                "label": "生产工单列表",
+                "aliases": ["生产工单", "工单"],
+                "fields": [
+                    {"name": "status", "label": "status"},
+                    {"name": "priority", "label": "priority"},
+                ],
+                "columns": [
+                    {"name": "status", "label": "状态"},
+                    {"name": "end_date", "label": "完工日"},
+                    {"name": "actual_quantity", "label": "实际产量"},
+                ],
+            },
+            {
+                "id": "device-output",
+                "label": "设备产量排行",
+                "aliases": ["设备产量排行", "产量排行"],
+                "fields": [],
+                "columns": [
+                    {"name": "name", "label": "Name"},
+                    {"name": "today_output", "label": "Today"},
+                    {"name": "week_output", "label": "Week"},
+                ],
+            },
+            {
+                "id": "quality-defect-distribution",
+                "label": "不良分布",
+                "aliases": ["不良分布", "Top 不良项"],
+                "fields": [{"name": "by", "label": "by"}],
+                "columns": [
+                    {"name": "name", "label": "Name"},
+                    {"name": "value", "label": "Value"},
+                ],
+            },
+            {
+                "id": "quality-process-yield",
+                "label": "工序良率",
+                "aliases": ["工序良率"],
+                "fields": [],
+                "columns": [
+                    {"name": "process", "label": "Process"},
+                    {"name": "yield_rate", "label": "Yield"},
+                    {"name": "total_inspected", "label": "Inspected"},
+                ],
+            },
+            {
+                "id": "reports-wip",
+                "label": "在制品报表",
+                "aliases": ["在制品报表"],
+                "fields": [{"name": "status", "label": "工单状态筛选"}],
+                "columns": [
+                    {"name": "current_process", "label": "工序"},
+                    {"name": "wip_quantity", "label": "在制数"},
+                ],
+            },
+        ]
+
+    def test_overlay_binds_daily_to_device_output(self) -> None:
+        path = (
+            Path(__file__).resolve().parent
+            / "profile_templates"
+            / "metrics.jx-zhongruan.example.json"
+        )
+        overlay = json.loads(path.read_text(encoding="utf-8"))
+        with (
+            patch("tools.query_tool.analysis_config.load_analysis_config") as ac,
+            patch("mes_profile.resolve_metrics_path", return_value=(path, "profile")),
+        ):
+            ac.return_value = {
+                "metric_packs": ["pcb"],
+                "group_by_labels": ["状态"],
+                "brief_metric_ids": ["wip"],
+                "brief_metric_limit": 4,
+                "source": "test",
+            }
+            pack = load_metrics_pack()
+        daily = find_metric("日产出", pack)
+        self.assertIsNotNone(daily)
+        assert daily is not None
+        bound = bind_metric(daily, catalog=self._catalog())
+        self.assertNotIn("error", bound)
+        self.assertEqual(bound.get("entity"), "device-output")
+        self.assertTrue(bound.get("prefer_trend_tool"))
+
+    def test_overlay_wip_by_process_reports(self) -> None:
+        path = (
+            Path(__file__).resolve().parent
+            / "profile_templates"
+            / "metrics.jx-zhongruan.example.json"
+        )
+        with (
+            patch("tools.query_tool.analysis_config.load_analysis_config") as ac,
+            patch("mes_profile.resolve_metrics_path", return_value=(path, "profile")),
+        ):
+            ac.return_value = {
+                "metric_packs": ["pcb"],
+                "group_by_labels": ["状态"],
+                "brief_metric_ids": ["wip"],
+                "brief_metric_limit": 4,
+                "source": "test",
+            }
+            pack = load_metrics_pack()
+        m = find_metric("工序在制", pack)
+        self.assertIsNotNone(m)
+        assert m is not None
+        bound = bind_metric(m, catalog=self._catalog())
+        self.assertEqual(bound.get("entity"), "reports-wip")
+        self.assertEqual(bound.get("measure", {}).get("category_field"), "current_process")
+
+    def test_overlay_scrap_prefers_yield_rate(self) -> None:
+        path = (
+            Path(__file__).resolve().parent
+            / "profile_templates"
+            / "metrics.jx-zhongruan.example.json"
+        )
+        with (
+            patch("tools.query_tool.analysis_config.load_analysis_config") as ac,
+            patch("mes_profile.resolve_metrics_path", return_value=(path, "profile")),
+        ):
+            ac.return_value = {
+                "metric_packs": ["pcb"],
+                "group_by_labels": ["状态"],
+                "brief_metric_ids": ["wip"],
+                "brief_metric_limit": 4,
+                "source": "test",
+            }
+            pack = load_metrics_pack()
+        m = find_metric("报废率", pack)
+        assert m is not None
+        bound = bind_metric(
+            m,
+            catalog=self._catalog(),
+            available_fields=["process", "yield_rate", "total_inspected"],
+        )
+        self.assertEqual(bound.get("entity"), "quality-process-yield")
+        self.assertEqual(bound.get("measure", {}).get("rate_mode"), "rate_field")
 
 
 if __name__ == "__main__":

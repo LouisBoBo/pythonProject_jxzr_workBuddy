@@ -149,6 +149,9 @@ def bind_metric(
                 "available_fields": fields,
             }
         clauses_out.append(bound)
+    measure = build_measure_contract(metric, fields)
+    if measure.get("caveats"):
+        caveats = list(caveats) + list(measure["caveats"])
     if not clauses_out:
         # 看板/汇总类接口：无筛参也可整表拉取（须资料包显式 allow_unfiltered）
         if metric.get("allow_unfiltered"):
@@ -162,12 +165,15 @@ def bind_metric(
                 "filter_sets": [{}],
                 "caveats": caveats
                 + ["该口径未下发筛选条件，使用接口默认列表/汇总（非全库 SQL）"],
+                "measure": measure,
+                "prefer_trend_tool": metric.get("prefer_trend_tool"),
             }
         return {
             "error": "口径无法绑定到当前接口的可筛选字段。",
             "metric": metric.get("id"),
             "entity": eid,
             "caveats": caveats,
+            "measure": measure,
         }
     sets = _filter_sets(clauses_out)
     # 笛卡尔积截断会导致漏拉组合（如急单少计）
@@ -187,7 +193,81 @@ def bind_metric(
         "clauses": clauses_out,
         "filter_sets": sets,
         "caveats": caveats,
+        "measure": measure,
+        "prefer_trend_tool": metric.get("prefer_trend_tool"),
     }
+
+
+def _first_match_field(hints: list[Any], fields: list[str]) -> str | None:
+    if not fields:
+        return None
+    folded = {_fold_field(f): f for f in fields}
+    for h in hints or []:
+        name = str(h or "").strip()
+        if not name:
+            continue
+        if name in fields:
+            return name
+        hit = folded.get(_fold_field(name))
+        if hit:
+            return hit
+    return None
+
+
+def build_measure_contract(
+    metric: dict[str, Any],
+    fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """从口径声明解析展示/度量字段角色（不写死厂列名）。
+
+    报废率：有 rate 字段，或分子+分母齐；否则 count_only + caveat，禁止口算。
+    """
+    fields = [str(f) for f in (fields or []) if str(f).strip()]
+    out: dict[str, Any] = {
+        "category_field": _first_match_field(metric.get("category_field_hints") or [], fields),
+        "value_field": _first_match_field(metric.get("value_field_hints") or [], fields),
+        "time_field": _first_match_field(metric.get("time_field_hints") or [], fields),
+        "rate_field": _first_match_field(metric.get("rate_field_hints") or [], fields),
+        "numerator_field": _first_match_field(metric.get("numerator_field_hints") or [], fields),
+        "denominator_field": _first_match_field(metric.get("denominator_field_hints") or [], fields),
+        "rate_policy": metric.get("rate_policy") or "",
+        "category_field_hints": list(metric.get("category_field_hints") or [])[:16],
+        "value_field_hints": list(metric.get("value_field_hints") or [])[:16],
+        "caveats": [],
+    }
+    wants_rate = bool(
+        metric.get("rate_field_hints")
+        or metric.get("numerator_field_hints")
+        or metric.get("denominator_field_hints")
+    )
+    if not wants_rate:
+        return out
+    if out["rate_field"]:
+        out["rate_mode"] = "rate_field"
+    elif out["numerator_field"] and out["denominator_field"]:
+        out["rate_mode"] = "ratio"
+    elif out["numerator_field"] or any(
+        _first_match_field([h], fields) for h in (metric.get("value_field_hints") or [])
+    ):
+        out["rate_mode"] = "count_only"
+        note = str(
+            metric.get("caveat_if_incomplete")
+            or "缺少投入/检验分母或现成率字段，只可报件数，禁止口算报废率/良率。"
+        )
+        out["caveats"] = [note]
+    elif fields:
+        # 字段表已知但仍对不上分子分母/率
+        out["rate_mode"] = "unresolved"
+        out["caveats"] = [
+            str(
+                metric.get("caveat_if_incomplete")
+                or "当前返回列无法对应报废分子/分母或良率字段，禁止口算率。"
+            )
+        ]
+    else:
+        # 尚无样例列：保留 hints 供看板/Agent，不提前判死
+        out["rate_mode"] = "pending_fields"
+    return out
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -258,6 +338,23 @@ def _pick_field(role: str, hints: list[Any], fields: list[str], labels: dict[str
     if role == "priority":
         return resolve_group_by("优先级", fields, labels)
     if role == "date":
+        # 资料包 analysis.time_field_hints 优先于内置启发式（仍不写死厂字段）
+        cfg_hints: list[str] = []
+        try:
+            from tools.query_tool.analysis_config import load_analysis_config
+
+            raw = load_analysis_config().get("time_field_hints") or []
+            if isinstance(raw, list):
+                cfg_hints = [str(x).strip() for x in raw if str(x).strip()]
+        except Exception:
+            cfg_hints = []
+        for name in cfg_hints:
+            if name in fields:
+                return name
+            folded = _fold_field(name)
+            for f in fields:
+                if _fold_field(f) == folded:
+                    return f
         for f in fields:
             n = _fold_field(f)
             if any(tok in n for tok in ("end_date", "finish", "complete", "closed_at")):
