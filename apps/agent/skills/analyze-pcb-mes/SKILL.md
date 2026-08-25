@@ -10,11 +10,12 @@ description: >-
 
 在 **analyze-mes-data** 通用链路上，仅当当前资料包已加载 PCB 指标包（或自建 metrics）时：
 
-1. `list_query_metrics` 看是否出现 `wip-by-process` / `aoi-fail-topn` / `scrap-rate` / `daily-output-overview`  
-2. 有则 `query_metric`；无则说明「当前资料包未启用 pcb 包或无匹配实体」，**禁止编造良率**  
-3. 「打开PCB运营看板 / 品质看板」优先 `run_analysis_demo(playbook='pcb-ops-board')`：多图+缺口；也可 `render_analysis_dashboard(template_id='pcb_ops')`  
-4. 勿再用「早会演示」对外话术；旧说法仍可命中同一编排  
-5. 单图仍用 `render_analysis_chart(user_intent=用户原话)`，勿追问图表类型（趋势→折线、分布→饼、默认柱；用户点名优先）  
+1. `list_query_metrics` 看是否出现 `wip-by-process` / `lot-trace` / `aoi-fail-topn` / `scrap-rate` / `daily-output-overview`  
+2. 有则 `query_metric`；`status=gap` / `explicit_gap`（如 Lot）或绑不上 → **原样说缺口**，禁止编造良率/追溯  
+3. 「工序在制」若返回 caveats（报表维≠过站）必须念给用户听  
+4. 「打开PCB运营看板 / 品质看板」优先 `run_analysis_demo(playbook='pcb-ops-board')`：多图+缺口；也可 `render_analysis_dashboard(template_id='pcb_ops')`  
+5. 勿再用「早会演示」对外话术；旧说法仍可命中同一编排  
+6. 单图仍用 `render_analysis_chart(user_intent=用户原话)`，勿追问图表类型（趋势→折线、分布→饼、默认柱；用户点名优先）  
 
 启用方式（任选）：
 

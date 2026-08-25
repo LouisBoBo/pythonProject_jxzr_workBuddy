@@ -226,13 +226,30 @@ export function deleteHistory(threadId) {
   return api.delete(`/history/${threadId}`)
 }
 
-export function convertDocument(file) {
+export function fetchFileManagerSummary() {
+  return api.get('/files/summary')
+}
+
+export function fetchFileManagerList(params = {}) {
+  return api.get('/files', { params })
+}
+
+export function uploadManagerFile(file, onUploadProgress) {
   const form = new FormData()
   form.append('file', file)
-  return api.post('/convert', form, {
+  return api.post('/files/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 180000,
+    onUploadProgress,
   })
+}
+
+export function fetchFileManagerPreview(fileId) {
+  return api.get(`/files/${encodeURIComponent(fileId)}/preview`)
+}
+
+export function fileManagerDownloadPath(fileId) {
+  return `/api/files/${encodeURIComponent(fileId)}/download`
 }
 
 export function confirmWrite(actionId) {
@@ -350,8 +367,46 @@ export function pickLocalDevFolder(prompt = '选择工程目录') {
   })
 }
 
+/** 浏览工程下一层目录（写范围勾选） */
+export function listLocalDevWorkspaceTree(workspace, subdir = '') {
+  return api.post('/local-dev/workspace/tree', { workspace, subdir: subdir || '' })
+}
+
 export function createLocalDevJob(body) {
   return api.post('/local-dev/jobs', body)
+}
+
+/** include | skip：是否同步写范围外文件 */
+export function confirmLocalDevScope(jobId, decision) {
+  return api.post(`/local-dev/jobs/${encodeURIComponent(jobId)}/confirm-scope`, {
+    decision,
+  })
+}
+
+/** commit | skip；commit_message（中文）/ push / remote_url / save_remote 可选 */
+export function confirmLocalDevCommit(
+  jobId,
+  decision,
+  { push, remote_url, save_remote, commit_message } = {},
+) {
+  const body = { decision }
+  if (commit_message != null && String(commit_message).trim()) {
+    body.commit_message = String(commit_message).trim()
+  }
+  if (push !== undefined) body.push = Boolean(push)
+  if (remote_url != null && String(remote_url).trim()) body.remote_url = String(remote_url).trim()
+  if (save_remote !== undefined) body.save_remote = Boolean(save_remote)
+  return api.post(`/local-dev/jobs/${encodeURIComponent(jobId)}/confirm-commit`, body)
+}
+
+/** 人触发：仅汇总本批文件（快），供过程面板先推进 */
+export function prepareLocalDevCommitBatch(body) {
+  return api.post('/local-dev/commit-batch/prepare', body)
+}
+
+/** 人触发：汇总本批已同步文件 → 门禁 → awaiting_commit（不经写码 SSE） */
+export function startLocalDevCommitBatch(body) {
+  return api.post('/local-dev/commit-batch', body)
 }
 
 export function getLocalDevJob(jobId) {

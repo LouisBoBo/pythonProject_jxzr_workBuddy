@@ -1,0 +1,30 @@
+[project]
+name = "zr-workbuddy"
+version = "0.0.0"
+description = "ZR WorkBuddy monorepo (Agent + API + Web)"
+requires-python = ">=3.11"
+
+# ---------------------------------------------------------------------------
+# Ruff：CI 门禁先卡「会炸运行时」的规则；风格债用 make lint-style 逐步收。
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+  "desktop/runtime",
+  "desktop/release",
+  "pythonProject_zr_aicoding",
+  "docs/备份",
+  ".venv",
+  ".venv-lint",
+  ".venv-lock",
+]
+
+[tool.ruff.lint]
+# 最小「必然错误」集（当前全仓应绿）；扩规则前先 make lint-style 收债
+select = [
+  "E9",
+  "F63",
+  "F7",
+  "F82",
+]

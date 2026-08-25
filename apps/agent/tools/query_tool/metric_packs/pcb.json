@@ -29,6 +29,26 @@
       ]
     },
     {
+      "id": "lot-trace",
+      "label": "Lot/拼板追溯",
+      "aliases": [
+        "Lot追溯",
+        "Lot 追溯",
+        "拼板追溯",
+        "Lot追溯简报",
+        "条码追溯",
+        "全链路追溯",
+        "lot trace",
+        "panel trace"
+      ],
+      "explicit_gap": true,
+      "gap_reason": "当前资料包未声明 Lot/Panel/拼板/条码/SFC 过站可查对象，无法做全链路追溯。请补充 OpenAPI 后在 metrics.json 覆盖本口径（去掉 explicit_gap 并写 entity_hints）；可改问工单、品质或流程卡号相关查询。",
+      "entity_hints": [],
+      "definition": "批次/拼板/条码追溯。默认缺口；现场有实体时由资料包 metrics.json 覆盖。",
+      "include_in_brief": false,
+      "clauses": []
+    },
+    {
       "id": "daily-output",
       "label": "当日/日产出",
       "aliases": [

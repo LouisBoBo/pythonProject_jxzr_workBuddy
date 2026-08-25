@@ -100,7 +100,32 @@ def bind_metric(
     filter_fields: list[str] | None = None,
     today: str | None = None,
 ) -> dict[str, Any]:
-    """把口径绑到当前目录。失败时 error 说明缺什么，不编造实体。"""
+    """把口径绑到当前目录。失败时 error 说明缺什么，不编造实体。
+
+    ``explicit_gap: true``：资料包声明的已知缺口（如 Lot），直接返回 status=gap，不查数。
+    ``always_caveats``：成功绑定时也必须原样带给用户（如报表维≠过站 WIP）。
+    """
+    always = [
+        str(c).strip()
+        for c in (metric.get("always_caveats") or [])
+        if str(c).strip()
+    ]
+    if metric.get("explicit_gap"):
+        reason = str(
+            metric.get("gap_reason")
+            or metric.get("definition")
+            or "当前资料包不支持该口径。"
+        ).strip()
+        return {
+            "error": reason,
+            "status": "gap",
+            "metric": metric.get("id"),
+            "label": metric.get("label"),
+            "definition": metric.get("definition") or "",
+            "hint": "引导补充 OpenAPI/实体后，在资料包 metrics.json 覆盖本口径（去掉 explicit_gap）。",
+            "caveats": always,
+        }
+
     cats = catalog if catalog is not None else load_catalog()
     eid = _resolve_entity(metric.get("entity_hints") or [], cats)
     if not eid:
@@ -110,6 +135,7 @@ def bind_metric(
             "label": metric.get("label"),
             "entity_hints": metric.get("entity_hints") or [],
             "hint": "换平台后请确认目录别名，或在资料包 metrics.json 覆盖 entity_hints。",
+            "caveats": always,
         }
     rec = next((e for e in cats if e.get("id") == eid), {}) or {}
     fields = list(available_fields or [])
@@ -125,7 +151,7 @@ def bind_metric(
         if (f.get("name") if isinstance(f, dict) else f)
     ]
     clauses_out: list[dict[str, Any]] = []
-    caveats: list[str] = []
+    caveats: list[str] = list(always)
     for clause in metric.get("clauses") or []:
         if not isinstance(clause, dict):
             continue

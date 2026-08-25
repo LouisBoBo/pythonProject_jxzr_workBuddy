@@ -187,6 +187,22 @@ def list_query_metrics() -> dict:
     catalog = load_catalog()
     items = []
     for m in pack.get("metrics") or []:
+        if m.get("explicit_gap"):
+            items.append(
+                {
+                    "id": m.get("id"),
+                    "label": m.get("label"),
+                    "aliases": m.get("aliases") or [],
+                    "definition": m.get("definition") or "",
+                    "bindable": False,
+                    "status": "gap",
+                    "entity": None,
+                    "entity_label": None,
+                    "reason": m.get("gap_reason") or m.get("definition") or "已知缺口",
+                    "caveats": m.get("always_caveats") or [],
+                }
+            )
+            continue
         bound = bind_metric(m, catalog=catalog, observed={})
         items.append(
             {
@@ -195,17 +211,20 @@ def list_query_metrics() -> dict:
                 "aliases": m.get("aliases") or [],
                 "definition": m.get("definition") or "",
                 "bindable": "error" not in bound,
+                "status": bound.get("status") or ("ok" if "error" not in bound else "error"),
                 "entity": bound.get("entity"),
                 "entity_label": bound.get("entity_label"),
                 "reason": bound.get("error"),
+                "caveats": bound.get("caveats") or [],
             }
         )
     return {
         "count": len(items),
         "metrics": items,
         "hint": (
-            "用户说在制/未完工/紧急单/当日完工时调用 query_metric(name=口径id或中文名)。"
-            "禁止套用其它 MES 的实体 id；绑不上就如实说。"
+            "用户说在制/未完工/紧急单/当日完工/工序在制/Lot追溯时调用 query_metric。"
+            "status=gap 或绑不上须如实说缺口；有 caveats 必须原样告知用户。"
+            "禁止套用其它 MES 的实体 id；禁止编造 Lot/过站 WIP。"
         ),
     }
 

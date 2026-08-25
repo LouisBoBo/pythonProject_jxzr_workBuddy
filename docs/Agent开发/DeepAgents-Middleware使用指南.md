@@ -2,6 +2,8 @@
 
 本文说明 Middleware 在本项目中的位置、**何时用**、**怎么加**，以及和 Tools / Skills 的分工。
 
+框架选型见 [`DeepAgents与DeepSeek-Harness技术选型分析.md`](DeepAgents与DeepSeek-Harness技术选型分析.md)。
+
 ---
 
 ## 1. Middleware 是什么

@@ -14,6 +14,8 @@ STATUSES = frozenset(
     {
         "queued",
         "running",
+        "awaiting_scope",
+        "awaiting_commit",
         "succeeded",
         "failed",
         "cancelled",
@@ -48,11 +50,17 @@ def create_job(
     message: str,
     empty_target: bool = False,
     runtime: str | None = None,
+    write_scope: list[str] | None = None,
+    file_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     now = int(time.time())
     rt = (runtime or "cursor_local").strip() or "cursor_local"
     if rt not in {"cursor_local", "local_sandbox"}:
         rt = "cursor_local"
+    from local_dev.path_scope import normalize_write_scope
+
+    scope = normalize_write_scope(write_scope)
+    paths = [str(p).strip() for p in (file_paths or []) if str(p).strip()][:8]
     job: dict[str, Any] = {
         "id": new_job_id(),
         "user_id": "" if user_id is None else str(user_id),
@@ -65,6 +73,13 @@ def create_job(
         "sandbox_path": None,
         "changed_files": [],
         "synced_files": [],
+        "write_scope": scope,
+        "file_paths": paths,
+        "deferred_files": [],
+        "scope_decision": None,
+        "commit_decision": None,
+        "commit_gate": None,
+        "commit_result": None,
         "preview_url": None,
         "preview": None,
         "error": None,
@@ -98,6 +113,34 @@ def update_job(data_dir: Path, job_id: str, **fields: Any) -> dict[str, Any] | N
         job = get_job(data_dir, job_id)
         if not job:
             return None
+        # 范围确认：仅 awaiting_scope 且尚未决策时可写入（防并发双写）
+        if "scope_decision" in fields:
+            if str(job.get("status") or "") != "awaiting_scope":
+                return job
+            if job.get("scope_decision") in {"include", "skip"}:
+                return job
+            decision = fields.get("scope_decision")
+            if decision not in {"include", "skip"}:
+                fields = {k: v for k, v in fields.items() if k != "scope_decision"}
+                if not fields:
+                    return job
+        # 提交确认：仅 awaiting_commit 且尚未决策（None 表示网络失败重试清空）
+        if "commit_decision" in fields:
+            decision = fields.get("commit_decision")
+            if decision is None:
+                if str(job.get("status") or "") != "awaiting_commit" and fields.get("status") != "awaiting_commit":
+                    fields = {k: v for k, v in fields.items() if k != "commit_decision"}
+            elif str(job.get("status") or "") != "awaiting_commit":
+                # succeeded 等态在 push 重试时会先 reopen 为 awaiting_commit
+                if fields.get("status") != "awaiting_commit":
+                    return job
+            elif job.get("commit_decision") in {"commit", "skip"}:
+                if decision is not None:
+                    return job
+            elif decision not in {"commit", "skip"}:
+                fields = {k: v for k, v in fields.items() if k != "commit_decision"}
+            if not fields:
+                return job
         cur_status = str(job.get("status") or "")
         new_status = fields.get("status")
         # 已取消：禁止再写成 queued/running/succeeded/failed（后台线程收尾不得覆盖）
@@ -107,7 +150,7 @@ def update_job(data_dir: Path, job_id: str, **fields: Any) -> dict[str, Any] | N
                 return job
         # 用户已点取消但状态尚未落到 cancelled 时，同样禁止成功收尾
         if job.get("cancel_requested") and new_status is not None:
-            if str(new_status) in {"queued", "running", "succeeded"}:
+            if str(new_status) in {"queued", "running", "succeeded", "awaiting_commit"}:
                 fields = {k: v for k, v in fields.items() if k != "status"}
                 if not fields:
                     return job
@@ -115,7 +158,9 @@ def update_job(data_dir: Path, job_id: str, **fields: Any) -> dict[str, Any] | N
             job[k] = v
         job["updated_at"] = int(time.time())
         path = _job_path(data_dir, job_id)
-        path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
         return job
 
 
@@ -195,6 +240,21 @@ def list_jobs(
     return out
 
 
+def write_job_document(data_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
+    """原子写入完整 job 文档（供 commit_batch 等旁路创建，不经 create_job）。"""
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        raise ValueError("job id missing")
+    with _lock:
+        path = _job_path(data_dir, job_id)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        payload = dict(job)
+        payload["updated_at"] = int(time.time())
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return payload
+
+
 def append_message(data_dir: Path, job_id: str, *, role: str, content: str) -> dict[str, Any] | None:
     with _lock:
         job = get_job(data_dir, job_id)
@@ -205,5 +265,7 @@ def append_message(data_dir: Path, job_id: str, *, role: str, content: str) -> d
         job["messages"] = msgs
         job["updated_at"] = int(time.time())
         path = _job_path(data_dir, job_id)
-        path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
         return job

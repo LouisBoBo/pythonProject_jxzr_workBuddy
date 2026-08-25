@@ -334,6 +334,7 @@ async function onConfirm() {
       repo: '',
       projectMode: mode.value === 'new' ? 'new' : 'existing',
       pendingContent: props.card?.pendingContent || '',
+      pendingFiles: Array.isArray(props.card?.pendingFiles) ? [...props.card.pendingFiles] : [],
     })
     return
   }
@@ -351,6 +352,7 @@ async function onConfirm() {
     repo,
     projectMode: mode.value === 'new' ? 'new' : 'existing',
     pendingContent: props.card?.pendingContent || '',
+    pendingFiles: Array.isArray(props.card?.pendingFiles) ? [...props.card.pendingFiles] : [],
   })
 }
 </script>

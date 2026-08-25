@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-lint/
+.venv-lock/
 venv/
 .env
 !.env.example
@@ -21,7 +23,8 @@ desktop/py/*.spec
 # Runtime
 .run/
 data/uploads/*
-data/converted/*
+data/file-manager/*
+data/_tmp_remote_bare/
 data/exports/*
 data/history/*
 data/writes/*
@@ -41,7 +44,7 @@ data/agent_checkpoints.sqlite-*
 data/*.sqlite
 data/*.sqlite-*
 !data/uploads/.gitkeep
-!data/converted/.gitkeep
+!data/file-manager/.gitkeep
 !data/exports/.gitkeep
 !data/history/.gitkeep
 !data/writes/.gitkeep
@@ -53,6 +56,8 @@ data/*.sqlite-*
 data/.locks/
 apps/agent/large_tool_results/
 apps/agent/conversation_history/
+# 样例 ERP / 写码靶仓：禁止克隆进本 monorepo 根（会成嵌套 .git）。
+# 应放本机其它路径（如 ~/Desktop/pythonProject_zr_aicoding）；白名单仓名仍是 LouisBoBo/pythonProject_zr_aicoding。
 pythonProject_zr_aicoding/
 dist/
 *.vsix
@@ -70,3 +75,5 @@ dist/
 # 样例访问日志（覆盖上方 *.log）
 !data/samples/*.nginx.log
 !data/samples/*.log
+
+data/converted/

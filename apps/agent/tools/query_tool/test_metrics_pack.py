@@ -352,6 +352,34 @@ class JiangxiOverlayBindTests(unittest.TestCase):
         self.assertEqual(bound.get("entity"), "quality-process-yield")
         self.assertEqual(bound.get("measure", {}).get("rate_mode"), "rate_field")
 
+    def test_explicit_gap_lot_trace(self) -> None:
+        m = {
+            "id": "lot-trace",
+            "label": "Lot/拼板追溯",
+            "explicit_gap": True,
+            "gap_reason": "无 Lot 接口",
+            "entity_hints": [],
+        }
+        bound = bind_metric(m, catalog=self._catalog())
+        self.assertEqual(bound.get("status"), "gap")
+        self.assertIn("Lot", bound.get("error") or "")
+        self.assertIsNone(bound.get("entity"))
+
+    def test_always_caveats_on_wip_by_process(self) -> None:
+        m = {
+            "id": "wip-by-process",
+            "label": "工序在制",
+            "entity_hints": ["在制品报表", "reports-wip"],
+            "allow_unfiltered": True,
+            "always_caveats": ["报表维非过站"],
+            "category_field_hints": ["current_process"],
+            "value_field_hints": ["wip_quantity"],
+            "clauses": [],
+        }
+        bound = bind_metric(m, catalog=self._catalog())
+        self.assertNotIn("error", bound)
+        self.assertTrue(any("报表维" in str(c) for c in (bound.get("caveats") or [])))
+
 
 if __name__ == "__main__":
     unittest.main()

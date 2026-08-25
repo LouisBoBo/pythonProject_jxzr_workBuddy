@@ -1,0 +1,26 @@
+---
+description: 锁定 Deep Agents 为主 harness；写码旁路 Cursor；禁止用 DeepSeek Harness 替换主对话
+alwaysApply: true
+---
+
+# Agent 架构锁定（ZR WorkBuddy）
+
+正式选型见 `docs/Agent开发/DeepAgents与DeepSeek-Harness技术选型分析.md`、落地清单见 `docs/Agent开发/选型落地P0清单.md`。
+
+## 必须遵守
+
+1. **主 harness = Deep Agents**（`create_deep_agent` / LangGraph）。MES 对话、懂平台、查数、分析、运维、写码讨论、审码编排都走这条链。
+2. **写码执行旁路 = Cursor**（本机 `LOCAL_DEV_AGENT=cursor_sdk` 默认；GitHub = Cursor Cloud）。不要把「改仓 / 改本机目录」塞回 Deep Agents 主环。
+3. **DeepSeek = 模型供应商**（`LLM_*` / `DEEPSEEK_*`），**不是**框架。可用 DeepSeek 模型，不因此引入 DeepSeek Harness 作主内核。
+4. **禁止**：用 `dsh web` / DeepSeek Harness 替换产品壳或 A/B/C 工具链；为「自动提交 / 自动部署」换掉 Deep Agents（应走确认卡 → API → CI）。
+
+## 允许（需显式设计）
+
+- P2 POC：仅评估 DeepSeek Harness **替换本机写码执行器**（与 Cursor Local 对比），**不得**动主对话。
+- 应急：`LOCAL_DEV_AGENT=llm` 且 `LOCAL_DEV_ALLOW_LLM_FALLBACK=1` 时的 LLM 工具环。
+
+## 改代码时
+
+- 新业务能力：优先 **Tool + Skill + Middleware**，不要新开 Agent 框架。
+- 写码 / 审码：保持车道互斥；前端显式传 `page_context.workbuddy_lane`。
+- 高风险写：HITL 确认后由 API 直执工具，禁止「模型二次确认当执行」。

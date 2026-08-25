@@ -29,6 +29,9 @@ _GUIDED_EDIT_RE = re.compile(
     r"图上.{0,16}(?:按钮|颜色|布局|顶栏|侧栏|表单|Logo|logo|间距).{0,10}(?:改|调|修)|"
     r"把.{0,24}(?:改成|换成|调成).{0,16}(?:截图|图里|图上)|"
     r"(?:只改|仅改|先改).{0,16}(?:截图|图里|图上)|"
+    r"(?:红框|红圈|黄框|蓝框|框选|圈出|标注).{0,12}(?:处|里|内|中)?.{0,8}"
+    r"(?:去掉|删除|隐藏|移除|改|调|修|移|右移|左移)|"
+    r"(?:去掉|删除|隐藏|移除|右移|左移).{0,8}(?:红框|红圈|框|标注).{0,8}(?:处|里|内|中)|"
     r"【用户意图·按图修改】",
     re.I,
 )
@@ -128,13 +131,14 @@ def classify_ui_visual_intent(text: str, *, has_images: bool = False) -> str:
     # 明文视觉对齐优先于「重做/更好看」残留词
     if match:
         return "full_match"
-    if redesign:
-        return "redesign"
+    # 有图时：按图局部改（含红框）优先于注入块带来的「设计感/重做」误判
     if guided:
         return "guided_edit"
+    if redesign:
+        return "redesign"
     # 有图 + 写/改界面动作，但没说整页复刻 → 按参照修改，勿默认整页 1:1 赶工/也不要完全忽略图
     if has_images and _PAGE_UI_DESIGN_RE.search(t) and re.search(
-        r"改|调|修|换|做|写|实现|开发|新增|参考", t
+        r"改|调|修|换|做|写|实现|开发|新增|参考|移", t
     ):
         return "guided_edit"
     if has_images and _UI_SHOT_RE.search(t):

@@ -166,8 +166,22 @@
       "definition": "本厂：在制品报表按 current_process / wip_quantity（报表维，非 SFC 过站）。缺报表时改问在制工单。",
       "include_in_brief": false,
       "allow_unfiltered": true,
+      "always_caveats": [
+        "本厂「工序在制」来自在制品报表（current_process / wip_quantity），是报表维快照，不是 SFC 过站 WIP；勿声称全链路工序在制。"
+      ],
       "category_field_hints": ["current_process", "process"],
       "value_field_hints": ["wip_quantity", "actual_quantity", "plan_quantity"],
+      "clauses": []
+    },
+    {
+      "id": "lot-trace",
+      "label": "Lot/拼板追溯",
+      "aliases": ["Lot追溯", "拼板追溯", "Lot追溯简报", "条码追溯", "全链路追溯"],
+      "explicit_gap": true,
+      "gap_reason": "江西中软资料包无 Lot/Panel/拼板/条码/SFC 过站 list 接口，无法做全链路追溯。",
+      "entity_hints": [],
+      "definition": "本厂已知缺口：无 Lot/拼板追溯实体。",
+      "include_in_brief": false,
       "clauses": []
     }
   ]

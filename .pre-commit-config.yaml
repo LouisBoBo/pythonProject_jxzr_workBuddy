@@ -1,0 +1,10 @@
+# 可选本地钩子：pip install -r requirements-dev.txt && pre-commit install
+# CI 不依赖本文件（workflow 直接跑 make lint）
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff
+        args: [--config=pyproject.toml]
+        files: ^(apps|scripts)/
+        types_or: [python]

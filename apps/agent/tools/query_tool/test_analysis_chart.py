@@ -27,6 +27,21 @@ class TestAnalysisChart(unittest.TestCase):
         self.assertIn(":::analysis_chart", out.get("markdown_fence") or "")
         self.assertTrue(any("本页" in str(c) for c in (out.get("caveats") or [])))
 
+    def test_chart_injects_page_scope_without_source_note(self):
+        from tools.query_tool.aggregate import CAVEAT_PAGE_SCOPE
+        from tools.query_tool.analysis_chart import render_analysis_chart
+
+        out = render_analysis_chart(
+            chart_type="pie",
+            title="分布",
+            groups=[{"value": "A", "count": 1}, {"value": "B", "count": 2}],
+            source_note="",
+        )
+        self.assertTrue(out.get("ok"))
+        self.assertTrue(
+            any(CAVEAT_PAGE_SCOPE[:10] in str(c) or "全库" in str(c) for c in (out.get("caveats") or []))
+        )
+
     def test_pie_and_clip(self):
         from tools.query_tool.analysis_chart import build_echarts_option
 

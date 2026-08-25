@@ -61,6 +61,14 @@ class LocalDevConfig:
     mes_profile_auto_sync: bool = True
     # 写码成功后对数据侧变更自动轻量查数（失败不挡写码）
     mes_post_dev_query: bool = True
+    # P1：默认可关。写码 job 结束后不自动弹提交；人说「提交…」再审本批并确认
+    commit_gate_enabled: bool = False
+    commit_allow_blocked: bool = False
+    commit_push: bool = False
+    commit_gate_timeout_sec: int = 600
+    # 提交门禁：复用 ide_review/git_review 规则引擎（与审码工具同源；仍不经 LLM Skill）
+    commit_use_ide_review: bool = True
+    commit_use_skill_review: bool = True
 
 
 def get_config() -> LocalDevConfig:
@@ -85,6 +93,12 @@ def get_config() -> LocalDevConfig:
         tool_history_keep_rounds=max(1, _env_int("LOCAL_DEV_TOOL_HISTORY_KEEP_ROUNDS", 4)),
         mes_profile_auto_sync=_env_bool("MES_PROFILE_AUTO_SYNC", True),
         mes_post_dev_query=_env_bool("MES_POST_DEV_QUERY", True),
+        commit_gate_enabled=_env_bool("LOCAL_DEV_COMMIT_GATE", False),
+        commit_allow_blocked=_env_bool("LOCAL_DEV_COMMIT_ALLOW_BLOCKED", False),
+        commit_push=_env_bool("LOCAL_DEV_COMMIT_PUSH", False),
+        commit_gate_timeout_sec=max(30, _env_int("LOCAL_DEV_COMMIT_GATE_TIMEOUT_SEC", 600)),
+        commit_use_ide_review=_env_bool("LOCAL_DEV_COMMIT_USE_IDE_REVIEW", True),
+        commit_use_skill_review=_env_bool("LOCAL_DEV_COMMIT_USE_SKILL_REVIEW", True),
     )
 
 

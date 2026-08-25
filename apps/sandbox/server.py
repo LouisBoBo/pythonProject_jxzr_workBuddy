@@ -6,6 +6,11 @@ API 探活沙箱 HTTP 服务（与生产 PLATFORM_BASE_URL 隔离）。
 - 提供 /openapi.json 与 /docs，便于「根据沙箱文档测接口」
 - 不写宿主业务目录（uploads/writes）；进程退出即丢数据
 
+【安全 · 勿抄到生产】
+登录接口会签发 ``alg:none`` 的**假 JWT**，仅供本地探活 / ERP 不可达时回落登录。
+WorkBuddy **会话鉴权**走 ``apps/agent/session_jwt.py``（HS256，拒绝 alg=none）。
+切勿把「不验签读 payload」或 ``alg:none`` 用到真实 MES/生产登录。
+
 默认端口：8001（API_PROBE_SANDBOX_PORT）
 """
 from __future__ import annotations
@@ -22,6 +27,12 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.getenv("API_PROBE_SANDBOX_PORT", "8001"))
 HOST = os.getenv("API_PROBE_SANDBOX_HOST", "127.0.0.1")
+
+# 醒目标记：任何读本文件的人应看到
+_SANDBOX_ALG_NONE_WARNING = (
+    "SANDBOX-ONLY: login issues unsigned JWT (alg=none). "
+    "NOT for production. WorkBuddy session uses HS256 session_jwt."
+)
 
 _LOCK = threading.RLock()
 # collection path -> list of dict records
@@ -271,7 +282,8 @@ SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
         body = self._read_json()
 
         if path == "/api/v1/auth/login":
-            # 签发本地假 JWT（API 只读 payload 不验签），带上 sub，避免历史会话按 user_id 隔离后「消失」
+            # 【SANDBOX-ONLY】alg:none 假 JWT —— 禁止照抄到生产 / 真实 MES 登录。
+            # API 侧仅在响应含 sandbox:true 时才读此类 payload；会话仍签发 HS256。
             uname = str((body or {}).get("username") or "admin").strip() or "admin"
             # 与常见本地 ERP 一致：admin → user_id=1
             uid = "1" if uname.lower() == "admin" else str(abs(hash(uname)) % 100000)
@@ -281,13 +293,17 @@ SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
                 raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
                 return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
-            token = f"{_b64({'alg': 'none', 'typ': 'JWT'})}.{_b64({'sub': uid, 'preferred_username': uname, 'exp': now + 86400 * 30})}."
+            token = (
+                f"{_b64({'alg': 'none', 'typ': 'JWT'})}."
+                f"{_b64({'sub': uid, 'preferred_username': uname, 'exp': now + 86400 * 30})}."
+            )
             return self._send(
                 200,
                 {
                     "access_token": token,
                     "token_type": "bearer",
                     "sandbox": True,
+                    "warning": _SANDBOX_ALG_NONE_WARNING,
                 },
             )
 
@@ -363,6 +379,7 @@ def main() -> None:
     print(f"[sandbox] docs     http://{HOST}:{PORT}/docs")
     print(f"[sandbox] openapi  http://{HOST}:{PORT}/openapi.json")
     print(f"[sandbox] health   http://{HOST}:{PORT}/health")
+    print(f"[sandbox] WARNING  {_SANDBOX_ALG_NONE_WARNING}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

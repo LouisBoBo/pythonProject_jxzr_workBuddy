@@ -1,4 +1,5 @@
-# Agent + API 共用依赖
+# Agent + API 共用依赖（约束范围；安装请用 requirements.lock.txt / make install）
+# 更新锁：改本文件后执行 make lock-python，并提交 requirements.lock.txt
 deepagents>=0.1.0
 langchain-openai>=0.3.0
 openai>=1.40.0

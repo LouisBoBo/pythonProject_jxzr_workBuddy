@@ -63,6 +63,11 @@ class VisualIntentTests(unittest.TestCase):
         self.assertFalse(should_attach_shot_images("重新设计这个页面更有设计感"))
         self.assertTrue(should_attach_shot_images("做成跟截图一样"))
         self.assertTrue(should_attach_shot_images("按截图改一下按钮"))
+        self.assertTrue(should_attach_shot_images("修改登录界面 红框处去掉"))
+        self.assertEqual(
+            classify_ui_visual_intent("修改登录界面 红框处去掉", has_images=True),
+            "guided_edit",
+        )
 
     def test_quality_first_prompt_for_full_match(self):
         p = build_first_turn_prompt(

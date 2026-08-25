@@ -245,6 +245,7 @@ def try_server_aggregate(
         "returned": total,
         "caveats": [
             "分组来自资料包声明的聚合接口（非页内抽样）。",
+            "勿默认说成全厂/全库比例，除非接口文档明确保证覆盖范围。",
         ],
         "source": "entity_aggregate",
     }
@@ -318,7 +319,8 @@ def aggregate_by_field(
             "note": "；".join(caveats[:2]),
             "reply_hint": (
                 f"说明「{presented.get('label')}」按「{labels.get(field) or field}」分组；"
-                "列出 groups；这是聚合接口结果。有 filters 须复述。"
+                "列出 groups；这是聚合接口结果。"
+                "必须原样告知 caveats；勿默认说成全库比例。有 filters 须复述。"
             ),
         }
 

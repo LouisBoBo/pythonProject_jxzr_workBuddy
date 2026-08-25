@@ -3,13 +3,13 @@
 """
 import json
 import os
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-import sys, os
 _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
@@ -17,15 +17,26 @@ from routes_config import UPLOAD_DIR, AgentConfig, DATA_DIR
 from agent_wrapper import AgentRunner
 from routes.auth import require_auth
 from middleware.request_context import set_request_agent_context, reset_request_agent_context
+from workbuddy_lanes import sanitize_page_context_lanes
+from sse_flush import needs_process_flush, sse_comment_pad, sse_flush_sleep_sec
 
-router = APIRouter(prefix="/api", tags=["chat"])
+router = APIRouter(
+    prefix="/api",
+    tags=["对话"],
+)
 
 
 class ChatRequest(BaseModel):
-    message: str
-    thread_id: str = "default"
-    file_paths: list[str] = []
-    page_context: dict | None = None
+    message: str = Field(..., description="用户本轮消息正文")
+    thread_id: str = Field("default", description="会话线程 ID；default 会按用户改写")
+    file_paths: list[str] = Field(default_factory=list, description="已上传文件路径列表")
+    page_context: dict | None = Field(
+        None,
+        description=(
+            "页面/车道上下文。写码/审核/贴码请显式传 workbuddy_lane="
+            "code_dev|code_review|paste_code，避免仅靠消息内字符串标记猜解。"
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
@@ -33,7 +44,16 @@ class ChatResponse(BaseModel):
     thread_id: str
 
 
-@router.post("/chat", response_model=ChatResponse)
+def _page_context_for_agent(raw: dict | None) -> dict | None:
+    return sanitize_page_context_lanes(raw)
+
+
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    summary="同步对话",
+    description="发送消息并等待完整回复；page_context.workbuddy_lane 用于写码/审核/贴码结构化分流。",
+)
 async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
     """同步对话：发送消息，等待完整回复后返回。"""
     _token, user = auth
@@ -44,7 +64,7 @@ async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
         thread_id=thread_id,
         user_id=user.user_id,
         username=user.username,
-        page_context=req.page_context,
+        page_context=_page_context_for_agent(req.page_context),
     )
     try:
         from tools.upload_paths import sanitize_client_file_paths
@@ -57,7 +77,11 @@ async def chat(req: ChatRequest, auth: tuple = Depends(require_auth)):
         reset_request_agent_context(ctx)
 
 
-@router.post("/chat/stream")
+@router.post(
+    "/chat/stream",
+    summary="流式对话（SSE）",
+    description="推送 status/step/token/confirm/done；写码审核请在 page_context.workbuddy_lane 显式声明车道。",
+)
 async def chat_stream(
     req: ChatRequest,
     request: Request,
@@ -77,15 +101,15 @@ async def chat_stream(
             thread_id=thread_id,
             user_id=user.user_id,
             username=user.username,
-            page_context=req.page_context,
+            page_context=_page_context_for_agent(req.page_context),
         )
         cancel_event = asyncio.Event()
         try:
             from tools.upload_paths import sanitize_client_file_paths
 
             safe_paths = sanitize_client_file_paths(req.file_paths, data_dir=Path(DATA_DIR))
-            # 先发一条带填充的 SSE 注释，冲掉代理/内核初始缓冲
-            yield ": " + (" " * 2048) + "\n\n"
+            # 首包注释填充：冲掉代理/内核初始缓冲（大小见 WORKBUDDY_SSE_PAD_BYTES）
+            yield sse_comment_pad()
             async for event in runner.stream_chat(
                 req.message,
                 thread_id,
@@ -100,10 +124,14 @@ async def chat_stream(
                 payload = json.dumps(event, ensure_ascii=False)
                 yield f"data: {payload}\n\n"
                 et = event.get("type") if isinstance(event, dict) else None
-                # status/step/confirm：填充 + 短间隔，确保过程事件不会和后续 token 被攒成一包
-                if et in ("status", "step", "confirm"):
-                    yield ": " + (" " * 2048) + "\n\n"
-                    await asyncio.sleep(0.04)
+                # 过程事件：再冲一次，避免与后续 token 被攒包；延迟可配，默认 0
+                if needs_process_flush(et):
+                    yield sse_comment_pad()
+                    delay = sse_flush_sleep_sec()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    else:
+                        await asyncio.sleep(0)
                 else:
                     await asyncio.sleep(0)
             if not cancel_event.is_set() and not await request.is_disconnected():

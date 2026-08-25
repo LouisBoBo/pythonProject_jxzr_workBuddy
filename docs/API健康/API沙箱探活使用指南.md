@@ -19,6 +19,18 @@
 
 它**不会**走导入确认卡，也**不会**改 MES 业务落盘（uploads / writes 等）。
 
+### 安全警告（alg:none）
+
+探活沙箱登录会签发 **`alg:none` 无签名假 JWT**，响应带 `"sandbox": true`。
+
+| 层 | 行为 |
+|----|------|
+| 沙箱 `:8001` | 仅本地探活；启动日志会打印 `SANDBOX-ONLY … alg=none` |
+| WorkBuddy 登录映射 | **仅当**上游响应 `sandbox: true` 才读 `alg=none` 的 payload |
+| WorkBuddy **会话** | 始终 `session_jwt` **HS256**；`alg=none` **一律拒绝**（见 `apps/agent/session_jwt.py`） |
+
+**禁止**：把沙箱「不验签 / alg=none」抄到真实 MES 登录或生产会话校验。
+
 ---
 
 ## 2. 沙箱只有一种 mode，两种实现

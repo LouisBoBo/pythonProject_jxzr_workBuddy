@@ -130,7 +130,7 @@
                   例：https://api.deepseek.com/v1 、通义 https://dashscope.aliyuncs.com/compatible-mode/v1；官方 OpenAI 可留空
                 </div>
                 <div v-else-if="field.key === 'MAIN_MODEL'" class="field-meta">
-                  例：deepseek-chat、gpt-4o、qwen-plus
+                  例：deepseek-v4-flash、deepseek-chat；已禁止 deepseek-v4-pro（防误烧）
                 </div>
                 <div v-else-if="field.key === 'VISION_BASE_URL'" class="field-meta">
                   例：https://open.bigmodel.cn/api/paas/v4/

@@ -77,7 +77,77 @@
             {{ lastWorkspace || card.lastWorkspace }}
           </button>
         </p>
-        <p class="cd-desc">改码由 Cursor SDK 在沙箱执行，成功后才同步到该目录；失败不会脏写宿主机。计费走 Cursor，不走 DeepSeek 工具环。</p>
+
+        <div class="cd-scope">
+          <div class="cd-scope-head">
+            <span class="cd-label">写范围（可选）</span>
+            <span class="cd-hint">勾选=纳入写范围；点文件夹名或「进入」可下钻</span>
+          </div>
+          <div class="cd-scope-actions">
+            <button type="button" class="cd-btn ghost sm" :disabled="busy || treeLoading" @click="reloadTree">
+              {{ treeLoading ? '加载中…' : '刷新目录' }}
+            </button>
+            <button
+              type="button"
+              class="cd-btn ghost sm"
+              :disabled="busy || !selectedScope.length"
+              @click="selectedScope = []"
+            >
+              清空勾选
+            </button>
+          </div>
+          <p v-if="treeError" class="cd-error">{{ treeError }}</p>
+          <div v-if="treeCwd != null" class="cd-breadcrumb">
+            <button type="button" class="cd-crumb" :disabled="busy" @click="openSubdir('')">工程根</button>
+            <template v-for="(seg, i) in cwdParts" :key="i">
+              <span class="cd-crumb-sep">/</span>
+              <button type="button" class="cd-crumb" :disabled="busy" @click="openSubdir(cwdParts.slice(0, i + 1).join('/'))">
+                {{ seg }}
+              </button>
+            </template>
+          </div>
+          <ul v-if="treeEntries.length" class="cd-tree">
+            <li v-for="ent in treeEntries" :key="ent.rel" class="cd-tree-row">
+              <div class="cd-tree-check">
+                <input
+                  type="checkbox"
+                  :checked="isScopeSelected(ent.rel)"
+                  :disabled="busy"
+                  :aria-label="`勾选 ${ent.name}`"
+                  @change="toggleScope(ent.rel, $event.target.checked)"
+                />
+                <span class="cd-tree-kind">{{ ent.kind === 'dir' ? '文件夹' : '文件' }}</span>
+                <button
+                  v-if="ent.kind === 'dir'"
+                  type="button"
+                  class="cd-tree-name link"
+                  :disabled="busy || treeLoading"
+                  title="进入此文件夹"
+                  @click.stop="openSubdir(String(ent.rel || '').replace(/\/$/, ''))"
+                >
+                  {{ ent.name }}/
+                </button>
+                <span v-else class="cd-tree-name">{{ ent.name }}</span>
+                <button
+                  v-if="ent.kind === 'dir'"
+                  type="button"
+                  class="cd-btn ghost sm cd-tree-enter"
+                  :disabled="busy || treeLoading"
+                  @click.stop="openSubdir(String(ent.rel || '').replace(/\/$/, ''))"
+                >
+                  进入
+                </button>
+              </div>
+            </li>
+          </ul>
+          <p v-else-if="!treeLoading && treeCwd != null" class="cd-desc">此目录下无可选条目（或请先点刷新）</p>
+          <p v-if="selectedScope.length" class="cd-scope-picked">
+            已选 {{ selectedScope.length }} 项：
+            <span class="mono">{{ selectedScope.slice(0, 6).join(', ') }}{{ selectedScope.length > 6 ? '…' : '' }}</span>
+          </p>
+        </div>
+
+        <p class="cd-desc">改码由 Cursor SDK 在沙箱执行，成功后才同步到该目录；若改了勾选范围外的文件，会再弹框确认。计费走 Cursor。</p>
       </template>
 
       <template v-else>
@@ -275,7 +345,7 @@ import {
   cursorDevSpeedLabel,
   friendlyCursorDevFailure,
 } from '../cursorDevUx.js'
-import { pickLocalDevFolder, checkLocalDevWorkspace } from '../api.js'
+import { pickLocalDevFolder, checkLocalDevWorkspace, listLocalDevWorkspaceTree } from '../api.js'
 import { renderMarkdown } from '../markdown.js'
 import CodingPlanCard from './CodingPlanCard.vue'
 
@@ -303,7 +373,19 @@ const lastWorkspace = ref('')
 const requirementInput = ref('')
 const createPr = ref(false)
 const localError = ref('')
+const selectedScope = ref([])
+const treeEntries = ref([])
+const treeCwd = ref(null)
+const treeLoading = ref(false)
+const treeError = ref('')
 let busyFallbackTimer = null
+let treeReloadTimer = null
+
+const cwdParts = computed(() => {
+  const c = String(treeCwd.value || '').trim()
+  if (!c) return []
+  return c.split('/').filter(Boolean)
+})
 
 const isLocalTarget = computed(
   () => String(props.card?.target || targetTab.value || 'local') === 'local',
@@ -329,6 +411,66 @@ const normalizedPlanSteps = computed(() =>
 const confirmedWorkspace = computed(
   () => String(props.card?.workspace || workspaceInput.value || '').trim(),
 )
+
+watch(
+  () => String(workspaceInput.value || '').trim(),
+  (ws) => {
+    if (treeReloadTimer != null) clearTimeout(treeReloadTimer)
+    if (!ws || targetTab.value !== 'local') {
+      treeEntries.value = []
+      treeCwd.value = null
+      return
+    }
+    treeReloadTimer = window.setTimeout(() => {
+      treeReloadTimer = null
+      void openSubdir('')
+    }, 450)
+  },
+)
+
+function isScopeSelected(rel) {
+  const r = String(rel || '')
+  return selectedScope.value.includes(r)
+}
+
+function toggleScope(rel, checked) {
+  const r = String(rel || '')
+  if (!r) return
+  const set = new Set(selectedScope.value)
+  if (checked) set.add(r)
+  else set.delete(r)
+  selectedScope.value = [...set]
+}
+
+async function openSubdir(subdir) {
+  const ws = String(workspaceInput.value || '').trim()
+  if (!ws) {
+    treeError.value = '请先填写工程目录'
+    return
+  }
+  treeLoading.value = true
+  treeError.value = ''
+  try {
+    const { data } = await listLocalDevWorkspaceTree(ws, subdir || '')
+    if (!data?.ok) {
+      treeError.value = data?.error || '无法浏览目录'
+      treeEntries.value = []
+      return
+    }
+    treeCwd.value = data.cwd != null ? String(data.cwd) : ''
+    treeEntries.value = Array.isArray(data.entries) ? data.entries : []
+    if (data.path_hint) workspaceInput.value = String(data.path_hint)
+  } catch (e) {
+    treeError.value = e?.response?.data?.detail || e?.message || '浏览目录失败'
+    treeEntries.value = []
+  } finally {
+    treeLoading.value = false
+  }
+}
+
+async function reloadTree() {
+  await openSubdir(treeCwd.value || '')
+}
 
 function armBusy() {
   busy.value = true
@@ -577,6 +719,7 @@ async function onConfirm() {
       status: 'confirmed',
       target: 'local',
       workspace: String(workspaceInput.value || workspace).trim(),
+      writeScope: [...selectedScope.value],
       repo: '',
       ref: '',
       requirement,
@@ -855,6 +998,140 @@ function onRetryFromRunning() {
 .cd-path-row .cd-input {
   flex: 1;
   min-width: 0;
+}
+
+.cd-scope {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cd-scope-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.cd-scope-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cd-btn.sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.cd-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.cd-crumb {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.cd-crumb:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cd-crumb-sep {
+  color: #94a3b8;
+}
+
+.cd-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.cd-tree-row {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.cd-tree-row:last-child {
+  border-bottom: none;
+}
+
+.cd-tree-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.cd-tree-check input[type='checkbox'] {
+  flex-shrink: 0;
+}
+
+.cd-tree-kind {
+  color: #64748b;
+  font-size: 11px;
+  min-width: 36px;
+}
+
+.cd-tree-name {
+  flex: 1;
+  text-align: left;
+  color: #1e293b;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cd-tree-name.link {
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cd-tree-name.link:hover:not(:disabled) {
+  color: #1d4ed8;
+}
+
+.cd-tree-enter {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.cd-scope-picked {
+  font-size: 12px;
+  color: #475569;
+  margin: 0;
+}
+
+.cd-scope-picked .mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  word-break: break-all;
 }
 
 .cd-label {

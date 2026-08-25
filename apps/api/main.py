@@ -14,9 +14,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from cors_config import apply_cors_warning, resolve_cors_settings
 from routes.chat import router as chat_router
 from routes.history import router as history_router
-from routes.convert import router as convert_router
+from routes.files import router as files_router
 from routes.auth import router as auth_router
 from routes.writes import router as writes_router
 from routes.ide_bridge import router as ide_bridge_router
@@ -41,7 +42,7 @@ for sub in (
     "history",
     "uploads",
     "exports",
-    "converted",
+    "file-manager",
     "writes",
     "writes/pending",
     "api_calls",
@@ -78,12 +79,12 @@ def _startup_daily_mes_profile_sync() -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[warn] daily MES profile sync not scheduled: {exc}")
 
-_cors_raw = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
-_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] or ["*"]
+_cors = resolve_cors_settings()
+apply_cors_warning(_cors)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_origins=_cors.allow_origins,
+    allow_credentials=_cors.allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -91,7 +92,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(history_router)
-app.include_router(convert_router)
+app.include_router(files_router)
 app.include_router(writes_router)
 app.include_router(ide_bridge_router)
 app.include_router(settings_router)

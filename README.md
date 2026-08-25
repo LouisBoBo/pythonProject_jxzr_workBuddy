@@ -29,7 +29,8 @@ simplified-workbuddy/          ← 仓库根（唯一维护入口）
 
 ```bash
 # 1. 依赖（首次）
-pip install -r requirements.txt
+make install                 # 按 requirements.lock.txt 可复现安装
+# 若改了顶层依赖范围：编辑 requirements.txt 后 make lock-python，再提交锁文件
 cd apps/web && npm install && cd ../..
 
 # 2. 配置
@@ -46,7 +47,14 @@ cp .env.example .env   # 填入 DEEPSEEK_API_KEY / USE_ERP 等
 
 # API 健康分析无 LLM 冒烟（日志必跑；探活需 8081+8001）
 make smoke-api-health
+
+# CI 门禁（无 LLM；与 GitHub Actions 同款）
+make install-dev            # ruff / pre-commit（可选）
+make lint                   # ruff 关键规则（E9/F63/F7/F82）
+make ci
 ```
+
+GitHub Actions：`.github/workflows/ci.yml` 在 push/PR 上跑 `make ci`（含 `make lint`，不调外部大模型）。依赖安装用 **`requirements.lock.txt`**（`make install` / `make lock-python`）。可选本地钩子：`pre-commit install`（见 `.pre-commit-config.yaml`）。暂未纳入尚不稳定的 `smoke-api-health` / `smoke-entity-phrases` 等，修绿后并入 Makefile 的 `ci` 目标即可。
 
 仅 CLI Agent：
 

@@ -30,6 +30,8 @@ Cursor 的 `~/.cursor/skills` 给编程助手用；本目录 Skills 给运行中
 
 横切强制策略（审计、拦截）请用 Middleware，见 [`DeepAgents-Middleware使用指南.md`](DeepAgents-Middleware使用指南.md)。
 
+框架选型（为何主对话用 Deep Agents、而非 DeepSeek Harness）见 [`DeepAgents与DeepSeek-Harness技术选型分析.md`](DeepAgents与DeepSeek-Harness技术选型分析.md)。
+
 ---
 
 ## 2. 本项目已接入的方式

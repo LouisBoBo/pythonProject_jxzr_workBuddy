@@ -23,10 +23,10 @@ export function friendlyCursorDevFailure(raw, opts = {}) {
       kind: 'stopped',
     }
   }
-  if (/并发已满|resource_exhausted|rate limit|配额/i.test(d)) {
+  if (/并发已满|resource_exhausted|rate limit|配额|out of usage|usage limit|Increase limits/i.test(d)) {
     return {
-      title: '写码名额已满或账号限流',
-      next: '点「重试写码」：系统会先结束旧任务再开新任务。',
+      title: 'Cursor composer 额度用尽或账号限流',
+      next: '系统会自动改用 auto 模型重试；仍失败请联系管理员提额，或在 .env 设 CURSOR_DEV_MODEL=auto。',
       userStopped: false,
       kind: 'quota',
     }

@@ -181,6 +181,7 @@ M0 基线冻结（1～2 天）
 - [x] M1-1/1-2：通用聚合模块 + `summarize_platform_data` 强制页内 caveat；可选实体 `aggregate` 声明
 - [x] M1-3：`analysis.time_field_hints` + 当日口径 `time_filter_applied` / 禁止「今天完工了 N」
 - [x] M1-4：`analyze_time_trend` 日/周分桶 + 折线；无日期列诚实失败
+- [x] **P1-03（2026-08-21）**：出图自动补「本页≠全库」caveat；服务端聚合禁止默认说成全库比例；只读 SQL 默认关不变
 - [x] M2-1：扩展 `metric_packs/pcb`（daily-output / 缺陷 Top / 报废分子分母角色）
 - [x] M2-2：江西中软 `metrics.json` 校准（日产出→设备排行；工序在制→在制品报表）
 - [x] 看板六卡对齐：K1 报表工序在制、K3 设备产量优先、顺序 K1–K5 + Lot 缺口

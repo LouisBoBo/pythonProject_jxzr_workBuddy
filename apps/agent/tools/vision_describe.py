@@ -30,13 +30,34 @@ _UI_REDESIGN_HINT_RE = re.compile(
     re.I,
 )
 
+_ANNOTATION_HINT_RE = re.compile(
+    r"红框|红圈|黄框|蓝框|绿框|框选|圈出|圈住|标注|箭头|"
+    r"框处|框里|框内|框中|去掉|删除|隐藏|移除|"
+    r"图上|图中|截图里|截图中|这个地方|这一块",
+    re.I,
+)
+
 _DEFAULT_PROMPT = (
     "请用中文描述这张截图，供同事排查与答疑。按条理写清楚：\n"
     "1) 画面类型（登录页/列表/表单/报错弹窗/终端等）\n"
     "2) 主要可见文案（标题、按钮、错误信息原文）\n"
     "3) 关键布局与控件\n"
     "4) 若有报错或异常高亮，逐条抄出\n"
-    "不要臆造图中没有的内容；控制在 800 字内。"
+    "5) **用户手绘标注（必查）**：红/黄/蓝框、圈、箭头、涂鸦指向哪一块？"
+    "写清位置（如「白卡片顶部深蓝横幅」）与框内可见文案/logo；无标注则写「无手绘标注」\n"
+    "不要臆造图中没有的内容；控制在 900 字内。"
+)
+
+_UI_ANNOTATION_PROMPT = (
+    "这是带用户标注（红框/圈/箭头等）的界面截图，用于「去掉/改掉标注区域」。"
+    "请用中文输出改码规格，优先级如下：\n"
+    "1) **标注目标（最高优先级）**：红框/圈/箭头圈住的是哪一块？"
+    "写清相对位置、颜色、高度、框内 logo/文案（原文抄出）。"
+    "若用户说去掉/删除，明确写「应删除或隐藏该区域」\n"
+    "2) 标注以外的页面结构：仅作上下文，勿当成也要大改\n"
+    "3) 关键控件与文案（标题、表单字段、主按钮）\n"
+    "禁止臆造图中没有的模块；禁止让下游再问「红框指哪」——你必须从图里读出。"
+    "控制在 1000 字内，分条书写。"
 )
 
 _UI_REPLICA_PROMPT = (
@@ -49,6 +70,7 @@ _UI_REPLICA_PROMPT = (
     "5) 图表与色块：类型（仪表盘/折线/柱状/色块底卡等）、主色倾向；"
     "明确是否为深色底、色块 KPI（禁止笼统写成「普通白卡片后台」）\n"
     "6) 叠层/装饰：半透明浮层、阴影、分割线等醒目元素\n"
+    "7) 若有红框/圈/箭头等用户标注：单独写明标注指向与框内内容\n"
     "禁止臆造截图中未出现的表格、双柱图或额外菜单。"
     "控制在 1200 字内，分条书写。"
 )
@@ -70,6 +92,12 @@ def is_ui_replica_hint(text: str | None) -> bool:
     ):
         return False
     return bool(_UI_REPLICA_HINT_RE.search(t))
+
+
+def is_annotation_edit_hint(text: str | None) -> bool:
+    """用户是否在用红框/标注指出局部改动（去掉/改掉该区域）。"""
+    return bool(_ANNOTATION_HINT_RE.search(str(text or "")))
+
 
 def _api_key() -> str:
     try:
@@ -180,6 +208,9 @@ def _mime_for(path: Path) -> str:
 
 
 def _prompt_for_hint(user_hint: str = "") -> str:
+    # 红框/标注局部改优先于整页复刻规格，避免模型只抄表单忽略框选目标
+    if is_annotation_edit_hint(user_hint):
+        return _UI_ANNOTATION_PROMPT
     if is_ui_replica_hint(user_hint):
         return _UI_REPLICA_PROMPT
     return _DEFAULT_PROMPT
@@ -274,7 +305,14 @@ def build_image_context_block(
         parts.append(f"### 截图 {i}（{name}）\n{desc}")
     body = "\n\n".join(parts)
     ui_note = ""
-    if is_ui_replica_hint(user_hint):
+    if is_annotation_edit_hint(user_hint):
+        ui_note = (
+            "\n\n【给写码 Agent】用户已用红框/标注指出改动目标："
+            "以「标注目标」为准直接改码；"
+            "**禁止**再问「红框指哪一处」或出勾选卡让用户确认标注位置；"
+            "禁止改动标注以外的大块布局，除非用户明文要求。"
+        )
+    elif is_ui_replica_hint(user_hint):
         ui_note = (
             "\n\n【给写码 Agent】以上是视觉规格：实现时以布局/图表类型/色块为准；"
             "禁止把彩色仪表盘改成通用 Element 白卡片 KPI；"

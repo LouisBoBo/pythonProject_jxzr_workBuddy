@@ -1,6 +1,9 @@
 """
 简化版 WorkBuddy — Deep Agent 主程序。
 
+架构锁定（选型落地 P0）：主 harness = Deep Agents；写码执行旁路 Cursor；
+勿用 DeepSeek Harness 替换本模块。见 docs/Agent开发/DeepAgents与DeepSeek-Harness技术选型分析.md。
+
 基于 Deep Agents harness：
 - Tools：平台查询 / 文件导入导出
 - Skills：按需加载的领域剧本（apps/agent/skills/）
@@ -137,8 +140,11 @@ def build_model():
         raise RuntimeError(
             "请设置对话模型 API Key（可在「系统配置」填写，或配置 LLM_API_KEY / DEEPSEEK_API_KEY）"
         )
+    from llm_model_guard import assert_llm_model_allowed
+
+    model_name = assert_llm_model_allowed(Config.MODEL_NAME)
     kwargs: dict = {
-        "model": Config.MODEL_NAME,
+        "model": model_name,
         "api_key": api_key,
         "timeout": 120,
         "max_retries": 3,

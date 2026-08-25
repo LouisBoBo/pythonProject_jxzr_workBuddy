@@ -145,7 +145,12 @@ def _llm_patch(
         ).rstrip("/")
     if not api_key:
         return {"ok": False, "error": "无可用 LLM Key，跳过补丁通道"}
-    model = model_name or "deepseek-chat"
+    try:
+        from llm_model_guard import assert_llm_model_allowed
+
+        model = assert_llm_model_allowed(model_name or "deepseek-chat")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     if not base:
         base = "https://api.openai.com/v1"
     if not base.endswith("/v1"):

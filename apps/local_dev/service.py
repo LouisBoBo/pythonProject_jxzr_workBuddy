@@ -123,7 +123,9 @@ def _load_llm_client():
     if base:
         kwargs["base_url"] = base
     client = OpenAI(**kwargs)
-    model = (Config.MODEL_NAME or "deepseek-chat").strip()
+    from llm_model_guard import assert_llm_model_allowed
+
+    model = assert_llm_model_allowed(Config.MODEL_NAME or "deepseek-chat")
     return client, model
 
 
@@ -393,10 +395,34 @@ def run_job(
 
         if use_cursor:
             before = snapshot_sandbox(sandbox_path)
+            requirement_for_agent = requirement
+            cur_job = job_store.get_job(data_dir, job_id) or job
+            shot_paths = [
+                str(p).strip() for p in (cur_job.get("file_paths") or []) if str(p).strip()
+            ]
+            if shot_paths:
+                try:
+                    agent_root = Path(__file__).resolve().parents[1] / "agent"
+                    if str(agent_root) not in sys.path:
+                        sys.path.insert(0, str(agent_root))
+                    from tools.vision_describe import append_image_context  # type: ignore
+
+                    step("截图理解（智谱视觉）…", sid="vision")
+                    requirement_for_agent = append_image_context(
+                        requirement_for_agent, shot_paths
+                    )
+                    step("截图理解已注入", sid="vision", state="done")
+                except Exception as vis_exc:  # noqa: BLE001
+                    step(
+                        f"截图理解跳过（{type(vis_exc).__name__}）",
+                        sid="vision",
+                        state="done",
+                    )
             prompt = build_cursor_local_prompt(
-                requirement=requirement,
+                requirement=requirement_for_agent,
                 workspace_hint=str(target),
                 empty_target=empty_target,
+                write_scope=cur_job.get("write_scope") or job.get("write_scope") or [],
             )
             step("Cursor 在沙箱内改码…", sid="agent-loop")
             cre = run_cursor_local_agent(
@@ -561,8 +587,97 @@ def run_job(
             raise RuntimeError("任务已取消")
 
         step(f"同步 {len(changed)} 个文件到目标目录…", sid="sync")
-        synced = sync_changed_to_target(sandbox_path, target, changed, cfg=cfg)
-        step(f"已同步 {len(synced)} 个文件", sid="sync", state="done")
+        from local_dev.path_scope import partition_by_scope
+
+        write_scope = job.get("write_scope") or []
+        # 刷新 job 上的 scope（创建时写入）
+        fresh = job_store.get_job(data_dir, job_id) or job
+        write_scope = fresh.get("write_scope") or write_scope
+        in_scope, out_scope = partition_by_scope(changed, write_scope)
+
+        if not in_scope and out_scope:
+            # 全部越界：必须等用户确认，否则不同步
+            step(
+                f"变更均在选定范围外（{len(out_scope)}），等待确认…",
+                sid="sync",
+            )
+        elif out_scope:
+            step(
+                f"先同步范围内 {len(in_scope)} 个；另有 {len(out_scope)} 个待确认",
+                sid="sync",
+            )
+
+        synced: list[str] = []
+        if in_scope:
+            synced = sync_changed_to_target(sandbox_path, target, in_scope, cfg=cfg)
+            step(f"已同步 {len(synced)} 个文件", sid="sync", state="done")
+        elif not out_scope:
+            raise RuntimeError("没有可同步的有效文件")
+
+        if out_scope:
+            job_store.update_job(
+                data_dir,
+                job_id,
+                status="awaiting_scope",
+                deferred_files=out_scope,
+                synced_files=synced,
+                scope_decision=None,
+                changed_files=changed,
+            )
+            _emit(
+                sink,
+                {
+                    "type": "scope_confirm",
+                    "message": "写码改动了选定范围外的文件，是否一并同步到本机？",
+                    "files": out_scope,
+                    "synced_files": synced,
+                    "write_scope": write_scope,
+                    "job_id": job_id,
+                },
+            )
+            step("等待确认范围外文件…", sid="scope-wait")
+            import time as _time
+
+            deadline = _time.time() + 600
+            decision = None
+            while _time.time() < deadline:
+                if job_store.is_cancel_requested(data_dir, job_id):
+                    raise RuntimeError("任务已取消")
+                cur = job_store.get_job(data_dir, job_id) or {}
+                decision = cur.get("scope_decision")
+                if decision in {"include", "skip"}:
+                    break
+                _time.sleep(0.4)
+            timed_out = decision not in {"include", "skip"}
+            if timed_out:
+                decision = "skip"
+
+            if decision == "include":
+                extra = sync_changed_to_target(sandbox_path, target, out_scope, cfg=cfg)
+                synced = list(dict.fromkeys([*synced, *extra]))
+                step(f"已追加同步范围外 {len(extra)} 个文件", sid="scope-wait", state="done")
+            else:
+                step(
+                    "范围外确认超时，已跳过范围外文件"
+                    if timed_out
+                    else "已跳过范围外文件",
+                    sid="scope-wait",
+                    state="done",
+                )
+                if not synced:
+                    raise RuntimeError(
+                        "变更均在选定范围外且已跳过同步，目标目录未改动"
+                    )
+
+            job_store.update_job(
+                data_dir,
+                job_id,
+                status="running",
+                deferred_files=[] if decision == "include" else out_scope,
+                synced_files=synced,
+            )
+        else:
+            job_store.update_job(data_dir, job_id, synced_files=synced)
 
         gate_result: dict[str, Any] = {"skipped": True, "actions": []}
         if looks_like_data_ui_change(requirement):
@@ -647,6 +762,176 @@ def run_job(
                 "notes": ["自动查数异常已捕获，写码结果不受影响"],
             }
 
+        # P1：审码门禁 → 人确认 → 工作分支 commit（不经模型）
+        commit_gate: dict[str, Any] = {"skipped": True}
+        commit_result: dict[str, Any] = {"skipped": True}
+        commit_decision: str | None = None
+        if cfg.commit_gate_enabled:
+            from local_dev.commit_gate import run_commit_review_gate
+            from local_dev.git_commit import (
+                draft_chinese_commit_message,
+                inspect_git_repo,
+                resolve_work_branch,
+                validate_chinese_commit_message,
+            )
+
+            step("审码门禁：检查本轮同步文件…", sid="commit-gate")
+            try:
+                commit_gate = run_commit_review_gate(
+                    target,
+                    synced,
+                    allow_blocked_override=cfg.commit_allow_blocked,
+                    use_skill_review=cfg.commit_use_skill_review,
+                    use_ide_review=cfg.commit_use_ide_review,
+                )
+            except Exception as gate_exc:  # noqa: BLE001
+                commit_gate = {
+                    "ok": False,
+                    "summary": f"门禁异常：{type(gate_exc).__name__}",
+                    "findings": [],
+                    "blocking_count": 0,
+                    "warning_count": 0,
+                    "can_commit": False,
+                    "error": str(gate_exc),
+                }
+            git_info = inspect_git_repo(target)
+            work_branch = resolve_work_branch(
+                username=str(job.get("username") or ""),
+                user_id=str(job.get("user_id") or ""),
+            )
+            can_commit = bool(commit_gate.get("can_commit")) and bool(git_info.get("is_git"))
+            suggested = draft_chinese_commit_message(
+                user_message=str(requirement or ""),
+                files=synced,
+            )
+            commit_gate = {
+                **commit_gate,
+                "git": git_info,
+                "work_branch": work_branch,
+                "can_commit": can_commit,
+                "synced_files": synced,
+                "suggested_commit_message": suggested,
+            }
+            step(str(commit_gate.get("summary") or "审码门禁完成"), sid="commit-gate", state="done")
+
+            job_store.update_job(
+                data_dir,
+                job_id,
+                status="awaiting_commit",
+                commit_decision=None,
+                commit_gate=commit_gate,
+                synced_files=synced,
+                preview_url=preview_url or None,
+                preview=preview,
+            )
+            _emit(
+                sink,
+                {
+                    "type": "commit_gate",
+                    "job_id": job_id,
+                    "summary": commit_gate.get("summary"),
+                    "findings": commit_gate.get("findings") or [],
+                    "blocking_count": int(commit_gate.get("blocking_count") or 0),
+                    "warning_count": int(commit_gate.get("warning_count") or 0),
+                    "can_commit": can_commit,
+                    "git": git_info,
+                    "work_branch": work_branch,
+                    "synced_files": synced,
+                    "workspace": str(target),
+                    "preview_url": preview_url,
+                    "suggested_commit_message": suggested,
+                },
+            )
+            step("等待确认是否提交到工作分支…", sid="commit-wait")
+            import time as _time
+
+            deadline = _time.time() + int(cfg.commit_gate_timeout_sec)
+            decision = None
+            while _time.time() < deadline:
+                if job_store.is_cancel_requested(data_dir, job_id):
+                    raise RuntimeError("任务已取消")
+                cur = job_store.get_job(data_dir, job_id) or {}
+                decision = cur.get("commit_decision")
+                if decision in {"commit", "skip"}:
+                    break
+                _time.sleep(0.4)
+            if decision not in {"commit", "skip"}:
+                decision = "skip"
+                step("提交确认超时，已跳过提交", sid="commit-wait", state="done")
+            elif decision == "skip":
+                step("已跳过 git 提交", sid="commit-wait", state="done")
+            else:
+                step("正在提交到工作分支…", sid="commit-wait")
+                if not can_commit:
+                    commit_result = {
+                        "ok": False,
+                        "skipped": True,
+                        "error": "门禁未通过或非 git 仓，已拒绝提交",
+                    }
+                    step("门禁未通过，未执行提交", sid="commit-wait", state="done")
+                else:
+                    from local_dev.git_commit import commit_synced_files
+
+                    cur = job_store.get_job(data_dir, job_id) or {}
+                    msg = str(cur.get("commit_message") or "").strip()
+                    ok_msg, msg_err = validate_chinese_commit_message(msg)
+                    if not ok_msg:
+                        # 回落建议说明（写码任务确认卡应已传中文；兜底避免英文占位）
+                        msg = draft_chinese_commit_message(
+                            user_message=str(requirement or ""),
+                            files=synced,
+                        )
+                        ok_msg, msg_err = validate_chinese_commit_message(msg)
+                    if not ok_msg:
+                        commit_result = {
+                            "ok": False,
+                            "skipped": False,
+                            "error": msg_err,
+                        }
+                        step(msg_err, sid="commit-wait", state="done")
+                    else:
+                        try:
+                            commit_result = commit_synced_files(
+                                target,
+                                synced,
+                                message=msg,
+                                work_branch=work_branch,
+                                push=cfg.commit_push,
+                            )
+                        except Exception as cexc:  # noqa: BLE001
+                            commit_result = {
+                                "ok": False,
+                                "skipped": False,
+                                "error": f"{type(cexc).__name__}: {cexc}",
+                            }
+                        if commit_result.get("ok") and not commit_result.get("skipped"):
+                            step(
+                                f"已提交 {commit_result.get('commit') or ''} @ {work_branch}",
+                                sid="commit-wait",
+                                state="done",
+                            )
+                        elif commit_result.get("skipped"):
+                            step(
+                                commit_result.get("message")
+                                or commit_result.get("error")
+                                or "已跳过提交",
+                                sid="commit-wait",
+                                state="done",
+                            )
+                        else:
+                            step(
+                                f"提交失败：{commit_result.get('error') or '未知'}",
+                                sid="commit-wait",
+                                state="done",
+                            )
+            commit_decision = decision
+            job_store.update_job(
+                data_dir,
+                job_id,
+                status="running",
+                commit_result=commit_result,
+            )
+
         files_md = "\n".join(f"- `{p}`" for p in synced[:80])
         if preview_url:
             preview_md = (
@@ -662,6 +947,18 @@ def run_job(
         gate_block = f"{gate_md}\n\n" if gate_md else ""
         profile_sync_md = format_profile_sync_summary(profile_sync)
         post_query_md = format_post_dev_query_summary(post_query)
+        commit_md = ""
+        if not commit_gate.get("skipped"):
+            commit_md = f"### 审码与提交\n\n{commit_gate.get('summary') or ''}\n\n"
+            if commit_decision == "skip":
+                commit_md += "已跳过 git 提交（文件仍在目标目录）。\n\n"
+            elif commit_result.get("ok") and commit_result.get("commit"):
+                commit_md += (
+                    f"已提交到工作分支 `{commit_result.get('branch')}`："
+                    f"`{commit_result.get('commit')}`\n\n"
+                )
+            elif commit_result.get("error"):
+                commit_md += f"提交未成功：{commit_result.get('error')}\n\n"
         accept_block = ""
         if looks_like_data_ui_change(requirement):
             try:
@@ -692,6 +989,7 @@ def run_job(
             f"{gate_block}"
             f"{profile_sync_md}"
             f"{post_query_md}"
+            f"{commit_md}"
             f"{accept_block}"
             f"沙箱 id：`{job_id}`\n\n"
             f"{'本机写码：Cursor SDK Local Agent（不经 GitHub Cloud / 不经 DeepSeek 工具环）。' if use_cursor else '本机写码：LLM 工具环（应急模式 LOCAL_DEV_AGENT=llm）。'}\n"
@@ -707,6 +1005,8 @@ def run_job(
             synced_files=synced,
             preview_url=preview_url or None,
             preview=preview,
+            commit_gate=commit_gate if not commit_gate.get("skipped") else None,
+            commit_result=commit_result if not commit_result.get("skipped") or commit_result.get("error") else commit_result,
             error=None,
         )
         # 取消竞态：落盘可能已完成，但任务状态不得被改成成功
@@ -727,6 +1027,8 @@ def run_job(
                 "channel": "local_sandbox",
                 "preview_url": preview_url,
                 "preview": preview,
+                "commit_gate": commit_gate if not commit_gate.get("skipped") else None,
+                "commit_result": commit_result,
             },
         )
         return updated or job_store.get_job(data_dir, job_id) or job

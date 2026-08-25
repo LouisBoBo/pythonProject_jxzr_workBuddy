@@ -148,12 +148,23 @@ function itemLabel(item) {
 }
 
 function statusLabel(item) {
-  if (item.phase === 'generating') return '生成中'
-  if (item.phase === 'waiting') return '整理中'
+  const elapsed =
+    item?.elapsedSec != null && Number.isFinite(Number(item.elapsedSec))
+      ? `${Math.max(0, Math.round(Number(item.elapsedSec)))}s`
+      : ''
+  const durMs = item?.durationMs
+  const dur =
+    durMs != null && Number.isFinite(Number(durMs))
+      ? Number(durMs) < 1000
+        ? `${Math.max(1, Math.round(Number(durMs)))}ms`
+        : `${(Number(durMs) / 1000).toFixed(Number(durMs) < 10000 ? 1 : 0)}s`
+      : ''
+  if (item.phase === 'generating') return elapsed ? `生成中 ${elapsed}` : '生成中'
+  if (item.phase === 'waiting') return elapsed ? `整理中 ${elapsed}` : '整理中'
   if (item.state === 'waiting') return '待确认'
-  if (item.state === 'running') return '执行中'
-  if (item.state === 'error' || item.ok === false) return '失败'
-  if (item.state === 'done' || item.phase === 'end') return '完成'
+  if (item.state === 'running') return elapsed ? `执行中 ${elapsed}` : '执行中'
+  if (item.state === 'error' || item.ok === false) return dur ? `失败 · ${dur}` : '失败'
+  if (item.state === 'done' || item.phase === 'end') return dur ? `完成 · ${dur}` : '完成'
   if (item.type === 'status') return '状态'
   return '步骤'
 }

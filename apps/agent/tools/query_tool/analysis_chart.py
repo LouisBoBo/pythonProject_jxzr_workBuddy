@@ -620,6 +620,14 @@ def render_analysis_chart(
     caveats.extend(built.get("caveats") or [])
     if source_note.strip():
         caveats.append(source_note.strip()[:200])
+    # P1-03：出图必须带页内/非全库口径，避免比例被听成全库
+    try:
+        from tools.query_tool.aggregate import CAVEAT_PAGE_SCOPE
+    except Exception:  # noqa: BLE001
+        CAVEAT_PAGE_SCOPE = "占比仅覆盖本次返回记录，勿当成全库分布。"
+    scope_blob = " ".join(str(c) for c in caveats) + " " + (source_note or "")
+    if not any(k in scope_blob for k in ("本页", "全库", "非全库", "COUNT(*)")):
+        caveats.insert(0, CAVEAT_PAGE_SCOPE)
 
     option = built["option"]
     mcp_meta: dict[str, Any] = {}
@@ -665,10 +673,10 @@ def render_analysis_chart(
         "markdown_fence": fence,
         "reply_hint": (
             "前端会通过工具结果自动出图。"
-            "回复只写：结论（各组条数/占比）+ 口径/caveats；"
+            "回复只写：结论（各组条数/占比）+ 口径/caveats（须含本页≠全库）；"
             "**不要**再贴 markdown_fence / :::analysis_chart，**不要**再贴一整份与图相同的分组表（避免数据重复）。"
             "**不要**询问用户用柱状/折线/饼图；类型已按意图自动选定。"
-            "禁止编造未出现在 categories/values 中的数。"
+            "禁止编造未出现在 categories/values 中的数；禁止把页内占比说成全库。"
         ),
         **mcp_meta,
     }

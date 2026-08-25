@@ -1,0 +1,39 @@
+# 无 LLM 冒烟 / 单测（不调外部大模型）
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-no-llm:
+    name: make ci (no LLM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.lock.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run CI gate
+        run: make ci
+        env:
+          # 避免误连本机/生产；冒烟自带临时 DATA_DIR 的会覆盖
+          DATA_DIR: ${{ github.workspace }}/data
+          AUTH_REQUIRED: "true"

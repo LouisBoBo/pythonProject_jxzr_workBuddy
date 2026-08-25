@@ -181,27 +181,68 @@ def _erp_login(username: str, password: str, enterprise_code: str = "") -> dict[
     )
 
 
+def _b64url_json(segment: str) -> dict[str, Any] | None:
+    try:
+        import base64
+
+        pad = segment + "=" * (-len(segment) % 4)
+        data = json.loads(base64.urlsafe_b64decode(pad.encode("utf-8")))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _jwt_alg(token: str) -> str | None:
+    """读取 JWT header.alg（不验签）。无法解析则 None。"""
+    if not isinstance(token, str) or token.count(".") != 2:
+        return None
+    header = _b64url_json(token.split(".")[0])
+    if not header:
+        return None
+    alg = header.get("alg")
+    return str(alg) if alg is not None else None
+
+
 def _identity_from_login_result(result: dict[str, Any], fallback_username: str) -> tuple[Any, str]:
+    """从上游登录响应提取 user_id / username。
+
+    安全边界（勿把本逻辑抄成会话验签）：
+    - WorkBuddy **会话**只认 ``session_jwt``（HS256，拒绝 alg=none）。
+    - 此处仅在上游 **HTTP 登录已成功** 后，补全身份字段。
+    - ``alg:none`` 无签名 JWT：**仅当**响应标明 ``sandbox: true``（探活沙箱）才可读 payload；
+      否则忽略，避免把「沙箱假 token」模式扩到真实 PLATFORM。
+    - 带签名的上游 JWT：仍不验签（信任已发生在登录 HTTP），只读 sub/用户名字段。
+    """
     user_id = result.get("user_id")
     if user_id is None:
         user_id = result.get("id")
     username = _username_from_payload(result) or fallback_username
     token = result.get("access_token") or result.get("token") or ""
-    if user_id is None and isinstance(token, str) and token.count(".") == 2:
-        # 仅作身份映射：上游登录已成功，不校验其 JWT 签名
-        try:
-            import base64
+    sandbox_login = result.get("sandbox") is True
 
-            payload_b64 = token.split(".")[1]
-            payload_b64 += "=" * (-len(payload_b64) % 4)
-            data = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")))
+    if user_id is None and isinstance(token, str) and token.count(".") == 2:
+        alg = (_jwt_alg(token) or "").strip().lower()
+        if alg in ("", "none"):
+            if not sandbox_login:
+                logger.warning(
+                    "上游登录返回 alg=none/空 alg 的 JWT，且非 sandbox 响应；"
+                    "忽略 token payload（防误用探活沙箱模式）。请让登录接口直接返回 user_id。"
+                )
+            else:
+                data = _b64url_json(token.split(".")[1])
+                if isinstance(data, dict):
+                    if user_id is None:
+                        user_id = data.get("sub")
+                    if not _username_from_payload({"username": username}) and _username_from_payload(data):
+                        username = _username_from_payload(data) or username
+        else:
+            # 真实 ERP 常见：登录成功后只给 access_token，身份在 JWT claims
+            data = _b64url_json(token.split(".")[1])
             if isinstance(data, dict):
                 if user_id is None:
                     user_id = data.get("sub")
                 if not _username_from_payload({"username": username}) and _username_from_payload(data):
                     username = _username_from_payload(data) or username
-        except Exception:
-            pass
     if user_id is None:
         user_id = fallback_username
     return user_id, username

@@ -2,6 +2,7 @@
 配置中心：统一管理 LLM 和平台连接配置。
 
 环境变量从仓库根目录 .env 加载（monorepo 约定）。
+旋钮分层与 settings 覆盖：docs/桌面与部署/配置旋钮分层与接手指南.md
 """
 import os
 import platform

@@ -54,7 +54,11 @@
               <span v-else-if="f.kind !== 'image'" class="msg-attach-file">{{ f.name }}</span>
             </template>
           </div>
-          <div class="msg-body" v-if="msg.content" v-html="renderMarkdown(msg.content)"></div>
+          <div
+            class="msg-body"
+            v-if="msg.content && !msg.localDevCommitGate"
+            v-html="renderMarkdown(msg.content)"
+          ></div>
           <AnalysisDashboardCard
             v-for="(db, di) in (msg.dashboards || [])"
             :key="db.id || ('dash-' + di)"
@@ -109,6 +113,17 @@
             v-if="msg.mergeGuide"
             :guide="msg.mergeGuide"
           />
+          <LocalDevCommitGateCard
+            v-if="msg.localDevCommitGate"
+            :card="msg.localDevCommitGate"
+            @resolved="(payload) => onLocalDevCommitResolved(msg, payload)"
+          />
+          <!-- 提交结果跟在确认卡下方，避免被卡挡住要上滑才看得见 -->
+          <div
+            class="msg-body"
+            v-if="msg.content && msg.localDevCommitGate"
+            v-html="renderMarkdown(msg.content)"
+          ></div>
           <CodingPlanCard
             v-if="msg.codingPlan?.length && !msg.cursorDevPick"
             :steps="msg.codingPlan"
@@ -118,7 +133,7 @@
             :card="msg.intentClarify"
             @resolved="(payload) => onScreenshotIntentResolved(msg, payload)"
           />
-          <div class="msg-actions" v-if="msg.content || msg.files?.length || (msg.confirms || []).length || msg.idePick || msg.gitPick || msg.codeReviewPick || msg.cursorDevPick || msg.cursorDevOptions || msg.cursorDevAnchor || msg.mergeGuide || msg.intentClarify">
+          <div class="msg-actions" v-if="msg.content || msg.files?.length || (msg.confirms || []).length || msg.idePick || msg.gitPick || msg.codeReviewPick || msg.cursorDevPick || msg.cursorDevOptions || msg.cursorDevAnchor || msg.mergeGuide || msg.intentClarify || msg.localDevCommitGate">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -329,7 +344,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob, fetchLocalDevStatus, fetchLocalWorkspacePref, saveLocalWorkspacePref, createLocalDevJob, streamLocalDevJob, cancelLocalDevJob, checkLocalDevWorkspace } from '../api.js'
+import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob, fetchLocalDevStatus, fetchLocalWorkspacePref, saveLocalWorkspacePref, createLocalDevJob, streamLocalDevJob, cancelLocalDevJob, checkLocalDevWorkspace, confirmLocalDevScope, prepareLocalDevCommitBatch, startLocalDevCommitBatch, getLocalDevJob } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 import AnalysisChartCard from '../components/AnalysisChartCard.vue'
@@ -339,6 +354,7 @@ import GitRepoPickCard from '../components/GitRepoPickCard.vue'
 import CodeReviewSourcePickCard from '../components/CodeReviewSourcePickCard.vue'
 import CursorDevRepoPickCard from '../components/CursorDevRepoPickCard.vue'
 import CursorDevMergeGuideCard from '../components/CursorDevMergeGuideCard.vue'
+import LocalDevCommitGateCard from '../components/LocalDevCommitGateCard.vue'
 import CursorDevRepoAnchorCard from '../components/CursorDevRepoAnchorCard.vue'
 import CursorDevOptionsCard from '../components/CursorDevOptionsCard.vue'
 import CodingPlanCard from '../components/CodingPlanCard.vue'
@@ -353,6 +369,44 @@ import {
   inferChannelFromEvent,
   pickPatchFromJobStatus,
 } from '../cursorDevUx.js'
+import {
+  buildScreenshotIntentClarifyCard,
+  classifyScreenshotIntent,
+  extractGitRepoUrl,
+  hasCodeDevActionWords,
+  hasImageAttachments,
+  hasPastedSourceFence,
+  isBareGitRepoUrlMessage,
+  isVagueCodeDevIntent,
+  laneLabel,
+  looksLikeCodeDevIntent,
+  looksLikeCodeReview,
+  looksLikeGitRepoReview,
+  looksLikeGuidedShotEditIntent,
+  looksLikeLocalCommitBatch,
+  looksLikeMesBizIntent,
+  looksLikePasteCodeAnalyze,
+  looksLikeRawPastedCode,
+  looksLikeScreenshotExplainIntent,
+  looksLikeScreenshotUiRedesign,
+  looksLikeVisualMatchIntent,
+  pasteCodeStreamOpts,
+} from '../chatIntent.js'
+import {
+  formatCursorDevAdminGuide,
+  hideCursorDevMachineBlocks,
+  hideCursorDevPropose,
+  parseCursorDevMachineBlocks as parseCursorDevMachineBlocksCore,
+  stripCursorDevMergeBoilerplate,
+} from '../chatCursorDevParse.js'
+import {
+  mergeUniqueCharts,
+  parseAnalysisChartFences,
+} from '../chatAnalysisChartParse.js'
+import {
+  looksLikeCursorDevFollowup,
+  planCursorDevTurn,
+} from '../chatCursorDevPlan.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -1163,6 +1217,7 @@ function persistableMessages() {
     ...(m.cursorDevAnchor ? { cursorDevAnchor: m.cursorDevAnchor } : {}),
     ...(m.mergeGuide ? { mergeGuide: m.mergeGuide } : {}),
     ...(m.intentClarify ? { intentClarify: m.intentClarify } : {}),
+    ...(m.localDevCommitGate ? { localDevCommitGate: m.localDevCommitGate } : {}),
     ...(Array.isArray(m.codingPlan) && m.codingPlan.length ? { codingPlan: m.codingPlan } : {}),
     // 截图/附件：保留 path 供视觉与写码；预览只留短 dataURL（过大则丢，靠 path）
     ...(Array.isArray(m.files) && m.files.length
@@ -1173,7 +1228,8 @@ function persistableMessages() {
               id: f?.id,
               name: f?.name,
               status: f?.status || 'done',
-              path: f?.path || '',
+              path: f?.path || f?.saved_name || '',
+              saved_name: f?.saved_name || f?.path || '',
               kind: f?.kind || 'file',
               size: f?.size,
               previewUrl: f?.previewUrl || '',
@@ -1314,6 +1370,7 @@ async function loadSession(id) {
         ...(m.cursorDevAnchor ? { cursorDevAnchor: { ...m.cursorDevAnchor } } : {}),
         ...(m.mergeGuide ? { mergeGuide: { ...m.mergeGuide } } : {}),
         ...(m.intentClarify ? { intentClarify: { ...m.intentClarify } } : {}),
+        ...(m.localDevCommitGate ? { localDevCommitGate: { ...m.localDevCommitGate } } : {}),
         ...(Array.isArray(m.codingPlan) && m.codingPlan.length
           ? { codingPlan: m.codingPlan.map((s) => ({ ...s })) }
           : {}),
@@ -1444,332 +1501,7 @@ async function initFromRoute() {
 // 会话切换由 App.vue 的 router-view :key="thread" 整页重挂载；
 // 此处不再 watch thread，避免旧实例异步 loadSession 与新实例抢流。
 
-function looksLikeCodeReview(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  // 审核意图：明确「审/检查代码」；与写码（改界面/加功能）互斥
-  return /审核代码|代码审核|代码审查|审查代码|检查代码|code\s*review|review\s+(this\s+)?code|帮我审(一下|下)?(代码|工程|项目)/i.test(
-    t
-  )
-}
-
-/** 消息里已有粘贴源码围栏：走贴码车道，不弹 Git/IDE/写码选卡 */
-function hasPastedSourceFence(text) {
-  const s = String(text || '')
-  // 允许 ```lang 后换行或同行；门槛降到 20 字，避免短片段漏检
-  if (/```[\w.+-]*[ \t]*\r?\n[\s\S]{20,}?```/.test(s)) return true
-  if (/```[\w.+-]*[ \t]+[\s\S]{20,}?```/.test(s)) return true
-  if (/~~~[\w.+-]*[ \t]*\r?\n[\s\S]{20,}?~~~/.test(s)) return true
-  return false
-}
-
-/** 无围栏时：多行 + 源码形态（防「先选仓库」误抢贴码） */
-function looksLikeRawPastedCode(text) {
-  const lines = String(text || '').split(/\r?\n/)
-  if (lines.length < 3) return false
-  let hits = 0
-  for (const line of lines) {
-    if (
-      /^\s*(def |class |function |const |let |var |import |from |return |if |for |while |public |private |protected |\/\/|#include|package )/i.test(
-        line,
-      ) ||
-      /[{};]\s*$/.test(line) ||
-      /^\s*\/\*|\*\/\s*$/.test(line)
-    ) {
-      hits += 1
-    }
-  }
-  return hits >= 2
-}
-
-/** 贴码分析意图：粘贴源码问问题/怎么改（与写码、仓审核对等，互不抢） */
-function looksLikePasteCodeAnalyze(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  // 明确仓审核且几乎无贴码 → 不走贴码
-  if (looksLikeGitRepoReview(t) && !hasPastedSourceFence(t) && !looksLikeRawPastedCode(t)) {
-    return false
-  }
-  const ask =
-    /帮我看(看|下|一下)?|看看这段|这段(代码|程序)|有没有(什么)?问题|哪里有问题|有啥问题|怎么改|分析(一下|下)?这段|这段.{0,8}(问题|bug)/i.test(
-      t,
-    )
-  if (hasPastedSourceFence(t)) {
-    if (ask) return true
-    // 有围栏、无写码动词 → 默认贴码分析
-    if (!hasCodeDevActionWords(t)) return true
-  }
-  if (ask && looksLikeRawPastedCode(t)) return true
-  return false
-}
-
-function pasteCodeStreamOpts() {
-  return {
-    force: true,
-    workbuddyLane: 'paste_code',
-    cursorDevLane: false,
-  }
-}
-
-/** 从自然语言中抽出干净的公开 HTTPS 仓库地址（去掉尾部中文/标点） */
-function extractGitRepoUrl(text) {
-  const t = String(text || '')
-  // 仅匹配 URL 安全字符，避免「.git仓库代码」一类粘连
-  const hostRe =
-    /https:\/\/(?:github\.com|gitlab\.com|gitee\.com|bitbucket\.org)\/[A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+(?:\.git)?/i
-  const genericRe = /https:\/\/[A-Za-z0-9.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.git\b/i
-  const m = t.match(hostRe) || t.match(genericRe)
-  if (!m) return ''
-  let url = String(m[0]).replace(/\/+$/, '')
-  const gitIdx = url.toLowerCase().indexOf('.git')
-  if (gitIdx >= 0) url = url.slice(0, gitIdx + 4)
-  return url
-}
-
-/** 写码动词：改/写/加功能界面等（不含审核）。允许中间夹仓库 URL。 */
-function hasCodeDevActionWords(text) {
-  const t = String(text || '')
-  // 勿用 \\b：中文后接空格在 JS 里不是 word boundary，会导致「改 https…登录页」漏判
-  const action =
-    /(写代码|改代码|开发功能|帮我写|生成代码|开\s*PR|pull\s*request|写|改|开发|实现|新增|增加|添加|加入|加一个|加个|做一?个|做成|改成|改为|照着|仿照|参考|加上)/i.test(
-      t,
-    )
-  const target =
-    /(代码|功能|界面|页面|首页|主页|登录|模块|接口|下拉|输入|选择框|按钮|表单|字段|侧边栏|菜单|导航|布局|样式|风格|主题|仪表盘|看板|UI)/i.test(
-      t,
-    )
-  if (action && target) return true
-  return /(登录页|页面|界面|表单|侧边栏|菜单|导航|布局).{0,24}(增加|加入|添加|加一个|加个|改成|改为|做成|照着|仿照|加上|改)/i.test(
-    t,
-  )
-}
-
-/** 截图 + 视觉对齐/按图改界面 → 明确写码（勿当普通闲聊） */
-function looksLikeScreenshotUiRedesign(text, files = []) {
-  const hasImg = (files || []).some(
-    (f) => f?.kind === 'image' || /\.(png|jpe?g|webp|gif)$/i.test(String(f?.name || f?.path || '')),
-  )
-  if (!hasImg) return false
-  const t = String(text || '').trim()
-  if (!t) return false
-  return /(改成这种|改为这种|做成这种|照着|仿照|按这个|按截图|1\s*:\s*1|1：1|复刻|界面效果|像素级|高还原|跟(?:截图|这个|图)一样|和(?:截图|这个|图)一样|做成这样|调成这种|按这个效果|设计稿|效果图|按图|照图|参考.{0,8}(图|截图|界面|设计稿)|改成.{0,12}(侧边栏|菜单|导航|布局|风格|样式|仪表盘|首页|登录)|这种.{0,8}(侧边栏|菜单|导航|布局|风格)|截图里.{0,12}(改|调|修)|按截图.{0,8}(改|调|修)|侧边栏菜单)/i.test(
-    t,
-  )
-}
-
-/** 效果要跟截图一样（话术不限于「1:1」；排除「不要复刻」） */
-function looksLikeVisualMatchIntent(text) {
-  const t = String(text || '')
-  if (/(?:不(?:要|必|用)?|别|非|禁止|勿).{0,6}复刻/.test(t) && !/(1\s*:\s*1|1：1|改成这种|做成这种|跟(?:截图|图)一样)/i.test(t)) {
-    return false
-  }
-  return /(1\s*:\s*1|1：1|按截图复刻|像素级|真正\s*1\s*:\s*1|(?:照着|仿照).{0,8}(?:做|改|还原)|改成这种|做成这种|改为这种|按这个界面|复刻|跟(?:着)?(?:截图|这个|图)一样|和(?:截图|这个|图里|图上)一样|做成图里|改成图上|做成这样|调成这种|长这样|按这个效果|效果跟.{0,10}一样|按图(?:还原|实现|做)|照图|还原成|设计稿|效果图|(?:按|参考)(?:这个|此|该)?(?:界面|页面|设计稿|效果图|UI\s*稿)|【用户意图·视觉对齐】)/i.test(
-    t,
-  )
-}
-
-/** 按截图做局部修改（非整页复刻） */
-function looksLikeGuidedShotEditIntent(text) {
-  const t = String(text || '')
-  return /(?:按|根据|参考|对照)截图.{0,16}(?:改|调|修|换|动)|截图里.{0,20}(?:改|调|修|做成|换成)|图上.{0,16}(?:按钮|颜色|布局|顶栏|侧栏|表单|Logo|logo|间距).{0,10}(?:改|调|修)|把.{0,24}(?:改成|换成|调成).{0,16}(?:截图|图里|图上)|(?:只改|仅改|先改).{0,16}(?:截图|图里|图上)|【用户意图·按图修改】/i.test(
-    t,
-  )
-}
-
-function hasImageAttachments(files = []) {
-  return (files || []).some(
-    (f) => f?.kind === 'image' || /\.(png|jpe?g|webp|gif|bmp)$/i.test(String(f?.name || f?.path || '')),
-  )
-}
-
-function looksLikeMesBizIntent(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  return /(工单|生产计划|导入平台|查询报表|库存|物料|工序|报工|派工|MES|这个单号|计划号|订单号|查一下|导出)/i.test(
-    t,
-  )
-}
-
-function looksLikeScreenshotExplainIntent(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  // 解释/排错，但不是「改成这种」写码
-  if (looksLikeScreenshotUiRedesign(t, [{ kind: 'image' }])) return false
-  if (hasCodeDevActionWords(t)) return false
-  return /(什么意思|啥意思|解释|这是什么|帮我看(看|下|一下)|怎么回事|为什么|报错|错误|异常|失败|红字|看不懂|识别|OCR|读一下)/i.test(
-    t,
-  )
-}
-
-/**
- * 截图附件意图分流。
- * confidence=high → 直接进对应车道；low/ambiguous → 弹出意图确认卡反问用户。
- * @returns {{ lane: string, confidence: 'high'|'low', hint: string }}
- */
-function classifyScreenshotIntent(text, files = []) {
-  if (!hasImageAttachments(files)) {
-    return { lane: 'none', confidence: 'high', hint: '' }
-  }
-  const t = String(text || '').trim()
-  const hits = []
-
-  if (looksLikePasteCodeAnalyze(t)) hits.push('paste_code')
-  if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) hits.push('code_review')
-  if (
-    looksLikeScreenshotUiRedesign(t, files) ||
-    hasCodeDevActionWords(t) ||
-    looksLikeCodeDevIntent(t, files)
-  ) {
-    hits.push('code_dev')
-  }
-  if (looksLikeMesBizIntent(t) && !hasCodeDevActionWords(t)) hits.push('mes')
-  if (looksLikeScreenshotExplainIntent(t)) hits.push('explain')
-
-  // 去重保序
-  const unique = [...new Set(hits)]
-
-  if (!t || t.length < 4) {
-    return {
-      lane: 'ambiguous',
-      confidence: 'low',
-      hint: '你只贴了截图，还没说明想做什么。',
-    }
-  }
-
-  // 多车道冲突 → 反问
-  const exclusive = unique.filter((x) => x !== 'explain')
-  if (exclusive.length >= 2) {
-    return {
-      lane: 'ambiguous',
-      confidence: 'low',
-      hint: `截图相关，但我拿不准是「${exclusive.map(laneLabel).join('」还是「')}」。请点选一项。`,
-    }
-  }
-
-  if (unique.includes('code_dev')) {
-    return { lane: 'code_dev', confidence: 'high', hint: '按截图改代码/界面' }
-  }
-  if (unique.includes('code_review')) {
-    return { lane: 'code_review', confidence: 'high', hint: '审核相关代码' }
-  }
-  if (unique.includes('paste_code')) {
-    return { lane: 'paste_code', confidence: 'high', hint: '分析粘贴代码' }
-  }
-  if (unique.includes('mes')) {
-    return { lane: 'mes', confidence: 'high', hint: 'MES/业务处理' }
-  }
-  if (unique.includes('explain')) {
-    return { lane: 'explain', confidence: 'high', hint: '解释截图/报错' }
-  }
-
-  // 有截图 + 有文字，但没命中任何强信号 → 反问，避免瞎走闲聊
-  return {
-    lane: 'ambiguous',
-    confidence: 'low',
-    hint: '已收到截图和说明，但我还不确定你的目标。请点选最接近的一项，或选「补充说明」。',
-  }
-}
-
-function laneLabel(lane) {
-  return (
-    {
-      code_dev: '改代码/界面',
-      code_review: '代码审核',
-      paste_code: '贴码分析',
-      mes: 'MES/业务',
-      explain: '解释截图',
-    }[lane] || lane
-  )
-}
-
-function buildScreenshotIntentClarifyCard(content, files, hint = '') {
-  return {
-    id: `shot-intent-${Date.now()}`,
-    status: 'pending',
-    summary: '已收到截图，请确认你想做什么',
-    hint: hint || '拿不准时先确认，避免走错车道。',
-    pendingContent: content,
-    pendingFiles: files,
-    options: [
-      { id: 'code_dev_match', label: '做成跟截图一样（视觉对齐）' },
-      { id: 'code_dev_edit', label: '按截图修改部分界面' },
-      { id: 'code_dev', label: '按截图写/改功能（不强制照抄视觉）' },
-      { id: 'explain', label: '解释截图内容或报错' },
-      { id: 'mes', label: '查 MES / 业务问题' },
-      { id: 'code_review', label: '审核相关代码' },
-      { id: 'other', label: '都不是，我补充说明' },
-    ],
-  }
-}
-
-
-/**
- * 公开 Git 仓库审核意图。
- * 与写码对等互斥：有写/改/加功能意图则绝不走审核；仅 URL ≠ 审核（须澄清）。
- */
-function looksLikeGitRepoReview(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  if (hasCodeDevActionWords(t)) return false
-  if (looksLikeCodeReview(t) && extractGitRepoUrl(t)) return true
-  return /(?:审|审核|审查|检查).{0,16}(?:git|Git|远程)?\s*仓库|(?:git|Git)\s*仓库.{0,12}(?:审|审核|审查)|review\s+(?:this\s+)?(?:git\s+)?repo|审核\s*https:\/\//i.test(
-    t,
-  )
-}
-
-/** 几乎只有仓库 URL、无写/审动词 → 须澄清意图，禁止自动开审或开写 */
-function isBareGitRepoUrlMessage(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  const url = extractGitRepoUrl(t)
-  if (!url) return false
-  if (hasCodeDevActionWords(t) || looksLikeCodeReview(t)) return false
-  if (/(?:审|审核|审查|检查).{0,16}(?:git|Git|仓库|代码)|(?:写|改|开发|实现|新增).{0,8}(代码|功能|界面|页面)/i.test(t)) {
-    return false
-  }
-  const rest = t.replace(url, '').replace(/[\s，。,.!！？?；;：:、"'`「」【】（）()]+/g, '')
-  return rest.length < 8
-}
-
-/** 写码/开发功能意图（新窗先选仓，再讨论需求）——与审核、贴码对等互斥 */
-function looksLikeCodeDevIntent(text, files = []) {
-  const t = String(text || '').trim()
-  if (!t && !(files || []).length) return false
-  // 贴码 / 审核意图明确时不进写码
-  if (looksLikePasteCodeAnalyze(t)) return false
-  if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) return false
-  if (looksLikeScreenshotUiRedesign(t, files)) return true
-  if (
-    /工单|生产计划|导入|导出|查询|报表/.test(t) &&
-    !hasCodeDevActionWords(t) &&
-    !/(写|改|开发|实现|新增).{0,8}(代码|功能|界面|页面|首页|主页|接口|模块|侧边栏|菜单)/.test(t)
-  ) {
-    return false
-  }
-  if (hasCodeDevActionWords(t)) return true
-  return /写代码|改代码|开发功能|开发一个|帮我写|实现(一个|功能)|生成代码|写个|写一个|开\s*PR|pull\s*request|代码实现|写登录|写界面|写页面|新增功能|我要开发|新增.{0,10}(首页|主页|页面|界面|模块|接口|功能)|做(一个|个)?.{0,8}(首页|主页|页面|界面)|加(一个|个)?.{0,8}(首页|主页|页面)|登录.{0,16}(首页|主页)|跳(转|入).{0,10}(首页|主页)|(系统|平台|ERP|MES).{0,12}(新增|改成|改为|做成)|改成这种|前端.{0,6}(首页|主页|页面|侧边栏|菜单)|后端.{0,6}(接口|API)|侧边栏菜单/i.test(
-    t,
-  )
-}
-
-function isVagueCodeDevIntent(text) {
-  const t = String(text || '').trim()
-  if (!t) return true
-  if (
-    /^(我要开发(功能)?|开发功能|我想开发|帮我开发|写代码|改代码|新增功能|帮我写代码|我想写代码|我说需求帮我写代码|我说需求(,|，)?帮我写代码)[。.!！]?$/i.test(
-      t,
-    )
-  ) {
-    return true
-  }
-  if (/我说需求.{0,12}写代码/.test(t) && !/(登录|页面|接口|模块|按钮|表单|列表|下拉|首页|主页|侧边栏)/.test(t)) {
-    return true
-  }
-  if (t.length < 12 && !/(登录|页面|接口|模块|按钮|表单|列表|权限|导出|导入|下拉|首页|主页)/.test(t)) {
-    return true
-  }
-  return false
-}
+// 车道/意图启发式见 ../chatIntent.js
 
 function hasCodingDiscussThread() {
   for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -1998,117 +1730,7 @@ async function resumeOrReconcileCursorDevAfterLoad() {
   await reconcileStuckCursorDevPicks()
 }
 
-/**
- * 从原文抽取交付物短语（通用结构，不写死业务名）。
- * 例：「生产概览界面」→ ["生产概览界面","生产概览"]
- */
-function extractDeliverablePhrases(text) {
-  const t = String(text || '')
-  const out = []
-  const seen = new Set()
-  const re = /((?:[\u4e00-\u9fff]{2,10})|(?:[A-Za-z][A-Za-z0-9_-]{1,24}))(界面|页面|模块|功能|视图|看板)/g
-  let m
-  while ((m = re.exec(t))) {
-    const full = m[0]
-    let stem = m[1]
-    const suffix = m[2]
-    stem = stem.replace(/^(?:开发|实现|新增|搭建|建设|做|写|系统)+/, '') || stem
-    if (stem.length >= 6 && /开发|实现|新增|系统/.test(m[1])) {
-      stem = stem.slice(-4)
-    }
-    const phrase = stem.endsWith(suffix) ? stem : `${stem}${suffix}`
-    for (const p of [phrase, stem, full]) {
-      if (!p || p.length < 2 || seen.has(p)) continue
-      if (['系统', '开发', '实现', '功能', '模块', '界面', '页面'].includes(p)) continue
-      seen.add(p)
-      out.push(p)
-    }
-  }
-  return out
-}
-
-function codingIntentTokens(text) {
-  const raw = String(text || '').toLowerCase()
-  const parts = raw.match(/[\u4e00-\u9fff]{2,}|[a-z0-9_]{3,}/g) || []
-  return new Set(parts)
-}
-
-function tokenOverlapRatio(a, b) {
-  const A = codingIntentTokens(a)
-  const B = codingIntentTokens(b)
-  if (!A.size || !B.size) return 0
-  let inter = 0
-  for (const x of A) if (B.has(x)) inter += 1
-  return inter / Math.max(A.size, B.size)
-}
-
-function isStyleOnlyPatchIntent(text) {
-  const t = String(text || '').trim()
-  if (!t) return false
-  const style =
-    /(overflow|100vh|100vw|滚动|横向溢出|超出屏幕|视口|布局壳|纯\s*CSS|仅.*样式|页面固定|框架滚动|不[改动变].{0,6}(视觉|配色|图表|表格))/i.test(
-      t,
-    )
-  const newDeliverable =
-    /新(?:界面|页面|模块|功能)|(?:开发|实现|新增|做|写|搭建).{0,20}(?:模块|界面|页面|功能)/.test(t)
-  return style && !newDeliverable
-}
-
-function isShortContinuationIntent(text) {
-  const t = String(text || '').trim()
-  return (
-    t.length <= 80 &&
-    /^(继续|再改|改一下|补一下|加上|去掉|换成|改成|默认|还要|另外|顺带|顺便)/.test(t)
-  )
-}
-
-/**
- * 按真实意图规划本轮写码路径（通用，不绑具体页面）。
- * - discuss：先讨论/选项/确认卡
- * - direct_followup：仅明确增量微调时可直开写码
- */
-function planCursorDevTurn(text, idlePick) {
-  const t = String(text || '').trim()
-  if (!t) return { mode: 'discuss', reason: 'empty' }
-  if (looksLikePasteCodeAnalyze(t) || looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) {
-    return { mode: 'discuss', reason: 'other_lane' }
-  }
-  if (!idlePick?.pick?.jobId) {
-    return { mode: 'discuss', reason: 'no_idle_job' }
-  }
-  if (isShortContinuationIntent(t)) {
-    return { mode: 'direct_followup', reason: 'short_continuation' }
-  }
-  if (isStyleOnlyPatchIntent(t)) {
-    return { mode: 'direct_followup', reason: 'style_patch' }
-  }
-  const prior = String(idlePick.pick.requirement || idlePick.pick.pendingContent || '')
-  const phrases = extractDeliverablePhrases(t)
-  const priorText = prior + ' ' + String(idlePick.pick.progressText || '')
-  // 用户提出的交付物未出现在上一轮需求里 → 新意图，须确认
-  if (phrases.length) {
-    const missing = phrases.filter((p) => p.length >= 2 && !priorText.includes(p))
-    if (missing.length) {
-      return { mode: 'discuss', reason: 'new_deliverable', missing }
-    }
-  }
-  // 含「开发/写…模块|界面」结构且与上一轮重叠很低 → 新意图
-  if (
-    /(?:开发|实现|新增|做|写|搭建).{0,20}(?:模块|界面|页面|功能)|新(?:界面|页面|模块|功能)/.test(t) &&
-    tokenOverlapRatio(t, prior) < 0.28
-  ) {
-    return { mode: 'discuss', reason: 'low_overlap_new_work' }
-  }
-  // 默认：有 idle 也不直开，避免误伤（宁可多一次确认）
-  return { mode: 'discuss', reason: 'default_confirm' }
-}
-
-/**
- * 同窗可否跳过确认直接写码：仅 plan=direct_followup。
- */
-function looksLikeCursorDevFollowup(text, files = [], idlePick = null) {
-  return planCursorDevTurn(text, idlePick).mode === 'direct_followup'
-}
+// 写码本轮意图规划见 ../chatCursorDevPlan.js
 
 function clearActiveCursorDev() {
   activeCursorDevJobId.value = ''
@@ -2195,7 +1817,9 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
         `【截图理解】与原图为最高优先级 UI 规格。禁止占位图/假 Logo 交差。` +
         `requirement 须含主视觉/Logo 资源方案与真正视觉对齐验收。信息够则直接 propose。\n\n`
       : guidedShotEdit
-        ? `【按截图修改 · 对准改动点】用户是参照截图改一部分，不一定整页复刻。` +
+        ? `【按截图修改 · 对准改动点】用户是参照截图改一部分（含红框/标注去掉某块），不一定整页复刻。` +
+          `消息里若有【截图理解】必须当规格用，禁止再说「本轮没收到截图/未识别到截图理解」。` +
+          `红框/标注指向的区域就是改动目标，禁止再问「红框指哪」或出勾选卡确认位置。` +
           `先改用户点名的点；未点名区域保持现状。若上下文其实是「整页跟截图一样」，按视觉对齐处理。\n\n`
         : `【截图即设计稿 · 视觉优先】用户已贴界面截图并要求按图改界面。` +
           `先判断是「整页跟截图一样」还是「只改图上某处」；拿不准时选项卡确认。` +
@@ -2276,157 +1900,7 @@ function buildCodingDiscussPrompt(userText, contextBlock = '') {
   )
 }
 
-const CURSOR_DEV_PROPOSE_START_RE = /:::cursor_dev_propose\b/i
-const CURSOR_DEV_OPTIONS_START_RE = /:::cursor_dev_options\b/i
-const ANALYSIS_CHART_START_RE = /:::analysis_chart\b/i
-
-/**
- * 抽取 :::analysis_chart ... ::: 机器块，返回 { content, charts }。
- */
-function parseAnalysisChartFences(text) {
-  let s = String(text || '')
-  const charts = []
-  let guard = 0
-  while (guard++ < 8) {
-    const m = ANALYSIS_CHART_START_RE.exec(s)
-    if (!m) break
-    const start = m.index
-    const afterTag = s.slice(start + m[0].length)
-    const bodyBeginRel = afterTag.match(/^\s*/)?.[0]?.length ?? 0
-    const bodyAndRest = afterTag.slice(bodyBeginRel)
-    const close = bodyAndRest.match(/\n[ \t]*:::[ \t]*(?:\n|$)/)
-    let body
-    let end
-    if (close && typeof close.index === 'number') {
-      body = bodyAndRest.slice(0, close.index).trim()
-      end = start + m[0].length + bodyBeginRel + close.index + close[0].length
-    } else {
-      body = bodyAndRest.replace(/\n?[ \t]*:::[ \t]*\s*$/, '').trim()
-      end = s.length
-    }
-    try {
-      const payload = JSON.parse(body)
-      if (payload && typeof payload === 'object' && payload.option) {
-        charts.push({
-          id: `fence-${charts.length}-${Date.now()}`,
-          title: payload.title || '分析图',
-          chart_type: payload.chart_type || 'bar',
-          option: payload.option,
-          definition: payload.definition || '',
-          caveats: Array.isArray(payload.caveats) ? payload.caveats : [],
-          layout: payload.layout || payload.option?._wb_layout || {},
-        })
-      }
-    } catch {
-      /* 非法 JSON 则原样保留该段 */
-      break
-    }
-    s = s.slice(0, start) + s.slice(end)
-  }
-  return { content: s.trim(), charts }
-}
-
-/** 图表指纹：避免 SSE 出图 + 正文 fence 各渲一次 */
-function chartFingerprint(ch) {
-  if (!ch || typeof ch !== 'object') return ''
-  const opt = ch.option || {}
-  const series = Array.isArray(opt.series) ? opt.series : []
-  const xdata = opt.xAxis?.data || opt.xAxis?.[0]?.data || []
-  const pie = series[0]?.data
-  try {
-    return [
-      String(ch.title || ''),
-      String(ch.chart_type || ''),
-      JSON.stringify(xdata),
-      JSON.stringify(pie || series[0]?.data || []),
-    ].join('|')
-  } catch {
-    return String(ch.title || '') + String(ch.chart_type || '')
-  }
-}
-
-function mergeUniqueCharts(...lists) {
-  const out = []
-  const seen = new Set()
-  for (const list of lists) {
-    for (const ch of list || []) {
-      if (!ch?.option) continue
-      const fp = chartFingerprint(ch)
-      if (fp && seen.has(fp)) continue
-      if (fp) seen.add(fp)
-      out.push(ch)
-    }
-  }
-  return out
-}
-
-/**
- * 抽取写码机器块：允许缺少结尾 :::（模型常漏写），避免主线确认卡消失。
- * 返回 { index, end, body } 或 null。
- */
-function extractCursorDevFence(text, kind) {
-  const s = String(text || '')
-  const startRe = kind === 'options' ? CURSOR_DEV_OPTIONS_START_RE : CURSOR_DEV_PROPOSE_START_RE
-  const m = startRe.exec(s)
-  if (!m) return null
-  const start = m.index
-  const afterTag = s.slice(start + m[0].length)
-  // 跳过标签同行剩余空白/换行
-  const bodyBeginRel = afterTag.match(/^\s*/)?.[0]?.length ?? 0
-  const bodyAndRest = afterTag.slice(bodyBeginRel)
-  // 结尾：独立一行的 ::: ；若无则吃到文末（再剥可能的残缺）
-  const close = bodyAndRest.match(/\n[ \t]*:::[ \t]*(?:\n|$)/)
-  let body
-  let end
-  if (close && typeof close.index === 'number') {
-    body = bodyAndRest.slice(0, close.index).trim()
-    end = start + m[0].length + bodyBeginRel + close.index + close[0].length
-  } else {
-    body = bodyAndRest.replace(/\n?[ \t]*:::[ \t]*\s*$/, '').trim()
-    end = s.length
-  }
-  return { index: start, end, body }
-}
-
-function hideCursorDevMachineBlocks(text) {
-  let s = String(text || '')
-  // 反复剥，避免 options+propose 并存
-  for (let i = 0; i < 4; i++) {
-    const opt = extractCursorDevFence(s, 'options')
-    const prop = extractCursorDevFence(s, 'propose')
-    const hit = [opt, prop].filter(Boolean).sort((a, b) => a.index - b.index)[0]
-    if (!hit) break
-    s = (s.slice(0, hit.index) + s.slice(hit.end)).trim()
-  }
-  return s
-}
-
-function hideCursorDevPropose(text) {
-  return hideCursorDevMachineBlocks(text)
-}
-
-/** 有合入指引卡时，去掉正文里与卡片同义的 push/合入说明 */
-function stripCursorDevMergeBoilerplate(text) {
-  const raw = String(text || '').trim()
-  if (!raw) return ''
-  const dropRe =
-    /代码已\s*push|已\s*push\s*至|如需合入\s*main|请本地自行合并|没有自动合入|尚未合入\s*main|请在\s*GitHub\s*自行|本轮写码已完成[，,].*工作分支|可继续补充需求做续聊改码/i
-  const paras = raw.split(/\n{2,}/)
-  const kept = []
-  for (const p of paras) {
-    let s = String(p || '').trim()
-    if (!s) continue
-    const lines = s.split('\n').map((ln) => ln.replace(/\s+$/, ''))
-    while (lines.length && dropRe.test(lines[lines.length - 1]) && lines[lines.length - 1].length < 200) {
-      lines.pop()
-    }
-    s = lines.join('\n').trim()
-    if (!s) continue
-    if (dropRe.test(s) && s.length < 220 && !/改动说明|验收/.test(s)) continue
-    kept.push(s)
-  }
-  return kept.join('\n\n').trim() || raw
-}
+// 分析图机器块解析见 ../chatAnalysisChartParse.js
 
 function sessionStackLocked() {
   const hit = findConfirmedCursorDevAnchor()
@@ -2434,162 +1908,9 @@ function sessionStackLocked() {
   return /技术栈已锁定|禁止再问技术栈|已锁定技术栈/.test(block)
 }
 
-/** 技术栈已锁定时，剥掉模型误出的技术栈选项组 */
-function stripLockedStackOptionGroups(options) {
-  if (!options || !Array.isArray(options.groups)) return options
-  if (!sessionStackLocked()) return options
-  const filtered = options.groups.filter((g) => {
-    const id = String(g?.id || '').toLowerCase()
-    const label = String(g?.label || '')
-    if (/^(stack|backend|frontend|tech|tech_stack|render)$/.test(id)) return false
-    if (/技术栈|后端框架|前端框架|渲染方式/.test(label)) return false
-    return true
-  })
-  if (!filtered.length) return null
-  return { ...options, groups: filtered, summary: options.summary || '技术栈已锁定，只需确认本轮范围' }
-}
-
-/** 宽松解析 propose JSON：主线不能因模型 JSON 瑕疵丢确认卡 */
-function parseProposeJsonLoose(raw) {
-  const text = String(raw || '').trim()
-  if (!text) return null
-  const attempts = [text]
-  // 去掉可能的 markdown 代码围栏
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```$/i)
-  if (fenced) attempts.unshift(fenced[1].trim())
-  for (const chunk of attempts) {
-    try {
-      const data = JSON.parse(chunk)
-      if (data && typeof data === 'object') return data
-    } catch {
-      /* continue */
-    }
-  }
-  // 字段级抢救（requirement 可能含未转义换行）
-  const repoM = text.match(/"repo"\s*:\s*"([^"]*)"/)
-  const refM = text.match(/"ref"\s*:\s*"([^"]*)"/)
-  let requirement = ''
-  const reqBlock = text.match(
-    /"requirement"\s*:\s*"([\s\S]*?)"\s*,\s*"repo"\s*:/,
-  )
-  if (reqBlock) {
-    requirement = reqBlock[1]
-      .replace(/\\n/g, '\n')
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, '\\')
-  } else {
-    const reqAlt = text.match(/"requirement"\s*:\s*"((?:[^"\\]|\\.)*)"/)
-    if (reqAlt) {
-      try {
-        requirement = JSON.parse(`"${reqAlt[1]}"`)
-      } catch {
-        requirement = reqAlt[1]
-      }
-    }
-  }
-  if (!requirement.trim()) {
-    // 再退一步：requirement 到 repo 之间的裸文本
-    const soft = text.match(/requirement["']?\s*[:：]\s*([\s\S]+?)(?:\n\s*["']?repo["']?\s*[:：]|$)/i)
-    if (soft) requirement = soft[1].replace(/^["'\s]+|["'\s]+$/g, '')
-  }
-  if (!requirement.trim()) return null
-  return {
-    requirement: requirement.trim(),
-    repo: repoM ? repoM[1] : '',
-    ref: refM ? refM[1] : '',
-  }
-}
-
-function parseCursorDevOptions(text) {
-  const s = String(text || '')
-  const fence = extractCursorDevFence(s, 'options')
-  if (!fence) return { content: null, options: null }
-  let options = null
-  try {
-    let raw = fence.body
-    const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)```$/i)
-    if (fenced) raw = fenced[1].trim()
-    const data = JSON.parse(raw)
-    const groups = Array.isArray(data.groups)
-      ? data.groups.filter((g) => g?.id && Array.isArray(g.options))
-      : []
-    if (groups.length) {
-      options = {
-        id: `cursor-dev-opts-${Date.now()}`,
-        status: 'pending',
-        title: String(data.title || '请确认写码关键项'),
-        summary: String(data.summary || '勾选即可，少打字'),
-        notes_placeholder: String(data.notes_placeholder || '其它备注（可选）'),
-        groups,
-        defaults: data.defaults && typeof data.defaults === 'object' ? data.defaults : {},
-        notes: '',
-      }
-      options = stripLockedStackOptionGroups(options)
-    }
-  } catch {
-    options = null
-  }
-  const content = (s.slice(0, fence.index) + s.slice(fence.end)).trim()
-  return { content, options }
-}
-
-function parseCursorDevPropose(text) {
-  const s = String(text || '')
-  const fence = extractCursorDevFence(s, 'propose')
-  if (!fence) return { content: s.trimEnd(), propose: null }
-  let propose = null
-  const data = parseProposeJsonLoose(fence.body)
-  if (data) {
-    const requirement = String(data.requirement || data.summary || '').trim()
-    if (requirement) {
-      const rawTarget = String(data.target || 'local').trim().toLowerCase()
-      const target = rawTarget === 'github' || rawTarget === 'cloud' ? 'github' : 'local'
-      propose = {
-        requirement,
-        target,
-        workspace: String(data.workspace || data.path || data.local_path || '').trim(),
-        repo: String(data.repo || '').trim(),
-        ref: String(data.ref || '').trim(),
-      }
-    }
-  }
-  // 无论 JSON 是否成功，都从正文剥掉机器块，避免用户看到裸 :::cursor_dev_propose
-  const content = (s.slice(0, fence.index) + s.slice(fence.end)).trim()
-  return { content, propose }
-}
-
+// 写码机器块解析见 ../chatCursorDevParse.js；技术栈锁定由会话态注入
 function parseCursorDevMachineBlocks(text) {
-  const optParsed = parseCursorDevOptions(text)
-  if (optParsed.options) {
-    const cleaned = parseCursorDevPropose(optParsed.content || '').content
-    return { content: cleaned, options: optParsed.options, propose: null }
-  }
-  // 即便 options 解析失败，也要剥 options 围栏
-  let working = text
-  const optFence = extractCursorDevFence(working, 'options')
-  if (optFence && !optParsed.options) {
-    working = (working.slice(0, optFence.index) + working.slice(optFence.end)).trim()
-  }
-  const propParsed = parseCursorDevPropose(working)
-  return { content: propParsed.content, options: null, propose: propParsed.propose }
-}
-
-function formatCursorDevAdminGuide(detail = '') {
-  const d = String(detail || '').trim()
-  // 并发/配额类是可自助处理的，不要套「找管理员查 Key」话术，避免误导核心流程
-  if (/并发已满|resource_exhausted|rate limit|配额/i.test(d)) {
-    return (
-      `${d}\n\n` +
-      `若你并未暂停：多半是上一轮写码流断了但仍占着名额。请再点一次「重试写码」；` +
-      `系统会自动结束上一任务再开新任务。`
-    )
-  }
-  const head = d ? `写码车道暂不可用：${d}` : '写码车道暂不可用。'
-  return (
-    `${head}\n\n` +
-    `请到侧栏「系统配置」检查 Cursor API Key、写码开关与仓库白名单；` +
-    `并确认 Cursor Team↔GitHub 授权与 Cloud Agents 可用。`
-  )
+  return parseCursorDevMachineBlocksCore(text, { stackLocked: sessionStackLocked() })
 }
 
 async function ensureCursorDevAvailableForUser() {
@@ -4423,9 +3744,13 @@ async function onCursorDevAnchorResolved(msg, payload) {
     await persistSession()
     scrollToBottom()
     const userNeed = pendingContent || '请根据已选本机目录继续澄清写码需求'
+    const filesForStream =
+      Array.isArray(pendingFiles) && pendingFiles.length
+        ? pendingFiles
+        : codingSessionPendingFiles()
     await startAssistantStream(
       buildCodingDiscussPrompt(userNeed, promptBlock),
-      pendingFiles,
+      filesForStream,
       null,
       null,
       codingDiscussStreamOpts({ localWorkspaceRoot: resolvedWs }),
@@ -4507,16 +3832,20 @@ async function onCursorDevAnchorResolved(msg, payload) {
   scrollToBottom()
 
   const userNeed = pendingContent || '请根据已选仓库继续澄清写码需求'
+  const filesForStream =
+    Array.isArray(pendingFiles) && pendingFiles.length
+      ? pendingFiles
+      : codingSessionPendingFiles()
   await startAssistantStream(
     buildCodingDiscussPrompt(userNeed, promptBlock || codingSessionContextBlock()),
-    pendingFiles,
+    filesForStream,
     null,
     null,
     codingDiscussStreamOpts({ cursorDevRepo: repo }),
   )
 }
 
-async function beginLocalDevStream(msg, { workspace, content }) {
+async function beginLocalDevStream(msg, { workspace, content, writeScope = [], files = null }) {
   if (streaming.value && streamAbort.value) {
     messages.value.push({
       role: 'assistant',
@@ -4527,12 +3856,23 @@ async function beginLocalDevStream(msg, { workspace, content }) {
     await persistSession()
     return false
   }
+  const pending =
+    Array.isArray(files) && files.length
+      ? files
+      : Array.isArray(msg?.cursorDevPick?.pendingFiles) && msg.cursorDevPick.pendingFiles.length
+        ? msg.cursorDevPick.pendingFiles
+        : codingSessionPendingFiles()
+  const filePaths = (Array.isArray(pending) ? pending : [])
+    .map((f) => String(f?.path || f || '').trim())
+    .filter(Boolean)
   if (msg?.cursorDevPick) {
     msg.cursorDevPick = {
       ...msg.cursorDevPick,
       status: 'confirmed',
       target: 'local',
       workspace: workspace || msg.cursorDevPick.workspace,
+      writeScope: Array.isArray(writeScope) ? writeScope : [],
+      pendingFiles: Array.isArray(pending) ? pending : [],
       requirement: content || msg.cursorDevPick.requirement || '',
       phase: 'starting',
       progressText: '正在创建本机写码任务…',
@@ -4552,6 +3892,8 @@ async function beginLocalDevStream(msg, { workspace, content }) {
       message: content,
       thread_id: threadId.value || '',
       confirmed: true,
+      write_scope: Array.isArray(writeScope) ? writeScope : [],
+      file_paths: filePaths,
     })
     jobId = resp?.data?.id || ''
     if (!jobId) throw new Error('未返回本机写码任务 id')
@@ -4675,6 +4017,49 @@ async function beginLocalDevStream(msg, { workspace, content }) {
         } else if (type === 'replace_text' && event.text != null) {
           streamContent.value = String(event.text)
           scrollToBottom()
+          } else if (type === 'scope_confirm') {
+          const files = Array.isArray(event.files) ? event.files : []
+          const preview = files.slice(0, 12).join('\n')
+          const more = files.length > 12 ? `\n…共 ${files.length} 个` : ''
+          const ok = window.confirm(
+            `${event.message || '写码改动了选定范围外的文件，是否一并同步到本机？'}\n\n${preview}${more}\n\n确定=同步这些文件；取消=仅保留范围内已同步文件。`,
+          )
+          try {
+            await confirmLocalDevScope(jobId, ok ? 'include' : 'skip')
+          } catch (ce) {
+            console.warn('confirm-scope failed', ce)
+          }
+          if (msg?.cursorDevPick) {
+            msg.cursorDevPick = {
+              ...msg.cursorDevPick,
+              progressText: ok ? '已确认同步范围外文件…' : '已跳过范围外文件…',
+            }
+          }
+        } else if (type === 'commit_gate') {
+          if (msg) {
+            msg.localDevCommitGate = {
+              status: 'pending',
+              job_id: jobId,
+              summary: event.summary || '本轮写码已同步，请确认是否提交',
+              findings: Array.isArray(event.findings) ? event.findings : [],
+              blocking_count: Number(event.blocking_count) || 0,
+              warning_count: Number(event.warning_count) || 0,
+              can_commit: Boolean(event.can_commit),
+              git: event.git && typeof event.git === 'object' ? event.git : null,
+              work_branch: String(event.work_branch || ''),
+              synced_files: Array.isArray(event.synced_files) ? event.synced_files : [],
+              workspace: event.workspace || workspace,
+              preview_url: String(event.preview_url || '').trim(),
+              suggested_commit_message: String(event.suggested_commit_message || ''),
+            }
+          }
+          if (msg?.cursorDevPick) {
+            msg.cursorDevPick = {
+              ...msg.cursorDevPick,
+              progressText: '等待审码门禁确认是否提交…',
+            }
+          }
+          scrollToBottom()
         } else if (type === 'done') {
           const summary = String(event.text || streamContent.value || '本机写码已完成')
           streamContent.value = summary
@@ -4697,6 +4082,19 @@ async function beginLocalDevStream(msg, { workspace, content }) {
               preview: event.preview && typeof event.preview === 'object' ? event.preview : null,
               channel: 'local_sandbox',
               mergeGuide: null,
+            }
+          }
+          if (msg?.localDevCommitGate) {
+            const cr = event.commit_result && typeof event.commit_result === 'object' ? event.commit_result : null
+            let st = 'skipped'
+            if (cr?.ok && cr?.commit) st = 'committed'
+            else if (cr?.error && !cr?.skipped) st = 'failed'
+            msg.localDevCommitGate = {
+              ...msg.localDevCommitGate,
+              status: st,
+              error: cr?.error || '',
+              commit: cr?.commit || '',
+              branch: cr?.branch || msg.localDevCommitGate.work_branch,
             }
           }
           applyLocalStep({ id: 'boot', state: 'done', title: '本机写码已同步' })
@@ -4759,6 +4157,515 @@ async function beginLocalDevStream(msg, { workspace, content }) {
   return true
 }
 
+function onLocalDevCommitResolved(msg, payload) {
+  if (!msg?.localDevCommitGate || !payload) return
+  const decision = String(payload.decision || '')
+  const job = payload.job && typeof payload.job === 'object' ? payload.job : null
+  const cr =
+    job?.commit_result && typeof job.commit_result === 'object' ? job.commit_result : null
+  let st = decision === 'skip' ? 'skipped' : 'pending'
+  let err = ''
+  let commit = ''
+  let branch = msg.localDevCommitGate.work_branch || ''
+  if (job) {
+    branch = String(cr?.branch || job.work_branch || branch || '')
+    commit = String(cr?.commit || msg.localDevCommitGate?.commit || '')
+    const retryable = Boolean(cr?.retryable || payload.retryable)
+    const pushInfo = cr?.push && typeof cr.push === 'object' ? cr.push : null
+    if (decision === 'skip') {
+      st = 'skipped'
+    } else if (cr && cr.ok === false && !cr.skipped) {
+      st = 'failed'
+      err = String(cr.error || job.error || job.last_assistant || '提交失败')
+    } else if (job.error && !cr?.commit) {
+      st = 'failed'
+      err = String(job.error)
+    } else if (cr?.skipped && cr?.push && cr.push.ok === true) {
+      st = 'pushed'
+      err = String(cr.message || '本批无新变更，已推送当前分支')
+    } else if (cr?.skipped && cr?.push && cr.push.ok === false) {
+      st = 'push_failed'
+      err = String(cr.push.error || cr.message || '推送失败')
+    } else if (cr?.skipped && !cr?.commit) {
+      st = 'skipped'
+      err = String(cr.message || cr.error || '')
+    } else if (cr?.skipped) {
+      st = 'skipped'
+      err = String(cr.message || cr.error || '')
+    } else if (cr?.commit && pushInfo && pushInfo.ok === false) {
+      st = 'push_failed'
+      err = String(pushInfo.error || '推送失败（本地已提交）')
+    } else if (cr?.commit && pushInfo && pushInfo.ok === true) {
+      st = 'pushed'
+    } else if (String(job.status || '') === 'succeeded' || cr?.commit) {
+      st = 'committed'
+    } else if (String(job.status || '') === 'failed') {
+      st = 'failed'
+      err = job.error || job.last_assistant || ''
+    }
+    if (retryable || cr?.push_retry) {
+      if (cr?.commit && pushInfo && pushInfo.ok === false) st = 'push_failed'
+      else if (!cr?.ok && !cr?.skipped) st = 'failed'
+    }
+  }
+  // 确认后补一条过程步骤，避免「点了没反应」
+  const steps = Array.isArray(msg.process) ? [...msg.process] : []
+  const ignored = Array.isArray(cr?.skipped_ignored) ? cr.skipped_ignored : []
+  const pushInfo = cr?.push && typeof cr.push === 'object' ? cr.push : null
+  let stepDetail = ''
+  if (st === 'pushed') {
+    stepDetail = `已提交并推送${branch ? ` → ${pushInfo?.remote || 'origin'}/${branch}` : ''}${commit ? ` · ${commit}` : ''}`
+  } else if (st === 'push_failed') {
+    stepDetail = `本地已提交${commit ? ` · ${commit}` : ''}；推送失败：${err}`
+  } else if (st === 'committed') {
+    stepDetail =
+      `已提交到本地${branch ? ` → ${branch}` : ''}${commit ? ` · ${commit}` : ''}` +
+      (ignored.length ? `\n已跳过忽略文件 ${ignored.length} 个` : '')
+  } else if (st === 'skipped') {
+    stepDetail = err || '文件仍在目标目录'
+  } else {
+    stepDetail = err || ''
+  }
+  const commitStep = {
+    type: 'step',
+    id: 'git-commit',
+    title:
+      decision === 'skip'
+        ? '已跳过 git 提交'
+        : st === 'pushed'
+          ? '工作分支 commit + push'
+          : '工作分支 git commit',
+    state: st === 'failed' || st === 'push_failed' ? 'error' : 'done',
+    detail: stepDetail,
+  }
+  const without = steps.filter((s) => s.id !== 'git-commit')
+  msg.process = [...without, commitStep]
+  msg.processCollapsed = false
+  msg.localDevCommitGate = {
+    ...msg.localDevCommitGate,
+    status: st,
+    error: err,
+    commit,
+    branch,
+    retryable: Boolean(cr?.retryable || payload.retryable || cr?.push_retry),
+    push_retry: Boolean(cr?.push_retry),
+    push_only: Boolean(msg.localDevCommitGate?.push_only || cr?.push_retry),
+    prior_commit: String(cr?.commit || msg.localDevCommitGate?.prior_commit || ''),
+    last_commit_message: cr?.message || msg.localDevCommitGate?.last_commit_message || '',
+  }
+  if (msg.cursorDevPick) {
+    msg.cursorDevPick = {
+      ...msg.cursorDevPick,
+      progressText:
+        st === 'pushed'
+          ? '本批已提交并推送到远程'
+          : st === 'committed'
+            ? '本批已提交到本地工作分支'
+            : st === 'push_failed'
+              ? msg.localDevCommitGate.retryable
+                ? '本地已提交，远程推送失败（可重试）'
+                : '本地已提交，远程推送失败'
+              : st === 'skipped'
+                ? '已跳过提交'
+                : st === 'failed'
+                  ? msg.localDevCommitGate.retryable
+                    ? '提交失败（可重试）'
+                    : '提交失败'
+                  : '正在提交工作分支…',
+    }
+  }
+  if (job?.last_assistant && msg) {
+    const prev = String(msg.content || '').trim()
+    const add = String(job.last_assistant).trim()
+    if (add && !prev.includes(add.slice(0, 40))) {
+      msg.content = prev ? `${prev}\n\n${add}` : add
+    }
+  }
+  void persistSession()
+  void nextTick(() => scrollToBottom())
+}
+
+/**
+ * 人触发本批提交：不经 Deep Agents / 不经写码 SSE。
+ * 过程面板分步 + 每步耗时；定位目录优先用会话内已有路径（避免干等偏好接口）。
+ */
+async function beginLocalCommitBatch(userText) {
+  const touch = async () => {
+    await nextTick()
+    scrollToBottom()
+  }
+
+  let msgIndex = -1
+  const cur = () => (msgIndex >= 0 ? messages.value[msgIndex] : null)
+  const bump = (patch) => {
+    if (msgIndex < 0) return
+    messages.value[msgIndex] = { ...messages.value[msgIndex], ...patch }
+  }
+  const patchStep = (id, patch) => {
+    const msg = cur()
+    if (!msg) return
+    bump({
+      process: (msg.process || []).map((s) => (s.id === id ? { ...s, ...patch } : s)),
+    })
+  }
+  const setProcess = (steps) => {
+    bump({
+      process: steps.map((s) => ({ type: 'step', ...s })),
+      processCollapsed: false,
+    })
+  }
+
+  /** 每步独立心跳：徽章显示「执行中 Ns」，结束写入 durationMs */
+  const stepTimers = {}
+  const startStepClock = (id, detail = '') => {
+    stopStepClock(id, false)
+    const startedAt = Date.now()
+    patchStep(id, {
+      state: 'running',
+      startedAt,
+      elapsedSec: 0,
+      durationMs: undefined,
+      ...(detail ? { detail } : {}),
+    })
+    stepTimers[id] = setInterval(() => {
+      const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000))
+      patchStep(id, { elapsedSec: sec })
+    }, 500)
+  }
+  const stopStepClock = (id, markDone = true, extra = {}) => {
+    if (stepTimers[id]) {
+      clearInterval(stepTimers[id])
+      delete stepTimers[id]
+    }
+    const curStep = (cur()?.process || []).find((s) => s.id === id)
+    const startedAt = Number(curStep?.startedAt) || Date.now()
+    const durationMs = Math.max(0, Date.now() - startedAt)
+    if (markDone) {
+      patchStep(id, {
+        state: extra.state || 'done',
+        elapsedSec: undefined,
+        durationMs,
+        ...extra,
+      })
+    }
+  }
+  const clearAllClocks = () => {
+    Object.keys(stepTimers).forEach((k) => {
+      clearInterval(stepTimers[k])
+      delete stepTimers[k]
+    })
+  }
+
+  /** 同步源优先：不发网络 */
+  const resolveWorkspaceLocal = () => {
+    const idle = findIdleCursorDevPick()
+    let ws = String(idle?.pick?.workspace || '').trim()
+    if (ws) return { workspace: ws, source: '本会话写码卡' }
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const p = messages.value[i]?.cursorDevPick
+      if (p?.workspace && String(p.channel || '') === 'local_sandbox') {
+        return { workspace: String(p.workspace).trim(), source: '历史本机写码卡' }
+      }
+    }
+    return { workspace: '', source: '' }
+  }
+
+  const fetchPrefWithTimeout = (ms = 2000) =>
+    Promise.race([
+      fetchLocalWorkspacePref().catch(() => null),
+      new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), ms)),
+    ])
+
+  /** 会话内旧确认卡先失效，避免与新一批并存可点（只改有待确认的项，保持其它引用） */
+  const markPendingCommitCardsSuperseded = () => {
+    for (let i = 0; i < messages.value.length; i++) {
+      const m = messages.value[i]
+      const g = m?.localDevCommitGate
+      if (!g) continue
+      const s = String(g.status || 'pending')
+      if (s !== 'pending' && s !== 'awaiting_commit') continue
+      messages.value[i] = {
+        ...m,
+        localDevCommitGate: { ...g, status: 'superseded' },
+      }
+    }
+  }
+
+  const gateCardFromPayload = (gate, files, workspacePath, jobId) => {
+    const git = gate.git && typeof gate.git === 'object' ? gate.git : null
+    const batch = gate.batch && typeof gate.batch === 'object' ? gate.batch : {}
+    const priorCommit = String(gate.prior_commit || gate.commit || '').trim()
+    return {
+      status: gate.push_retry ? 'push_failed' : 'pending',
+      job_id: jobId,
+      summary: gate.summary || '请确认是否提交本批文件',
+      findings: Array.isArray(gate.findings) ? gate.findings : [],
+      file_scans: Array.isArray(gate.file_scans) ? gate.file_scans : [],
+      blocking_count: Number(gate.blocking_count) || 0,
+      warning_count: Number(gate.warning_count) || 0,
+      can_commit: Boolean(gate.can_commit),
+      can_push: gate.can_push != null ? Boolean(gate.can_push) : Boolean(git?.has_remote),
+      git,
+      work_branch: String(gate.work_branch || ''),
+      synced_files: files,
+      workspace: workspacePath,
+      relaxed_from_today: Boolean(batch.relaxed_from_today),
+      synced_pool_total: Number(batch.synced_pool_total) || 0,
+      excluded_non_business_total: Number(batch.excluded_non_business_total) || 0,
+      git_dirty_total: Number(batch.git_dirty_total) || 0,
+      scope_note: String(batch.scope_note || gate.scope_label || ''),
+      push_only: Boolean(gate.push_only),
+      push_retry: Boolean(gate.push_retry),
+      prior_commit: priorCommit,
+      commit: priorCommit,
+      retryable: Boolean(gate.push_retry || gate.retryable),
+      error: String(gate.push_error || gate.error || ''),
+      verdict: String(gate.verdict || ''),
+      checks: Array.isArray(gate.checks) ? gate.checks : [],
+      scope_label: String(gate.scope_label || 'WorkBuddy 同步且 Git 待提交（非全仓审码）'),
+      provider: String(gate.provider || ''),
+      review_method: String(gate.review_method || ''),
+      files_reviewed: Number(gate.files_reviewed) || (Array.isArray(files) ? files.length : 0),
+      process_steps: Array.isArray(gate.process_steps) ? gate.process_steps : [],
+      suggested_commit_message: String(gate.suggested_commit_message || ''),
+    }
+  }
+
+  /** 409 pending_commit：拉回旧任务并展示确认卡 */
+  const resumePendingCommitCard = async (jobId, workspacePath) => {
+    const jid = String(jobId || '').trim()
+    if (!jid) return false
+    try {
+      const res = await getLocalDevJob(jid)
+      const job = res?.data && typeof res.data === 'object' ? res.data : res
+      if (!job || String(job.status || '') !== 'awaiting_commit') return false
+      const gate =
+        job.commit_gate && typeof job.commit_gate === 'object' ? job.commit_gate : {}
+      const files = Array.isArray(job.synced_files)
+        ? job.synced_files
+        : Array.isArray(gate.synced_files)
+          ? gate.synced_files
+          : []
+      const ws = String(job.workspace || workspacePath || '')
+      stopStepClock('gate', true, { detail: gate.summary || '已恢复待确认任务' })
+      startStepClock('card', '恢复确认卡…')
+      await touch()
+      bump({
+        content: '',
+        localDevCommitGate: gateCardFromPayload(gate, files, ws, jid),
+      })
+      stopStepClock('card', true, {
+        detail: gate.can_commit ? '可确认提交' : '有阻断或非 git 仓，仅可跳过',
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  markPendingCommitCardsSuperseded()
+
+  messages.value.push({
+    role: 'assistant',
+    content: '开始处理提交请求…',
+    process: [],
+    processCollapsed: false,
+    localDevCommitGate: null,
+  })
+  msgIndex = messages.value.length - 1
+  setProcess([
+    { id: 'ws', title: '定位本机工程目录', state: 'pending' },
+    { id: 'collect', title: '汇总本批已同步文件', state: 'pending' },
+    { id: 'gate', title: '提交前审码门禁（仅本批）', state: 'pending' },
+    { id: 'card', title: '生成提交确认卡', state: 'pending' },
+  ])
+  void persistSession()
+  await touch()
+
+  startStepClock('ws', '先查会话内已有本机目录…')
+  await touch()
+
+  let workspace = ''
+  let wsSource = ''
+  const localHit = resolveWorkspaceLocal()
+  if (localHit.workspace) {
+    workspace = localHit.workspace
+    wsSource = localHit.source
+  } else {
+    patchStep('ws', { detail: '会话无目录，读取上次偏好（最多 2s）…' })
+    await touch()
+    try {
+      const pref = await fetchPrefWithTimeout(2000)
+      if (pref?.__timeout) {
+        patchStep('ws', { detail: '偏好接口超时，已跳过' })
+      } else {
+        workspace = String(pref?.data?.path || pref?.path || '').trim()
+        if (workspace) wsSource = '用户上次写码目录偏好'
+      }
+    } catch {
+      workspace = ''
+    }
+  }
+
+  if (!workspace) {
+    stopStepClock('ws', true, {
+      state: 'error',
+      detail: '未找到本机工程目录',
+    })
+    clearAllClocks()
+    bump({
+      content:
+        '要提交本批代码，请先告诉我本机工程目录（或先完成本机写码，系统会记住上次目录）。\n\n' +
+        '说明：只会审**已同步的本批文件**，不会全仓审核，也不会自动每次写码后提交。',
+    })
+    void persistSession()
+    await touch()
+    return false
+  }
+
+  stopStepClock('ws', true, {
+    detail: `${workspace}\n来源：${wsSource || '未知'}`,
+  })
+  bump({
+    content: `已定位工程目录：\`${workspace}\`（${wsSource}）\n\n正在汇总本批已同步文件…`,
+  })
+  startStepClock('collect', '查询今日已成功同步的文件…')
+  void persistSession()
+  await touch()
+
+  const todayOnly = /今天|今日|today/i.test(String(userText || ''))
+  let prepared = null
+  try {
+    const prepRes = await prepareLocalDevCommitBatch({
+      workspace,
+      today_only: todayOnly,
+    })
+    prepared =
+      prepRes?.data && typeof prepRes.data === 'object' && prepRes.data.ok !== undefined
+        ? prepRes.data
+        : prepRes
+  } catch (e) {
+    const detail = e?.response?.data?.detail || e?.message || String(e)
+    stopStepClock('collect', true, {
+      state: 'error',
+      detail: typeof detail === 'string' ? detail : '汇总失败',
+    })
+    clearAllClocks()
+    bump({
+      content:
+        `无法汇总本批文件：${typeof detail === 'string' ? detail : '请求失败'}\n\n` +
+        '请确认已完成本机写码同步，且工作区路径与写码时一致。',
+    })
+    void persistSession()
+    await touch()
+    return false
+  }
+
+  const prepFiles = Array.isArray(prepared?.files) ? prepared.files : []
+  const syncedPoolTotal = Number(prepared?.batch?.synced_pool_total) || prepFiles.length
+  const gitDirtyTotal = Number(prepared?.batch?.git_dirty_total) || 0
+  const scopeNote = String(prepared?.batch?.scope_note || prepared?.message || '')
+  const preview = Array.isArray(prepared?.preview) ? prepared.preview : prepFiles.slice(0, 12)
+  stopStepClock('collect', true, {
+    detail:
+      (scopeNote ||
+        `WorkBuddy 同步池 ${syncedPoolTotal} 个；Git 待提交 ${prepFiles.length} 个`) +
+      (prepared?.batch?.relaxed_from_today ? '\n（今日无记录，已放宽到历史同步批）' : ''),
+    preview: preview.map((p) => String(p)),
+  })
+  bump({
+    content:
+      prepFiles.length > 0
+        ? `已筛出 **${prepFiles.length}** 个待提交文件（同步池 ${syncedPoolTotal} 个，Git 变更 ${gitDirtyTotal} 个）。\n\n` +
+          `工作区：\`${workspace}\`\n\n` +
+          `正在做提交前审码门禁…`
+        : `同步池 ${syncedPoolTotal} 个文件均已提交到 git，无新文件需审。\n\n` +
+          `工作区：\`${workspace}\`\n\n` +
+          `仍可确认后尝试推送到远程…`,
+  })
+  startStepClock('gate', '逐文件规则扫描…')
+  void persistSession()
+  await touch()
+
+  try {
+    const res = await startLocalDevCommitBatch({
+      workspace,
+      message: userText,
+      thread_id: threadId.value || '',
+      today_only: todayOnly,
+      files: prepFiles,
+    })
+    const resBody = res?.data && typeof res.data === 'object' && res.data.job_id ? res.data : res
+    const gate =
+      resBody?.commit_gate && typeof resBody.commit_gate === 'object' ? resBody.commit_gate : {}
+    const files = Array.isArray(resBody?.files) ? resBody.files : gate.synced_files || prepFiles
+    const fileScans = Array.isArray(gate.file_scans) ? gate.file_scans : []
+    const findingLines = findings
+      .slice(0, 6)
+      .map((f) => `[${f.severity || 'P0'}] ${f.path}: ${f.message}`)
+    const processLines = Array.isArray(gate.process_steps) ? gate.process_steps : []
+    const scanLines = fileScans
+      .slice(0, 10)
+      .map((s) => `${s.status === 'pass' ? '✓' : '✗'} ${s.path} — ${(s.steps || []).join('；')}`)
+    stopStepClock('gate', true, {
+      detail: [
+        gate.summary || '门禁完成',
+        gate.review_method || '提交批审',
+        gate.scope_label || scopeNote,
+        processLines.length ? `审核过程：\n${processLines.join('\n')}` : '',
+        findingLines.length
+          ? `发现问题：\n${findingLines.join('\n')}`
+          : scanLines.length
+            ? `逐文件结论：\n${scanLines.join('\n')}`
+            : '无待审文件或均已通过',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      preview: files.slice(0, 12).map((p) => String(p)),
+    })
+    startStepClock('card', '组装确认卡…')
+    await touch()
+
+    markPendingCommitCardsSuperseded()
+
+    bump({
+      content: '',
+      localDevCommitGate: gateCardFromPayload(gate, files, workspace, resBody?.job_id),
+    })
+    stopStepClock('card', true, {
+      detail: gate.can_commit ? '可确认提交' : '有阻断或非 git 仓，仅可跳过',
+    })
+  } catch (e) {
+    const rawDetail = e?.response?.data?.detail
+    const pendingJobId =
+      rawDetail && typeof rawDetail === 'object' ? rawDetail.job_id : null
+    const detailMsg =
+      rawDetail && typeof rawDetail === 'object'
+        ? rawDetail.message || rawDetail.code || '门禁失败'
+        : rawDetail || e?.message || String(e)
+    if (pendingJobId && (await resumePendingCommitCard(pendingJobId, workspace))) {
+      // 已恢复确认卡
+    } else {
+      stopStepClock('gate', true, {
+        state: 'error',
+        detail: typeof detailMsg === 'string' ? detailMsg : '门禁失败',
+      })
+      clearAllClocks()
+      bump({
+        content:
+          `无法启动本批提交：${typeof detailMsg === 'string' ? detailMsg : '请求失败'}\n\n` +
+          (String(detailMsg).includes('待确认')
+            ? '请向上翻找「审码门禁 · 提交确认」卡片，先确认或跳过；或再说一次「提交今天的代码」覆盖旧任务。'
+            : '请确认已完成本机写码同步，且工作区路径与写码时一致。'),
+      })
+    }
+  }
+  clearAllClocks()
+  void persistSession()
+  await touch()
+  return true
+}
+
 async function onCursorDevPickResolved(msg, payload) {
   if (!msg?.cursorDevPick || !payload) return
   const prevStatus = msg.cursorDevPick.status || 'pending'
@@ -4771,6 +4678,11 @@ async function onCursorDevPickResolved(msg, payload) {
       ? 'github'
       : 'local'
   const workspace = String(payload.workspace || msg.cursorDevPick.workspace || '').trim()
+  const writeScope = Array.isArray(payload.writeScope)
+    ? payload.writeScope.map((x) => String(x || '').trim()).filter(Boolean)
+    : Array.isArray(msg.cursorDevPick.writeScope)
+      ? msg.cursorDevPick.writeScope
+      : []
   const repo = payload.repo || msg.cursorDevPick.repo || ''
   const ref = String(payload.ref ?? msg.cursorDevPick.ref ?? '').trim()
   let requirement = String(
@@ -4902,6 +4814,7 @@ async function onCursorDevPickResolved(msg, payload) {
       ...msg.cursorDevPick,
       target: 'local',
       workspace,
+      writeScope,
       requirement,
       pendingContent: requirement,
       phase: 'running',
@@ -4919,7 +4832,12 @@ async function onCursorDevPickResolved(msg, payload) {
         /* ignore */
       }
     }
-    await beginLocalDevStream(msg, { workspace, content: requirement })
+    await beginLocalDevStream(msg, {
+      workspace,
+      content: requirement,
+      writeScope,
+      files: pendingFiles,
+    })
     return
   }
 
@@ -5173,7 +5091,8 @@ async function send(text) {
   }
 
   // ── 意图分叉（对等互斥，无优先级）：本条用户话决定走审核还是写码 ──
-  // 截图附件：先判意图；拿不准就反问确认，禁止瞎走闲聊
+  // 截图附件：先判意图；拿不准就反问确认，禁止瞎猜「按图改还是复原」
+  let agentContent = content
   if (hasImageAttachments(filesSnapshot)) {
     const shot = classifyScreenshotIntent(content, filesSnapshot)
     if (shot.confidence === 'low' || shot.lane === 'ambiguous') {
@@ -5202,7 +5121,22 @@ async function send(text) {
       )
       return
     }
+    if (shot.lane === 'code_dev' && shot.uiMode === 'match') {
+      agentContent =
+        `【用户意图·视觉对齐】做成跟截图一样（真正视觉对齐，质量优先）。\n\n` +
+        (content || '请按截图视觉对齐还原界面。')
+    } else if (shot.lane === 'code_dev' && shot.uiMode === 'edit') {
+      agentContent =
+        `【用户意图·按图修改】按截图/红框标注修改相关部分，不必整页像素复原；对准用户点名或标注的改动点。\n\n` +
+        (content || '请按截图修改界面。')
+    }
     // code_dev / code_review / paste_code：落入下方既有分支
+  }
+
+  // 人触发本批提交（不经 Agent / 不经写码 SSE；与审码/写码车道互斥）
+  if (!hasPastedSourceFence(content) && looksLikeLocalCommitBatch(content)) {
+    await beginLocalCommitBatch(content)
+    return
   }
 
   // 贴码分析：粘贴源码问问题 → 直连 Agent（paste-code-analyze），禁止选仓/审核卡
@@ -5282,13 +5216,13 @@ async function send(text) {
 
   // 写码讨论：新窗先选仓；旧窗直接续聊（与上方审核分支对等，互不抢）
   if (!hasPastedSourceFence(content) && shouldUseCodingDiscuss(content, filesSnapshot)) {
-    await beginCodingDiscussEntry(content, filesSnapshot)
+    await beginCodingDiscussEntry(agentContent, filesSnapshot)
     return
   }
 
   const resumeCtx = looksLikeResumeIntent(content) ? findStoppedResumeContext() : null
   await startAssistantStream(
-    enrichMessageForAgent(content, resumeCtx),
+    enrichMessageForAgent(agentContent !== content ? agentContent : content, resumeCtx),
     filesSnapshot,
     null,
     resumeCtx,
@@ -5454,7 +5388,13 @@ async function startAssistantStream(
   }
 
   try {
-    const filePaths = files
+    // 选仓/续聊时常漏传附件：写码讨论强制回捞本会话截图，否则智谱【截图理解】永远不跑
+    let streamFiles = Array.isArray(files) ? [...files] : []
+    if (!streamFiles.length) {
+      const reused = codingSessionPendingFiles()
+      if (reused.length) streamFiles = reused
+    }
+    const filePaths = streamFiles
       .map((f) => f?.saved_name || (f?.path ? String(f.path).split(/[/\\]/).pop() : ''))
       .filter(Boolean)
     let extraPageContext = null
@@ -6443,7 +6383,8 @@ onUnmounted(() => {
 
 /* 确认卡与同条消息体同宽（跟随较宽的表格气泡拉伸） */
 .message.assistant .msg-content :deep(.write-confirm),
-.message.assistant .msg-content :deep(.ide-ws-pick) {
+.message.assistant .msg-content :deep(.ide-ws-pick),
+.message.assistant .msg-content :deep(.commit-gate) {
   align-self: stretch;
   width: 100%;
   max-width: 100%;

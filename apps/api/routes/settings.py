@@ -401,6 +401,13 @@ async def put_settings(
         values = dict(values)
         values["MODEL_NAME"] = values["MAIN_MODEL"]
 
+    try:
+        from llm_model_guard import assert_models_in_mapping
+
+        assert_models_in_mapping(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if "IDE_GIT_HTTPS_MIRROR" in values:
         values = dict(values)
         raw_mirror = values.get("IDE_GIT_HTTPS_MIRROR")
