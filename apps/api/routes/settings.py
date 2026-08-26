@@ -140,6 +140,213 @@ _FIELD_META: list[dict[str, str]] = [
         "label": "只读表白名单（逗号分隔）",
         "secret": "0",
     },
+    {
+        "key": "DEPLOY_ENABLED",
+        "group": "deploy",
+        "label": "开启自动化部署",
+        "secret": "0",
+        "required": "1",
+        "example": "打开后，在对话里说「部署到预发」才会走确认卡并发版",
+        "hint": "总开关；关闭时只提示配置、绝不触发 CI",
+    },
+    {
+        "key": "DEPLOY_GITHUB_REPO",
+        "group": "deploy",
+        "label": "GitHub 仓库（Actions）",
+        "secret": "0",
+        "required": "0",
+        "example": "owner/repo",
+        "hint": "仅 github_actions；格式 owner/仓库名。本机 SSH 可不填",
+    },
+    {
+        "key": "DEPLOY_GITHUB_WORKFLOW",
+        "group": "deploy",
+        "label": "Workflow 文件名（Actions）",
+        "secret": "0",
+        "required": "0",
+        "example": "deploy-staging.yml",
+        "hint": "仅 github_actions；本机 SSH 可不填",
+    },
+    {
+        "key": "DEPLOY_GITHUB_TOKEN",
+        "group": "deploy",
+        "label": "GitHub Token（Actions）",
+        "secret": "1",
+        "required": "0",
+        "example": "ghp_xxxxxxxx（classic PAT，需能触发该仓 Actions）",
+        "hint": "仅 github_actions；本机 SSH 可不填。也可回落环境变量 GITHUB_TOKEN",
+    },
+    {
+        "key": "DEPLOY_ENV_WHITELIST",
+        "group": "deploy",
+        "label": "允许的环境",
+        "secret": "0",
+        "required": "0",
+        "example": "staging",
+        "hint": "逗号分隔；默认仅预发。生产须另开「允许生产环境」",
+    },
+    {
+        "key": "DEPLOY_DEFAULT_REF",
+        "group": "deploy",
+        "label": "默认 Git 分支/tag",
+        "secret": "0",
+        "required": "0",
+        "example": "hebo 或 staging",
+        "hint": "确认卡预填；空则回落本机/写码工作分支配置",
+    },
+    {
+        "key": "DEPLOY_ALLOW_PRODUCTION",
+        "group": "deploy",
+        "label": "允许生产环境",
+        "secret": "0",
+        "required": "0",
+        "example": "默认关闭；仅预发联调时保持关",
+        "hint": "打开后才可把 production 加入白名单（高风险）",
+    },
+    {
+        "key": "DEPLOY_CI_PROVIDER",
+        "group": "deploy",
+        "label": "部署执行方式",
+        "secret": "0",
+        "required": "0",
+        "example": "github_actions 或 local_ssh",
+        "hint": "默认 github_actions。国内机境外 Actions 连不上时改 local_ssh（本机构建+SSH），不影响写码/审码",
+    },
+    {
+        "key": "DEPLOY_REQUIRE_PUSHED_REF",
+        "group": "deploy",
+        "label": "要求已推送的 ref",
+        "secret": "0",
+        "required": "0",
+        "example": "建议保持开启",
+        "hint": "GitHub Actions 路径：须远程已存在的分支/tag。本机 SSH 路径表示本地存在的 ref",
+    },
+    {
+        "key": "DEPLOY_SSH_HOST",
+        "group": "deploy",
+        "label": "本机 SSH：主机",
+        "secret": "0",
+        "required": "0",
+        "example": "203.0.113.1",
+        "hint": "仅 DEPLOY_CI_PROVIDER=local_ssh 时需要",
+    },
+    {
+        "key": "DEPLOY_SSH_USER",
+        "group": "deploy",
+        "label": "本机 SSH：用户",
+        "secret": "0",
+        "required": "0",
+        "example": "root",
+        "hint": "仅 local_ssh；须能免密登录",
+    },
+    {
+        "key": "DEPLOY_SSH_KEY_PATH",
+        "group": "deploy",
+        "label": "本机 SSH：私钥路径",
+        "secret": "0",
+        "required": "0",
+        "example": "~/.ssh/deploy_key",
+        "hint": "仅 local_ssh；填本机私钥文件路径（不要把私钥内容贴进对话）",
+    },
+    {
+        "key": "DEPLOY_SSH_APP_PATH",
+        "group": "deploy",
+        "label": "本机 SSH：远端目录",
+        "secret": "0",
+        "required": "0",
+        "example": "/var/www/myapp",
+        "hint": "仅 local_ssh；远端工程根（含 frontend/dist、backend）",
+    },
+    {
+        "key": "DEPLOY_LOCAL_PROJECT_PATH",
+        "group": "deploy",
+        "label": "本机 SSH：本地项目路径",
+        "secret": "0",
+        "required": "0",
+        "example": "/Users/你/path/to/project",
+        "hint": "仅 local_ssh；本机 git 仓库根，须含 frontend/ 与 backend/",
+    },
+    {
+        "key": "DEPLOY_SSH_RESTART_CMD",
+        "group": "deploy",
+        "label": "本机 SSH：远端重启命令",
+        "secret": "0",
+        "required": "0",
+        "example": "可空；如 systemctl restart myapp-api",
+        "hint": "可选；同步完成后在远端执行（勿含换行）",
+    },
+    {
+        "key": "DEPLOY_SSH_PORT",
+        "group": "deploy",
+        "label": "本机 SSH：端口",
+        "secret": "0",
+        "required": "0",
+        "example": "22",
+        "hint": "默认 22",
+    },
+    {
+        "key": "DEPLOY_HEALTH_URL",
+        "group": "deploy",
+        "label": "部署后探活 URL",
+        "secret": "0",
+        "required": "0",
+        "example": "http://主机:端口/",
+        "hint": "P1-3d：本机 SSH 同步并重启后，由 WorkBuddy 本机 GET 探活；空则跳过。勿填 80 旧站",
+    },
+    {
+        "key": "DEPLOY_HEALTH_TIMEOUT_SEC",
+        "group": "deploy",
+        "label": "探活单次超时（秒）",
+        "secret": "0",
+        "required": "0",
+        "example": "20",
+        "hint": "每次 HTTP 请求超时，默认 20",
+    },
+    {
+        "key": "DEPLOY_HEALTH_RETRIES",
+        "group": "deploy",
+        "label": "探活重试次数",
+        "secret": "0",
+        "required": "0",
+        "example": "5",
+        "hint": "重启后服务起来可能较慢，默认重试 5 次",
+    },
+    {
+        "key": "DEPLOY_SSH_SYNC_PAIRS",
+        "group": "deploy",
+        "label": "本机 SSH：同步路径对",
+        "secret": "0",
+        "required": "0",
+        "example": "frontend/dist:frontend/dist,backend:backend",
+        "hint": "local:remote，相对项目根与远端 app 根；空则使用默认 monorepo 布局",
+    },
+    {
+        "key": "DEPLOY_SSH_BUILD_STEPS",
+        "group": "deploy",
+        "label": "本机 SSH：构建步骤",
+        "secret": "0",
+        "required": "0",
+        "example": "frontend:npm ci,frontend:npm run build",
+        "hint": "cwd:命令，cwd 空或 . 为项目根；空则按同步路径推断默认构建",
+    },
+    {
+        "key": "DEPLOY_SSH_RSYNC_EXCLUDES",
+        "group": "deploy",
+        "label": "本机 SSH：rsync 排除项",
+        "secret": "0",
+        "required": "0",
+        "example": ".env,.venv,__pycache__",
+        "hint": "逗号或换行分隔；空则使用内置敏感文件排除列表",
+    },
+    {
+        "key": "DEPLOY_GITHUB_WORKFLOW_ENV_INPUT",
+        "group": "deploy",
+        "label": "GitHub workflow 环境输入名",
+        "secret": "0",
+        "required": "0",
+        "example": "environment",
+        "hint": "workflow_dispatch inputs 的键名；填 none 表示不传 environment 参数",
+    },
 ]
 
 _GROUP_LABELS = {
@@ -149,10 +356,18 @@ _GROUP_LABELS = {
     "mes_analysis": "MES 数据分析（高级）",
     "cursor_dev": "写码车道",
     "git_review": "Git 审码拉仓",
+    "deploy": "自动化部署",
 }
 
-_GROUP_ORDER = ("llm", "vision", "mes", "mes_analysis", "cursor_dev", "git_review")
-
+_GROUP_ORDER = (
+    "llm",
+    "vision",
+    "mes",
+    "mes_analysis",
+    "cursor_dev",
+    "git_review",
+    "deploy",
+)
 
 class SettingsUpdateBody(BaseModel):
     """部分更新；密钥留空字符串表示清除界面覆盖、回退到环境变量。"""
@@ -174,7 +389,16 @@ def _auth_username(auth: tuple) -> str:
     return str(getattr(user, "username", None) or "dev")
 
 
-def _field_payload(key: str, label: str, group: str, is_secret: bool) -> dict[str, Any]:
+def _field_payload(
+    key: str,
+    label: str,
+    group: str,
+    is_secret: bool,
+    *,
+    example: str = "",
+    required: bool = False,
+    hint: str = "",
+) -> dict[str, Any]:
     from config import (
         _effective_llm_api_key,
         _effective_llm_base_url,
@@ -239,7 +463,26 @@ def _field_payload(key: str, label: str, group: str, is_secret: bool) -> dict[st
         "source": src if resolved else "unset",
         "has_ui_override": key in overlay
         or (key == "MAIN_MODEL" and "MODEL_NAME" in overlay),
+        "example": (example or "").strip(),
+        "required": bool(required),
+        "hint": (hint or "").strip(),
     }
+
+
+def _fields_from_meta() -> list[dict[str, Any]]:
+    return [
+        _field_payload(
+            m["key"],
+            m["label"],
+            m["group"],
+            m["secret"] == "1" or m["key"] in SECRET_KEYS,
+            example=str(m.get("example") or ""),
+            required=str(m.get("required") or "") == "1",
+            hint=str(m.get("hint") or ""),
+        )
+        for m in _FIELD_META
+        if m["key"] in ALLOWED_KEYS
+    ]
 
 
 def _llm_status(config_cls: Any) -> dict[str, Any]:
@@ -333,16 +576,7 @@ async def get_settings(_auth: tuple = Depends(require_auth)) -> dict[str, Any]:
 
     Config.reload_runtime()
 
-    fields = [
-        _field_payload(
-            m["key"],
-            m["label"],
-            m["group"],
-            m["secret"] == "1" or m["key"] in SECRET_KEYS,
-        )
-        for m in _FIELD_META
-        if m["key"] in ALLOWED_KEYS
-    ]
+    fields = _fields_from_meta()
     groups: dict[str, list[dict[str, Any]]] = {}
     for f in fields:
         groups.setdefault(f["group"], []).append(f)
@@ -376,12 +610,12 @@ async def get_settings(_auth: tuple = Depends(require_auth)) -> dict[str, Any]:
             "对话/视觉模型均支持 OpenAI 兼容协议。截图改需求依赖视觉模型 Key。"
             "未配置 MES 资料包时无法查数/摸底，请先在 MES 接入上传表结构与接口文档。"
             "密钥留空保存不修改。.env 不会被改写。"
+            "自动化部署：优先本页配置，确认后才触发 GitHub Actions。"
         ),
     }
 
 
-@router.put(
-    "",
+@router.put(    "",
     summary="更新系统配置",
     description=(
         "部分更新整站配置并立即热生效（重建对话 Agent、刷新写码配置）。"
@@ -499,16 +733,7 @@ async def put_settings(
 
     from config import Config
 
-    fields = [
-        _field_payload(
-            m["key"],
-            m["label"],
-            m["group"],
-            m["secret"] == "1" or m["key"] in SECRET_KEYS,
-        )
-        for m in _FIELD_META
-        if m["key"] in ALLOWED_KEYS
-    ]
+    fields = _fields_from_meta()
     groups: dict[str, list[dict[str, Any]]] = {}
     for f in fields:
         groups.setdefault(f["group"], []).append(f)
@@ -528,9 +753,5 @@ async def put_settings(
             **_llm_status(Config),
             **status,
         },
-        "hint": (
-            "对话/视觉模型均支持 OpenAI 兼容协议。截图改需求依赖视觉模型 Key。"
-            "未配置 MES 资料包时无法查数/摸底，请先在 MES 接入上传表结构与接口文档。"
-            "密钥留空保存不修改。.env 不会被改写。"
-        ),
+        "hint": "已保存并热更新。自动化部署等配置立即生效，无需改 .env。",
     }

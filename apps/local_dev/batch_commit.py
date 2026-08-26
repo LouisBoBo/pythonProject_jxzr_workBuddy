@@ -9,10 +9,13 @@ from typing import Any
 from local_dev import jobs as job_store
 from local_dev.commit_gate import run_commit_review_gate
 from local_dev.git_commit import (
+    _push_work_branch,
     commit_synced_files,
     draft_chinese_commit_message,
     filter_pending_commit_files,
     inspect_git_repo,
+    is_push_retry_needed,
+    push_retry_hint,
     resolve_work_branch,
     validate_chinese_commit_message,
 )
@@ -254,6 +257,9 @@ def _resume_push_retry_response(job: dict[str, Any]) -> dict[str, Any]:
     files = list(cr.get("files") or job.get("synced_files") or gate.get("synced_files") or [])
     commit_sha = str(cr.get("commit") or "")
     msg = str(cr.get("message") or gate.get("suggested_commit_message") or "")
+    if "推送失败" in msg:
+        msg = msg.split("推送失败", 1)[0].rstrip("：:。. \t")
+    msg = msg.strip()[:200]
     gate.update(
         {
             "push_only": True,
@@ -264,7 +270,7 @@ def _resume_push_retry_response(job: dict[str, Any]) -> dict[str, Any]:
             "summary": (
                 f"本地已提交（commit `{commit_sha[:12]}`），远程推送未完成。"
                 + (f" 失败原因：{push_err[:200]}" if push_err else "")
-                + " 修复网络后请点「重试推送」（不会重新 commit）。"
+                + f" {push_retry_hint(push_err)}"
             ),
             "verdict": "pass",
             "suggested_commit_message": msg,
@@ -572,7 +578,92 @@ def finalize_commit_batch(
     raw_msg = (commit_message if commit_message is not None else "") or str(
         job.get("commit_message") or gate.get("suggested_commit_message") or ""
     )
+    # 推送重试：本地已有 commit，只 push，不重新校验/改写提交说明
+    if is_push_retry_needed(cr_prev) and push:
+        prior_msg = str(cr_prev.get("message") or raw_msg or "").strip()
+        # 去掉历史误写入的「推送失败：…」尾巴
+        if "推送失败" in prior_msg:
+            prior_msg = prior_msg.split("推送失败", 1)[0].rstrip("：:。. \t")
+        prior_msg = prior_msg[:200] or "已提交本批改动"
+        try:
+            push_result = _push_work_branch(
+                Path(ws).expanduser().resolve(),
+                branch,
+                push_url=push_url,
+                save_remote=save_remote,
+            )
+        except Exception as exc:  # noqa: BLE001
+            push_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        result = {
+            **cr_prev,
+            "ok": True,
+            "skipped": False,
+            "error": "",
+            "message": prior_msg,
+            "branch": branch or cr_prev.get("branch") or "",
+            "commit": str(cr_prev.get("commit") or ""),
+            "files": list(cr_prev.get("files") or files),
+            "push": push_result,
+        }
+        push_info = push_result if isinstance(push_result, dict) else None
+        if push_info and push_info.get("ok"):
+            url = push_info.get("remote_url") or ""
+            if push_info.get("head_commit"):
+                result = {**result, "commit": str(push_info.get("head_commit"))}
+            summary = (
+                f"## 已重试推送成功\n\n"
+                f"commit：`{result.get('commit')}`\n"
+                f"分支：`{result.get('branch')}`\n"
+                + (f"远程：{url}\n" if url else "")
+                + ("（已自动 rebase 远程新提交）\n" if push_info.get("rebased") else "")
+            )
+        else:
+            err_txt = str((push_info or {}).get("error") or "未知错误")
+            summary = (
+                f"## 重试推送仍失败\n\n"
+                f"**{err_txt}**\n"
+                f"\n本地 commit `{result.get('commit')}` 仍在；{push_retry_hint(err_txt)}\n"
+            )
+            result = {**result, "retryable": True, "push_retry": True}
+            job_store.append_message(data_dir, job_id, role="assistant", content=summary)
+            err_out = str((push_info or {}).get("error") or "")
+            updated = job_store.update_job(
+                data_dir,
+                job_id,
+                status="awaiting_commit",
+                commit_decision=None,
+                commit_result=result,
+                error=err_out or None,
+            )
+            return {
+                "ok": True,
+                "retryable": True,
+                "job": updated or job,
+                "commit_result": result,
+                "summary": summary,
+            }
+        job_store.append_message(data_dir, job_id, role="assistant", content=summary)
+        updated = job_store.update_job(
+            data_dir,
+            job_id,
+            status="succeeded",
+            commit_result=result,
+            error=None,
+        )
+        return {"ok": True, "job": updated or job, "commit_result": result, "summary": summary}
+
     ok_msg, msg_err = validate_chinese_commit_message(raw_msg)
+    if not ok_msg:
+        # 说明被污染/过长时：优先回落到已成功 commit 的短说明
+        fallback = str(cr_prev.get("message") or "").strip()
+        if "推送失败" in fallback:
+            fallback = fallback.split("推送失败", 1)[0].rstrip("：:。. \t")
+        fallback = fallback[:200]
+        if fallback:
+            ok2, _ = validate_chinese_commit_message(fallback)
+            if ok2:
+                raw_msg = fallback
+                ok_msg, msg_err = True, ""
     if not ok_msg:
         result = {
             "ok": False,
@@ -655,20 +746,21 @@ def finalize_commit_batch(
     else:
         summary = f"## 提交失败\n\n{result.get('error') or '未知错误'}\n"
 
-    from local_dev.git_commit import is_commit_retryable, is_push_retry_needed
+    from local_dev.git_commit import is_commit_retryable
 
     retryable = is_commit_retryable(result)
     push_retry = is_push_retry_needed(result)
     if retryable:
         push_info = result.get("push") if isinstance(result.get("push"), dict) else None
+        push_err = ""
+        if push_info is not None and not push_info.get("ok"):
+            push_err = str(push_info.get("error") or "")
         if push_retry:
-            summary += (
-                "\n**本地已提交，远程推送失败**；修复网络后请在确认卡点「重试推送」（不会重新 commit）。\n"
-            )
+            summary += f"\n**本地已提交，远程推送失败**；{push_retry_hint(push_err)}\n"
         elif push_info is not None and not push_info.get("ok") and result.get("commit"):
-            summary += "\n**网络原因推送失败，本地已提交**；修复网络后可在确认卡点「重试推送」。\n"
+            summary += f"\n**推送失败，本地已提交**；{push_retry_hint(push_err)}\n"
         else:
-            summary += "\n**疑似网络原因**；修复网络后可在确认卡重试提交。\n"
+            summary += "\n**可重试**；修复后可在确认卡重试提交。\n"
         result = {**result, "retryable": True, "push_retry": bool(push_retry)}
 
     job_store.append_message(data_dir, job_id, role="assistant", content=summary)

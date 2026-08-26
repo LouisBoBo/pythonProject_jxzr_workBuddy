@@ -153,12 +153,17 @@ def load_skill_bundle() -> str:
 
 
 def _read_batch_contents(root: Path, synced: list[str]) -> list[dict[str, str]]:
+    """只读业务源码文本；排除 .db / 配置 / 二进制，避免批审误烧 token。"""
     agent_root = Path(__file__).resolve().parents[1] / "agent"
     if str(agent_root) not in sys.path:
         sys.path.insert(0, str(agent_root))
-    from tools.ide_review.local_files import read_workspace_files
+    from tools.ide_review.local_files import is_functional_source_rel, read_workspace_files
 
-    paths = [_norm_rel(p) for p in synced if _norm_rel(p)][: _MAX_FILES]
+    paths = [
+        p
+        for p in (_norm_rel(x) for x in synced if str(x).strip())
+        if p and is_functional_source_rel(p)
+    ][:_MAX_FILES]
     if not paths:
         return []
     packed = read_workspace_files(root, paths)
@@ -168,7 +173,10 @@ def _read_batch_contents(root: Path, synced: list[str]) -> list[dict[str, str]]:
             continue
         path = _norm_rel(str(item.get("path") or ""))
         body = str(item.get("content") or "")
-        if not path:
+        if not path or not is_functional_source_rel(path):
+            continue
+        # 二进制/乱码：含 NUL 则跳过，勿送 LLM
+        if "\x00" in body[:4000]:
             continue
         if len(body) > _MAX_CHARS_PER_FILE:
             body = body[:_MAX_CHARS_PER_FILE] + "\n…(截断)"

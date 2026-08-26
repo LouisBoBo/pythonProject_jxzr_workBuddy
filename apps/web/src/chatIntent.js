@@ -340,8 +340,42 @@ export function isBareGitRepoUrlMessage(text) {
   return rest.length < 8
 }
 
+/** 部署意图核心匹配（无互斥；供 looksLikeDeploy / 提交互斥复用） */
+function rawLooksLikeDeploy(t) {
+  return (
+    /部署\s*(到|至)\s*(预发|测试|staging|生产|正式|prod|线上|环境)/i.test(t) ||
+    /发布\s*(到|至)\s*(预发|测试|staging|生产|正式|线上|环境)/i.test(t) ||
+    // 口语：部署上线 / 发布上线（未点名环境时后端默认预发）
+    /(部署|发布)\s*上线|上线\s*(部署|发布|发版)|发版\s*上线/i.test(t) ||
+    /(上|发)\s*(到|至)\s*(预发|staging)|上预发|发预发/i.test(t) ||
+    /(帮我|请).{0,6}(部署|发布|发版)(到|至|一下|下)?/i.test(t) ||
+    /(把)?\s*(这[次批轮]|本次|本轮)\s*(的)?\s*(改动|代码|版本)\s*(部署|发布|上线)/i.test(t) ||
+    /(跑|触发|执行).{0,8}(发布|部署|发版).{0,8}(流水线|workflow|actions|CI)/i.test(t) ||
+    /\bdeploy\s+to\s+(staging|prod|production)\b/i.test(t) ||
+    /\b(trigger|run)\s+(deploy|deployment|release)\b/i.test(t) ||
+    /发版\s*(到|至)\s*(预发|测试|生产|线上)/i.test(t)
+  )
+}
+
 /**
- * 人触发「提交本批/今天的代码」——与写码、全仓审核互斥。
+ * 人触发「部署到预发/发布」——与写码、全仓审核、提交批互斥。
+ * 仅匹配明确部署/发布意图，避免误伤 MES「部署计划/工单」等。
+ */
+export function looksLikeDeploy(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  if (looksLikePasteCodeAnalyze(t)) return false
+  if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) return false
+  // 业务「部署/发布」：工单/计划/产线等，不是发版
+  if (/(部署|发布).{0,12}(工单|审批|申请|计划|物料|产线|班组|单据|入库|报工|点检)/.test(t)) return false
+  if (/(工单|审批|申请|计划|物料|产线|班组).{0,12}(部署|发布)/.test(t)) return false
+  // 明确继续写码且无部署词 → 不走部署
+  if (hasCodeDevActionWords(t) && !/(部署|发布|deploy)/i.test(t)) return false
+  return rawLooksLikeDeploy(t)
+}
+
+/**
+ * 人触发「提交本批/今天的代码」——与写码、全仓审核、部署互斥。
  * 仅匹配明确提交意图，避免误伤「提交工单」「提交审批」等业务话。
  */
 export function looksLikeLocalCommitBatch(text) {
@@ -349,6 +383,7 @@ export function looksLikeLocalCommitBatch(text) {
   if (!t) return false
   if (looksLikePasteCodeAnalyze(t)) return false
   if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) return false
+  if (rawLooksLikeDeploy(t)) return false
   // 业务「提交」：工单/审批/表单等，不是 git
   if (/(提交|提报).{0,12}(工单|审批|申请|表单|单据|入库|报工|点检)/.test(t)) return false
   if (/(工单|审批|申请|表单|单据).{0,12}(提交|提报)/.test(t)) return false
@@ -364,10 +399,11 @@ export function looksLikeLocalCommitBatch(text) {
   )
 }
 
-/** 写码/开发功能意图（新窗先选仓，再讨论需求）——与审核、贴码对等互斥 */
+/** 写码/开发功能意图（新窗先选仓，再讨论需求）——与审核、贴码、提交、部署对等互斥 */
 export function looksLikeCodeDevIntent(text, files = []) {
   const t = String(text || '').trim()
   if (!t && !(files || []).length) return false
+  if (looksLikeDeploy(t)) return false
   if (looksLikeLocalCommitBatch(t)) return false
   if (looksLikePasteCodeAnalyze(t)) return false
   if (looksLikeCodeReview(t) || looksLikeGitRepoReview(t)) return false

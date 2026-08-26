@@ -45,6 +45,14 @@ _NETWORK_ERROR_RE = re.compile(
     r"远程主机|网络|连接超时|无法连接|连接被拒绝|Connection timed out)",
     re.I,
 )
+# 远程已有本地没有的提交（需先拉取再推）
+_NON_FF_ERROR_RE = re.compile(
+    r"(fetch first|non-fast-forward|"
+    r"updates were rejected because the remote contains work|"
+    r"tip of your current branch is behind|"
+    r"\[rejected\][^\n]*\(fetch first\))",
+    re.I,
+)
 
 
 def _norm_rel_path(rel: str) -> str:
@@ -52,6 +60,68 @@ def _norm_rel_path(rel: str) -> str:
     while r.startswith("./"):
         r = r[2:]
     return r.lstrip("/")
+
+
+def is_git_network_error(error: str) -> bool:
+    """推送/远程 git 操作是否像网络原因（可重试）。"""
+    return bool(_NETWORK_ERROR_RE.search(str(error or "")))
+
+
+def is_git_non_fast_forward_error(error: str) -> bool:
+    """远程分支含本地没有的提交，直接 push 会被拒绝。"""
+    text = str(error or "")
+    if is_git_network_error(text):
+        return False
+    return bool(_NON_FF_ERROR_RE.search(text))
+
+
+def classify_push_error(error: str) -> str:
+    """给用户看的推送失败原因分类。"""
+    text = str(error or "").strip()
+    if not text:
+        return "unknown"
+    if is_git_network_error(text):
+        return "network"
+    if is_git_non_fast_forward_error(text):
+        return "non_fast_forward"
+    if re.search(
+        r"(auth|denied|403|401|permission|could not read Username|Invalid username)",
+        text,
+        re.I,
+    ):
+        return "auth"
+    return "other"
+
+
+def humanize_push_error(error: str) -> str:
+    """把 git push 原始错误收成可读中文（保留关键原文片段）。"""
+    raw = str(error or "").strip()
+    kind = classify_push_error(raw)
+    snippet = raw.replace("\n", " ").strip()
+    if len(snippet) > 280:
+        snippet = snippet[:280] + "…"
+    if kind == "network":
+        return f"网络不可达，暂时推不到远程。{snippet}"
+    if kind == "non_fast_forward":
+        return (
+            "远程分支有本地没有的新提交，不能直接推送（非网络问题）。"
+            f"详情：{snippet}"
+        )
+    if kind == "auth":
+        return f"远程认证失败，请检查 GitHub 登录/Token/SSH 密钥。{snippet}"
+    return snippet or "push 失败"
+
+
+def push_retry_hint(error: str) -> str:
+    """确认卡/摘要里「下一步怎么做」的短提示。"""
+    kind = classify_push_error(error)
+    if kind == "network":
+        return "修复网络后请点「重试推送」（不会重新 commit）。"
+    if kind == "non_fast_forward":
+        return "请点「重试推送」：系统会先拉取远程并 rebase 再推（不会重新 commit）。"
+    if kind == "auth":
+        return "请检查 GitHub 权限后点「重试推送」（不会重新 commit）。"
+    return "请点「重试推送」再试（不会重新 commit）。"
 
 
 def is_commit_noise_path(rel: str) -> bool:
@@ -69,11 +139,6 @@ def is_commit_noise_path(rel: str) -> bool:
     if r.endswith("/deps/_metadata.json") or r.endswith("/deps/package.json"):
         return True
     return False
-
-
-def is_git_network_error(error: str) -> bool:
-    """推送/远程 git 操作是否像网络原因（可重试）。"""
-    return bool(_NETWORK_ERROR_RE.search(str(error or "")))
 
 
 def is_commit_result_retryable(result: dict[str, Any]) -> bool:
@@ -144,9 +209,20 @@ def list_git_dirty_files(workspace: Path | str) -> set[str]:
         return set()
     dirty: set[str] = set()
     for line in (out or "").splitlines():
+        # porcelain：前两列为状态，第 3 列起为路径（通常是空格分隔）
         if len(line) < 4:
             continue
-        path = line[3:].strip()
+        # 兼容「XY path」与异常缺前导空格的「XYpath」
+        if line[2] == " ":
+            path = line[3:]
+        elif line[1] == " ":
+            path = line[2:]
+        else:
+            path = line[3:] if len(line) > 3 else ""
+        path = path.strip()
+        if path.startswith('"') and path.endswith('"'):
+            # git 可能对特殊字符路径加引号；简单去壳即可
+            path = path[1:-1]
         if " -> " in path:
             path = path.split(" -> ", 1)[1].strip()
         path = _norm_rel_path(path)
@@ -182,8 +258,8 @@ def filter_pending_commit_files(
 ) -> dict[str, Any]:
     """从 WorkBuddy 同步池里筛出 Git 仍待提交的文件（交集，排除噪声路径）。
 
-    说明：不是 Cursor Changes 全量，也不是今日所有同步历史简单相加；
-    仅「经 WorkBuddy 同步过 且 当前 git 仍有变更」的文件。
+    若同步池与 Git 待提交无交集，但工作区仍有业务源码改动（例如在 IDE 直接改的），
+    则回落为「Git 工作区业务改动」，避免用户看到 Changes 却提示 0 个文件。
     """
     root = Path(workspace).expanduser().resolve()
     synced = [_norm_rel_path(str(p)) for p in (synced_files or []) if str(p).strip()]
@@ -197,6 +273,7 @@ def filter_pending_commit_files(
             excluded_non_business.append(rel)
     dirty_all = list_git_dirty_files(root)
     dirty_clean = {p for p in dirty_all if not is_commit_noise_path(p)}
+    dirty_business = sorted(p for p in dirty_clean if _is_business_source(p))
 
     pending: list[str] = []
     for rel in business_synced:
@@ -208,22 +285,51 @@ def filter_pending_commit_files(
         if file_has_git_pending_change(root, rel):
             pending.append(rel)
 
+    source = "sync_pool"
+    if not pending and dirty_business:
+        # 回落：纳入当前 Git 工作区业务改动（仍排除日志/缓存/配置等）
+        pending = []
+        for rel in dirty_business:
+            try:
+                if (root / rel).is_file():
+                    pending.append(rel)
+            except OSError:
+                continue
+            if len(pending) >= 80:
+                break
+        source = "git_dirty_fallback"
+        business_synced = list(dict.fromkeys([*business_synced, *pending]))
+
+    outside_pool = [p for p in dirty_business if p not in set(synced)]
+    note = (
+        f"WorkBuddy 同步池 {len(synced)} 个；"
+        f"排除非业务 {len(excluded_non_business)} 个（配置/锁/样式/文档等）；"
+        f"业务源码 {len([p for p in synced if _is_business_source(p)])} 个；"
+        f"Git 工作区变更 {len(dirty_clean)} 个（已排除日志/缓存）；"
+    )
+    if source == "git_dirty_fallback":
+        note += (
+            f"同步池与 Git 无交集；已回落纳入 Git 业务改动 {len(pending)} 个"
+            + (f"（含 IDE 直接修改 {len(outside_pool)} 个）" if outside_pool else "")
+        )
+    else:
+        note += f"本批待提交 {len(pending)} 个（业务源码 ∩ Git 待提交）"
+        if outside_pool:
+            note += f"；另有 {len(outside_pool)} 个 Git 业务改动未在同步池（未纳入）"
+
     return {
         "pending_files": pending,
-        "synced_pool": business_synced,
-        "synced_total": len(business_synced),
+        "synced_pool": business_synced if source == "sync_pool" else pending,
+        "synced_total": len(business_synced) if source == "sync_pool" else len(pending),
         "synced_raw_total": len(synced),
         "excluded_non_business": excluded_non_business,
         "excluded_non_business_total": len(excluded_non_business),
         "pending_total": len(pending),
         "git_dirty_total": len(dirty_clean),
-        "scope_note": (
-            f"WorkBuddy 今日同步池 {len(synced)} 个；"
-            f"排除非业务 {len(excluded_non_business)} 个（配置/锁/样式/文档等）；"
-            f"业务源码 {len(business_synced)} 个；"
-            f"Git 工作区变更 {len(dirty_clean)} 个（已排除日志/缓存）；"
-            f"本批待提交 {len(pending)} 个（业务源码 ∩ Git 待提交）"
-        ),
+        "git_dirty_business_total": len(dirty_business),
+        "outside_sync_pool": outside_pool[:40],
+        "pending_source": source,
+        "scope_note": note,
     }
 
 
@@ -237,7 +343,15 @@ def _run_git(cwd: Path, *args: str, timeout: int = 60) -> tuple[int, str, str]:
             timeout=timeout,
             check=False,
         )
-        return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+        # 勿对 stdout 做 strip()：git status --porcelain 首行常以空格开头（如「 M path」），
+        # 整段 strip 会吃掉首字符，导致 line[3:] 解析成「ackend/...」之类坏路径。
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+        if out.endswith("\n"):
+            out = out[:-1]
+        if err.endswith("\n"):
+            err = err[:-1]
+        return proc.returncode, out, err
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", f"{type(exc).__name__}: {exc}"
 
@@ -308,6 +422,33 @@ def inspect_git_repo(workspace: Path | str) -> dict[str, Any]:
     }
 
 
+def _rebase_onto_remote(
+    root: Path,
+    branch: str,
+    *,
+    remote_name: str = "origin",
+    fetch_url: str | None = None,
+) -> tuple[bool, str]:
+    """fetch 远程分支并 rebase 到当前 HEAD。失败时尽量 abort rebase。"""
+    if fetch_url:
+        fc, fout, ferr = _run_git(root, "fetch", fetch_url, branch, timeout=120)
+        upstream = "FETCH_HEAD"
+    else:
+        fc, fout, ferr = _run_git(root, "fetch", remote_name, branch, timeout=120)
+        upstream = f"{remote_name}/{branch}"
+    if fc != 0:
+        return False, ferr or fout or "fetch 失败"
+    rc, rout, rerr = _run_git(root, "rebase", upstream, timeout=120)
+    if rc == 0:
+        return True, ""
+    _run_git(root, "rebase", "--abort")
+    detail = (rerr or rout or "rebase 失败").strip()
+    return False, (
+        "远程有新提交，自动 rebase 失败（可能有冲突或工作区未干净）。"
+        f"请在本机处理后再推送。详情：{detail}"
+    )
+
+
 def _push_work_branch(
     root: Path,
     branch: str,
@@ -315,7 +456,65 @@ def _push_work_branch(
     push_url: str | None = None,
     save_remote: bool = False,
 ) -> dict[str, Any]:
-    """推送当前工作分支到远程（URL 或已配置 remote）。"""
+    """推送当前工作分支到远程；遇 non-fast-forward 时自动 fetch+rebase 再推一次。"""
+
+    def _pack(
+        *,
+        ok: bool,
+        error: str = "",
+        remote: str = "",
+        remote_url: str = "",
+        saved_remote: bool | None = None,
+        rebased: bool = False,
+    ) -> dict[str, Any]:
+        raw = str(error or "")
+        out: dict[str, Any] = {
+            "ok": ok,
+            "error": "" if ok else humanize_push_error(raw),
+            "raw_error": "" if ok else raw,
+            "remote": remote,
+            "remote_url": remote_url,
+            "error_kind": "" if ok else classify_push_error(raw),
+        }
+        if saved_remote is not None:
+            out["saved_remote"] = saved_remote
+        if rebased:
+            out["rebased"] = True
+        return out
+
+    def _attempt(
+        *,
+        remote_name: str,
+        remote_url: str,
+        saved_remote: bool | None,
+        use_url: str | None,
+    ) -> dict[str, Any]:
+        if use_url:
+            refspec = f"{branch}:{branch}"
+            pc, pout, perr = _run_git(root, "push", "-u", use_url, refspec, timeout=120)
+            err = "" if pc == 0 else (perr or pout or "push 失败")
+            return _pack(
+                ok=pc == 0,
+                error=err,
+                remote=remote_name,
+                remote_url=remote_url or use_url,
+                saved_remote=saved_remote,
+            )
+        pc, pout, perr = _run_git(root, "push", "-u", remote_name, branch, timeout=120)
+        err = "" if pc == 0 else (perr or pout or "push 失败")
+        return _pack(
+            ok=pc == 0,
+            error=err,
+            remote=remote_name,
+            remote_url=remote_url,
+            saved_remote=saved_remote,
+        )
+
+    def _needs_rebase(push_out: dict[str, Any]) -> bool:
+        return is_git_non_fast_forward_error(
+            str(push_out.get("raw_error") or push_out.get("error") or "")
+        )
+
     info2 = inspect_git_repo(root)
     remote_name = str(info2.get("remote_name") or "origin")
     typed = (push_url or "").strip()
@@ -323,48 +522,111 @@ def _push_work_branch(
         try:
             target_url = normalize_push_remote_url(typed)
         except ValueError as exc:
-            return {
-                "ok": False,
-                "error": str(exc),
-                "remote": remote_name,
-                "remote_url": typed,
-            }
+            return _pack(ok=False, error=str(exc), remote=remote_name, remote_url=typed)
+
         if save_remote:
             if info2.get("has_remote"):
                 _run_git(root, "remote", "set-url", remote_name, target_url)
             else:
                 _run_git(root, "remote", "add", remote_name, target_url)
-            pc, pout, perr = _run_git(root, "push", "-u", remote_name, branch, timeout=120)
-            return {
-                "ok": pc == 0,
-                "error": "" if pc == 0 else (perr or pout or "push 失败"),
-                "remote": remote_name,
-                "remote_url": target_url,
-                "saved_remote": True,
-            }
-        refspec = f"{branch}:{branch}"
-        pc, pout, perr = _run_git(root, "push", "-u", target_url, refspec, timeout=120)
-        return {
-            "ok": pc == 0,
-            "error": "" if pc == 0 else (perr or pout or "push 失败"),
-            "remote": "(对话框地址)",
-            "remote_url": target_url,
-            "saved_remote": False,
-        }
+            first = _attempt(
+                remote_name=remote_name,
+                remote_url=target_url,
+                saved_remote=True,
+                use_url=None,
+            )
+            if first.get("ok") or not _needs_rebase(first):
+                return first
+            ok_rb, rb_err = _rebase_onto_remote(root, branch, remote_name=remote_name)
+            if not ok_rb:
+                return _pack(
+                    ok=False,
+                    error=rb_err or str(first.get("raw_error") or first.get("error") or ""),
+                    remote=remote_name,
+                    remote_url=target_url,
+                    saved_remote=True,
+                )
+            second = _attempt(
+                remote_name=remote_name,
+                remote_url=target_url,
+                saved_remote=True,
+                use_url=None,
+            )
+            if second.get("ok"):
+                second["rebased"] = True
+                _annotate_head_commit(root, second)
+            return second
+
+        first = _attempt(
+            remote_name="(对话框地址)",
+            remote_url=target_url,
+            saved_remote=False,
+            use_url=target_url,
+        )
+        if first.get("ok") or not _needs_rebase(first):
+            return first
+        ok_rb, rb_err = _rebase_onto_remote(root, branch, fetch_url=target_url)
+        if not ok_rb:
+            return _pack(
+                ok=False,
+                error=rb_err or str(first.get("raw_error") or first.get("error") or ""),
+                remote="(对话框地址)",
+                remote_url=target_url,
+                saved_remote=False,
+            )
+        second = _attempt(
+            remote_name="(对话框地址)",
+            remote_url=target_url,
+            saved_remote=False,
+            use_url=target_url,
+        )
+        if second.get("ok"):
+            second["rebased"] = True
+            _annotate_head_commit(root, second)
+        return second
+
     if info2.get("has_remote"):
-        pc, pout, perr = _run_git(root, "push", "-u", remote_name, branch, timeout=120)
-        return {
-            "ok": pc == 0,
-            "error": "" if pc == 0 else (perr or pout or "push 失败"),
-            "remote": remote_name,
-            "remote_url": str(info2.get("remote_url") or ""),
-        }
-    return {
-        "ok": False,
-        "error": "未配置远程仓库。请在确认卡填写仓库地址（与 Git 审码类似），或选择「仅本地提交」。",
-        "remote": remote_name,
-        "remote_url": "",
-    }
+        remote_url = str(info2.get("remote_url") or "")
+        first = _attempt(
+            remote_name=remote_name,
+            remote_url=remote_url,
+            saved_remote=None,
+            use_url=None,
+        )
+        if first.get("ok") or not _needs_rebase(first):
+            return first
+        ok_rb, rb_err = _rebase_onto_remote(root, branch, remote_name=remote_name)
+        if not ok_rb:
+            return _pack(
+                ok=False,
+                error=rb_err or str(first.get("raw_error") or first.get("error") or ""),
+                remote=remote_name,
+                remote_url=remote_url,
+            )
+        second = _attempt(
+            remote_name=remote_name,
+            remote_url=remote_url,
+            saved_remote=None,
+            use_url=None,
+        )
+        if second.get("ok"):
+            second["rebased"] = True
+            _annotate_head_commit(root, second)
+        return second
+
+    return _pack(
+        ok=False,
+        error="未配置远程仓库。请在确认卡填写仓库地址（与 Git 审码类似），或选择「仅本地提交」。",
+        remote=remote_name,
+        remote_url="",
+    )
+
+
+def _annotate_head_commit(root: Path, push_out: dict[str, Any]) -> None:
+    """rebase 后 commit SHA 可能变化，附带当前 HEAD。"""
+    code, sha, _ = _run_git(root, "rev-parse", "HEAD")
+    if code == 0 and (sha or "").strip():
+        push_out["head_commit"] = sha.strip()
 
 
 def has_chinese_commit_text(text: str) -> bool:
@@ -507,9 +769,8 @@ def commit_synced_files(
             if out["push"].get("ok"):
                 out["message"] = msg_skip + "。已推送到远程。"
             else:
-                out["message"] = (
-                    msg_skip + f"。推送失败：{out['push'].get('error') or '未知错误'}"
-                )
+                # 推送错误只放在 push.error，勿并入 message（否则重试校验会报说明过长）
+                out["message"] = msg_skip
             return out
         return {
             "ok": False,
@@ -586,10 +847,8 @@ def commit_synced_files(
             if out["push"].get("ok"):
                 out["message"] = msg_skip + " 已尝试推送当前分支到远程。"
             else:
-                out["message"] = (
-                    msg_skip
-                    + f" 推送失败：{out['push'].get('error') or '未知错误'}"
-                )
+                # 推送错误只放在 push.error，勿并入 message
+                out["message"] = msg_skip
         return out
 
     msg = (message or "").strip()[:200]

@@ -204,7 +204,9 @@ const commitMessage = ref('')
 watch(
   () => props.card?.suggested_commit_message,
   (m) => {
-    const s = String(m || '').trim()
+    let s = String(m || '').trim()
+    if (s.includes('推送失败')) s = s.split('推送失败')[0].replace(/[：:。. \t]+$/u, '')
+    if (s.length > 200) s = s.slice(0, 200)
     if (s && !commitMessage.value.trim()) commitMessage.value = s
   },
   { immediate: true },
@@ -241,15 +243,26 @@ const alreadyCommitted = computed(() => {
   return String(props.card?.status || '') === 'push_failed'
 })
 
+function pushRetryHint(err) {
+  const t = String(err || '')
+  if (/fetch first|non-fast-forward|远程.*新提交|rebase/i.test(t)) {
+    return '请点「重试推送」：系统会先拉取远程并 rebase 再推（不会重新 commit）。'
+  }
+  if (/timeout|timed out|network|无法连接|连接超时|网络不可达/i.test(t)) {
+    return '修复网络后请点「重试推送」（不会重新 commit）。'
+  }
+  if (/auth|403|401|permission|认证/i.test(t)) {
+    return '请检查 GitHub 权限后点「重试推送」（不会重新 commit）。'
+  }
+  return '请点「重试推送」再试（不会重新 commit）。'
+}
+
 const retryHintText = computed(() => {
   const err = String(props.card?.error || '').trim()
   if (alreadyCommitted.value) {
-    return (
-      (err ? `推送失败：${err}。` : '推送失败。') +
-      '本地已提交，修复网络后可点「重试推送」。'
-    )
+    return (err ? `推送失败：${err}。` : '推送失败。') + `本地已提交。${pushRetryHint(err)}`
   }
-  return (err ? `提交失败：${err}。` : '提交失败。') + '疑似网络原因，修复后可重试。'
+  return (err ? `提交失败：${err}。` : '提交失败。') + '修复后可重试。'
 })
 
 const pushPrimaryLabel = computed(() => {
@@ -296,6 +309,7 @@ const commitMessageError = computed(() => {
   const m = commitMessageTrimmed.value
   if (!m) return '请填写中文提交说明'
   if (m.length < 4) return '说明过短，请概括本次改了什么'
+  if (m.length > 200) return '提交说明过长（最多 200 字）'
   if (!CJK_RE.test(m)) return '须含中文'
   return ''
 })
@@ -340,6 +354,13 @@ function sanitizeRemoteUrl(raw) {
   if (u.startsWith('http://') || u.startsWith('https://')) return u
   if (/^[\w.-]+\/[\w.-]+(\.git)?$/i.test(u)) return `https://github.com/${u.replace(/\.git$/i, '')}.git`
   return u
+}
+
+function sanitizeRetryCommitMessage(raw) {
+  let s = String(raw || '').trim()
+  if (s.includes('推送失败')) s = s.split('推送失败')[0].replace(/[：:。. \t]+$/u, '')
+  s = s.trim().slice(0, 200)
+  return s || '已提交本批改动'
 }
 
 const workspace = computed(() => String(props.card?.workspace || '').trim())
@@ -409,7 +430,12 @@ const verdictClass = computed(() => {
 
 const gitLabel = computed(() => {
   const g = props.card?.git
-  if (!g || !g.is_git) return '非 git 仓（无法提交）'
+  if (!g || g.is_git == null) {
+    // 缺 git 探测结果时勿误报「非 git 仓」
+    if (props.card?.can_commit) return '已确认可提交'
+    return '未探测到 Git 状态'
+  }
+  if (!g.is_git) return '非 git 仓（无法提交）'
   const b = g.current_branch ? `当前 ${g.current_branch}` : '是 git 仓'
   return g.on_protected ? `${b}（主干，将切工作分支）` : b
 })
@@ -436,7 +462,12 @@ async function decide(decision, { push } = {}) {
       commit_message:
         decision === 'commit'
           ? alreadyCommitted.value
-            ? String(props.card?.last_commit_message || commitMessageTrimmed.value || props.card?.suggested_commit_message || '重试推送')
+            ? sanitizeRetryCommitMessage(
+                props.card?.last_commit_message ||
+                  commitMessageTrimmed.value ||
+                  props.card?.suggested_commit_message ||
+                  '已提交本批改动',
+              )
             : commitMessageTrimmed.value
           : '',
     })

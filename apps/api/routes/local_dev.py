@@ -96,6 +96,13 @@ class CommitBatchPrepareBody(BaseModel):
     today_only: bool = Field(True, description="优先只汇总今日已成功同步的文件")
 
 
+class DeployPrepareBody(BaseModel):
+    message: str = Field("", description="用户原话（如「部署到预发」）")
+    env: str = Field("", description="目标环境；空则从原话猜测（默认 staging）")
+    ref: str = Field("", description="可选：已推送的 branch / tag / commit")
+    thread_id: str = Field("", description="会话 thread_id")
+
+
 class WorkspaceTreeBody(BaseModel):
     workspace: str = Field(..., min_length=1, description="工程根绝对路径")
     subdir: str = Field("", description="相对工程根的子目录，空=根")
@@ -493,17 +500,21 @@ async def confirm_local_dev_commit(
         from local_dev.git_commit import is_push_retry_needed, validate_chinese_commit_message
 
         cr = job.get("commit_result") if isinstance(job.get("commit_result"), dict) else {}
-        ok_msg, msg_err = validate_chinese_commit_message(commit_msg)
-        if not ok_msg and is_push_retry_needed(cr):
-            commit_msg = str(
-                cr.get("message")
-                or gate.get("suggested_commit_message")
-                or job.get("commit_message")
-                or commit_msg
-            ).strip()
+        # 推送重试：说明仅作展示，过长/污染时用上次成功 commit 的短说明
+        if is_push_retry_needed(cr):
+            cleaned = commit_msg
+            if "推送失败" in cleaned:
+                cleaned = cleaned.split("推送失败", 1)[0].rstrip("：:。. \t")
+            cleaned = cleaned.strip()[:200]
+            prior = str(cr.get("message") or "").strip()
+            if "推送失败" in prior:
+                prior = prior.split("推送失败", 1)[0].rstrip("：:。. \t")
+            prior = prior[:200]
+            commit_msg = cleaned or prior or "已提交本批改动"
+        else:
             ok_msg, msg_err = validate_chinese_commit_message(commit_msg)
-        if not ok_msg:
-            raise HTTPException(status_code=400, detail=msg_err)
+            if not ok_msg:
+                raise HTTPException(status_code=400, detail=msg_err)
     updated = job_store.update_job(
         DATA_DIR,
         job_id,
@@ -644,6 +655,165 @@ async def start_local_dev_commit_batch(
         "runtime": "commit_batch",
         "superseded_job_ids": result.get("superseded_job_ids") or [],
     }
+
+
+@router.get(
+    "/deploy/status",
+    summary="自动化部署：查询开关与白名单",
+    description=(
+        "只读配置探测，不触发 CI/SSH、不改仓。"
+        "默认 DEPLOY_ENABLED=0；与写码/提交批/审码车道独立。"
+        "ci_provider 为 github_actions（默认）或 local_ssh（本机 SSH 旁路）。"
+    ),
+)
+async def local_dev_deploy_status(auth: tuple = Depends(require_auth)):
+    _auth_user(auth)
+    from local_dev.deploy_config import get_deploy_config
+
+    cfg = get_deploy_config()
+    if cfg.enabled:
+        summary = (
+            "部署能力已开启；确认后走本机 SSH 同步"
+            if cfg.ci_provider == "local_ssh"
+            else "部署能力已开启；确认卡确认后才触发 Actions"
+        )
+    else:
+        summary = "部署能力默认关闭；识别到「部署到预发」时仅提示配置，不会发版"
+    return {
+        "ok": True,
+        "runtime": "deploy",
+        "enabled": bool(cfg.enabled),
+        "env_whitelist": list(cfg.env_whitelist),
+        "allow_production": bool(cfg.allow_production),
+        "ci_provider": cfg.ci_provider,
+        "github_workflow": cfg.github_workflow,
+        "github_repo": cfg.github_repo,
+        "require_pushed_ref": bool(cfg.require_pushed_ref),
+        "can_trigger_ci": False,
+        "summary": summary,
+    }
+
+
+@router.post(
+    "/deploy/prepare",
+    summary="自动化部署：门禁探测（不触发发布）",
+    description=(
+        "识别部署意图后的准备接口：检查总开关、环境白名单，以及当前提供方配置。"
+        "github_actions：须 workflow / 仓库；can_trigger_ci 还须 Token。"
+        "local_ssh：须本机项目路径与 SSH 主机/用户/私钥路径/远端目录。"
+        "本接口本身不触发任何发布。不经 Deep Agents；与 commit_batch / code_review 分离。"
+    ),
+)
+async def prepare_local_dev_deploy(
+    body: DeployPrepareBody,
+    auth: tuple = Depends(require_auth),
+):
+    _auth_user(auth)
+    from local_dev.deploy_prepare import prepare_deploy
+
+    return prepare_deploy(
+        message=(body.message or "").strip(),
+        env=(body.env or "").strip() or None,
+        ref=(body.ref or "").strip() or None,
+    )
+
+
+class DeployConfirmBody(BaseModel):
+    decision: str = Field(
+        ...,
+        description="confirm=触发 CI；cancel/skip=取消，不触发",
+    )
+    message: str = Field("", description="用户原话（可选）")
+    env: str = Field("", description="目标环境，默认 staging")
+    ref: str = Field("", description="已推送的 branch/tag/commit；空则用默认工作分支")
+
+
+@router.post(
+    "/deploy/confirm",
+    summary="自动化部署：确认后触发发布（或取消）",
+    description=(
+        "人点确认卡后由 API 直执发布，不经模型。"
+        "github_actions → workflow_dispatch；local_ssh → 本机构建 + SSH/rsync（后台任务）。"
+        "默认须 DEPLOY_ENABLED=1；仅白名单环境；短窗防双击。cancel 不触发任何发布。"
+    ),
+)
+async def confirm_local_dev_deploy(
+    body: DeployConfirmBody,
+    auth: tuple = Depends(require_auth),
+):
+    user = _auth_user(auth)
+    from local_dev.deploy_confirm import confirm_deploy
+
+    result = confirm_deploy(
+        decision=(body.decision or "").strip(),
+        message=(body.message or "").strip(),
+        env=(body.env or "").strip() or None,
+        ref=(body.ref or "").strip() or None,
+        user_id=getattr(user, "user_id", None),
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "部署确认失败")
+    return result
+
+
+class DeployPollBody(BaseModel):
+    repo: str = Field("", description="owner/repo；空则用系统配置 DEPLOY_GITHUB_REPO（local_ssh 可空）")
+    run_id: str = Field("", description="Actions run id 或本机任务 id（local-…）；有则精确查询")
+    workflow: str = Field("", description="无 run_id 时用 workflow 查最近一次（仅 github_actions）")
+    ref: str = Field("", description="可选：按分支过滤最近 run")
+
+
+@router.post(
+    "/deploy/poll",
+    summary="自动化部署：查询运行状态",
+    description=(
+        "P1-3c：轮询发布状态。"
+        "github_actions：查 GitHub run；暂不可达时返回 unreachable（HTTP 200）。"
+        "local_ssh：按 run_id（local-…）查本机后台任务。"
+        "不经模型；github 路径不改本地代码；local_ssh 仅用临时 worktree。"
+    ),
+)
+async def poll_local_dev_deploy(
+    body: DeployPollBody,
+    auth: tuple = Depends(require_auth),
+):
+    _auth_user(auth)
+    from local_dev.deploy_config import get_deploy_config
+    from local_dev.deploy_github import find_latest_workflow_run, get_workflow_run_status
+    from local_dev.deploy_local_ssh import get_local_ssh_run_status
+
+    cfg = get_deploy_config()
+    # 禁止客户端指定任意 repo 蹭服务端 Token 查别人仓库
+    repo = (cfg.github_repo or "").strip()
+    client_repo = (body.repo or "").strip()
+    if client_repo and repo and client_repo != repo:
+        raise HTTPException(status_code=400, detail="仓库须与系统配置 DEPLOY_GITHUB_REPO 一致")
+    if client_repo and not repo:
+        raise HTTPException(
+            status_code=400,
+            detail="未配置 DEPLOY_GITHUB_REPO，拒绝客户端指定仓库（防 Token 越权查询）",
+        )
+    run_id = (body.run_id or "").strip()
+    workflow = (body.workflow or "").strip() or cfg.github_workflow
+    ref = (body.ref or "").strip()
+
+    # 本机 SSH：仅接受格式正确的 local-* run_id，避免误入 GitHub 查询或探测
+    if run_id.startswith("local-") or cfg.ci_provider == "local_ssh":
+        if not run_id:
+            raise HTTPException(status_code=400, detail="本机 SSH 部署请提供 run_id")
+        out = get_local_ssh_run_status(run_id)
+        return {"runtime": "deploy", "poll_timeout_sec": cfg.poll_timeout_sec, **out}
+
+    if not repo:
+        raise HTTPException(status_code=400, detail="未配置仓库（DEPLOY_GITHUB_REPO）")
+    if run_id:
+        out = get_workflow_run_status(repo=repo, run_id=run_id)
+    elif workflow:
+        out = find_latest_workflow_run(repo=repo, workflow=workflow, ref=ref)
+    else:
+        raise HTTPException(status_code=400, detail="请提供 run_id 或 workflow")
+    # 可达性问题用 200 + ok=false，避免前端当硬错误打断轮询
+    return {"runtime": "deploy", "poll_timeout_sec": cfg.poll_timeout_sec, **out}
 
 
 @router.post(

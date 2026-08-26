@@ -57,6 +57,30 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "CURSOR_DEV_WORK_BRANCH",
         "CURSOR_DEV_AUTO_PR",
         "CURSOR_DEV_BRANCH_PREFIX",
+        # 自动化部署 → CI / 本机 SSH（P1-3；界面优先，.env 兜底）
+        "DEPLOY_ENABLED",
+        "DEPLOY_ENV_WHITELIST",
+        "DEPLOY_ALLOW_PRODUCTION",
+        "DEPLOY_CI_PROVIDER",
+        "DEPLOY_GITHUB_WORKFLOW",
+        "DEPLOY_GITHUB_REPO",
+        "DEPLOY_DEFAULT_REF",
+        "DEPLOY_GITHUB_TOKEN",
+        "DEPLOY_REQUIRE_PUSHED_REF",
+        "DEPLOY_SSH_HOST",
+        "DEPLOY_SSH_USER",
+        "DEPLOY_SSH_KEY_PATH",
+        "DEPLOY_SSH_APP_PATH",
+        "DEPLOY_LOCAL_PROJECT_PATH",
+        "DEPLOY_SSH_RESTART_CMD",
+        "DEPLOY_SSH_PORT",
+        "DEPLOY_HEALTH_URL",
+        "DEPLOY_HEALTH_TIMEOUT_SEC",
+        "DEPLOY_HEALTH_RETRIES",
+        "DEPLOY_SSH_SYNC_PAIRS",
+        "DEPLOY_SSH_BUILD_STEPS",
+        "DEPLOY_SSH_RSYNC_EXCLUDES",
+        "DEPLOY_GITHUB_WORKFLOW_ENV_INPUT",
         # Git 审码拉仓：HTTPS 镜像前缀（国内加速；可逗号分隔多个）
         "IDE_GIT_HTTPS_MIRROR",
         "IDE_GIT_MIRROR_FIRST",
@@ -76,6 +100,7 @@ SECRET_KEYS: frozenset[str] = frozenset(
         "SILICONFLOW_API_KEY",
         "CURSOR_API_KEY",
         "MES_API_PASSWORD",
+        "DEPLOY_GITHUB_TOKEN",
     }
 )
 

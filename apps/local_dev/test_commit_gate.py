@@ -308,6 +308,78 @@ class PendingCommitFilterTests(unittest.TestCase):
         }
         self.assertTrue(is_commit_result_retryable(out))
 
+    def test_is_git_non_fast_forward_error(self):
+        from local_dev.git_commit import (
+            classify_push_error,
+            humanize_push_error,
+            is_git_network_error,
+            is_git_non_fast_forward_error,
+            push_retry_hint,
+        )
+
+        nff = (
+            "! [rejected] hebo -> hebo (fetch first)\n"
+            "error: failed to push some refs to 'https://github.com/x/y.git'\n"
+            "hint: Updates were rejected because the remote contains work that you do not have locally."
+        )
+        self.assertTrue(is_git_non_fast_forward_error(nff))
+        self.assertFalse(is_git_network_error(nff))
+        self.assertEqual(classify_push_error(nff), "non_fast_forward")
+        self.assertIn("非网络", humanize_push_error(nff))
+        self.assertIn("rebase", push_retry_hint(nff))
+        self.assertNotIn("修复网络", push_retry_hint(nff))
+
+    def test_push_rebases_on_non_fast_forward(self):
+        from unittest import mock
+
+        from local_dev import git_commit as gc
+
+        root = Path("/tmp/fake-repo")
+        calls: list[tuple[str, ...]] = []
+
+        def fake_run(_cwd, *args, timeout=60):
+            calls.append(args)
+            cmd = args[0] if args else ""
+            if cmd == "push" and len([c for c in calls if c and c[0] == "push"]) == 1:
+                return (
+                    1,
+                    "",
+                    "! [rejected] hebo -> hebo (fetch first)\n"
+                    "error: failed to push some refs\n"
+                    "hint: Updates were rejected because the remote contains work",
+                )
+            if cmd == "fetch":
+                return 0, "", ""
+            if cmd == "rebase":
+                return 0, "", ""
+            if cmd == "push":
+                return 0, "ok", ""
+            if cmd == "rev-parse" and "HEAD" in args:
+                return 0, "newsha123", ""
+            return 0, "", ""
+
+        with (
+            mock.patch.object(
+                gc,
+                "inspect_git_repo",
+                return_value={
+                    "is_git": True,
+                    "current_branch": "hebo",
+                    "on_protected": False,
+                    "remote_name": "origin",
+                    "remote_url": "https://github.com/x/y.git",
+                    "has_remote": True,
+                },
+            ),
+            mock.patch.object(gc, "_run_git", side_effect=fake_run),
+        ):
+            out = gc._push_work_branch(root, "hebo")
+        self.assertTrue(out.get("ok"))
+        self.assertTrue(out.get("rebased"))
+        self.assertEqual(out.get("head_commit"), "newsha123")
+        self.assertTrue(any(c and c[0] == "fetch" for c in calls))
+        self.assertTrue(any(c and c[0] == "rebase" for c in calls))
+
     def test_excludes_dev_logs_noise(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -320,6 +392,42 @@ class PendingCommitFilterTests(unittest.TestCase):
             self.assertTrue(is_commit_noise_path(".dev-logs/backend.log"))
             r = filter_pending_commit_files(root, [".dev-logs/backend.log"])
             self.assertEqual(r["pending_files"], [])
+
+    def test_porcelain_leading_space_not_eaten(self):
+        """首行「 M path」不得被 stdout.strip 吃掉前导空格而解析成 ackend/..."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._git(root, "init")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (root / "backend").mkdir()
+            (root / "backend" / "app.py").write_text("x=1\n", encoding="utf-8")
+            self._git(root, "add", "backend/app.py")
+            self._git(root, "commit", "-m", "init")
+            (root / "backend" / "app.py").write_text("x=2\n", encoding="utf-8")
+            from local_dev.git_commit import list_git_dirty_files
+
+            dirty = list_git_dirty_files(root)
+            self.assertIn("backend/app.py", dirty)
+            self.assertNotIn("ackend/app.py", dirty)
+
+    def test_fallback_to_git_dirty_when_pool_misses(self):
+        """同步池无交集时，回落纳入 Git 工作区业务改动。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._git(root, "init")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (root / "kept.py").write_text("a=1\n", encoding="utf-8")
+            self._git(root, "add", "kept.py")
+            self._git(root, "commit", "-m", "init")
+            (root / "reports.py").write_text("r=1\n", encoding="utf-8")
+            from local_dev.git_commit import filter_pending_commit_files
+
+            # 同步池只有已提交且无变更的文件
+            r = filter_pending_commit_files(root, ["kept.py"])
+            self.assertIn("reports.py", r["pending_files"])
+            self.assertEqual(r.get("pending_source"), "git_dirty_fallback")
 
 
 if __name__ == "__main__":

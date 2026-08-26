@@ -1,0 +1,182 @@
+# 真实预发部署 → 腾讯云轻量应用服务器 + 宝塔面板（SSH + rsync）
+# 目标仓：LouisBoBo/pythonProject_zr_aicoding（frontend Vite + backend FastAPI）
+#
+# ======== 部署失败最常见原因（先查）========
+# GitHub Actions 跑在【国外】机器上。若腾讯云仅国内网可达（或防火墙未对境外开放），
+# 本机 ssh 能通，但 Actions 会报「无法连接 :22」。此时请改用 WorkBuddy
+# DEPLOY_CI_PROVIDER=local_ssh（本机构建 + SSH），不要反复重跑 Actions。
+# 必须（Actions 路径）：轻量控制台 → 防火墙 → 放行 TCP 22，来源 0.0.0.0/0；
+#       宝塔「安全」同步放行 22；且机器须能被境外访问。
+# 外部自检（应显示 22 开放）：任意境外端口检测网站查 公网IP:22
+#
+# ======== 腾讯云侧准备 ========
+# 1. 公网 IP（例 175.178.238.31）；防火墙放行 22 + 80/443
+# 2. Mac 生成密钥（CI 用必须无 passphrase）：
+#      ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/tc_staging_deploy -N ""
+#      公钥写入服务器 ~/.ssh/authorized_keys
+# 3. 站点目录：
+#      mkdir -p /www/wwwroot/zr-aicoding/{frontend/dist,backend}
+#
+# ======== GitHub Secrets ========
+#   STAGING_SSH_HOST     公网 IP
+#   STAGING_SSH_USER     root（或 ubuntu）
+#   STAGING_SSH_KEY      私钥全文（BEGIN…END）
+#   STAGING_APP_PATH     /www/wwwroot/zr-aicoding
+#   STAGING_RESTART_CMD  （可选）
+#
+# WorkBuddy：仓库 LouisBoBo/pythonProject_zr_aicoding · Workflow deploy-staging.yml
+
+name: Deploy Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "目标环境（WorkBuddy 会传入 staging）"
+        required: false
+        default: "staging"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show context
+        run: |
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
+          echo "environment=${{ inputs.environment || 'staging' }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          test -d dist
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          # 部署不跑单测，避免测试失败阻断发布
+
+      - name: Pack release
+        run: |
+          mkdir -p release/frontend release/backend
+          cp -a frontend/dist/. release/frontend/
+          rsync -a \
+            --exclude '__pycache__' \
+            --exclude '.venv' \
+            --exclude 'venv' \
+            --exclude '*.pyc' \
+            --exclude '.pytest_cache' \
+            backend/ release/backend/
+          echo "packed=$(du -sh release | cut -f1)"
+
+      - name: Require deploy secrets
+        env:
+          STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_APP_PATH: ${{ secrets.STAGING_APP_PATH }}
+        run: |
+          missing=0
+          for k in STAGING_SSH_HOST STAGING_SSH_USER STAGING_SSH_KEY STAGING_APP_PATH; do
+            if [ -z "${!k}" ]; then
+              echo "缺少 Secret: $k"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::请到仓库 Settings → Secrets and variables → Actions 配置上述 Secrets 后再部署"
+            exit 1
+          fi
+
+      - name: Deploy via SSH (rsync)
+        env:
+          STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_APP_PATH: ${{ secrets.STAGING_APP_PATH }}
+          STAGING_RESTART_CMD: ${{ secrets.STAGING_RESTART_CMD }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          # 统一写成 deploy_key（兼容 ed25519 / rsa），勿误用 id_rsa 文件名限制
+          KEY_FILE="$HOME/.ssh/deploy_key"
+          # 规范化换行（GitHub Secret 有时带 CRLF）
+          printf '%s\n' "$STAGING_SSH_KEY" | tr -d '\r' > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          # 探测 22：不通则直接给出防火墙提示（避免干等）
+          echo "探测 ${STAGING_SSH_HOST}:22 …"
+          if ! timeout 12 bash -c "echo >/dev/tcp/${STAGING_SSH_HOST}/22" 2>/dev/null; then
+            echo "::error::无法连接 ${STAGING_SSH_HOST}:22。腾讯云防火墙/宝塔安全须放行 TCP 22（来源 0.0.0.0/0），否则 GitHub 国外 runner 连不上（本机 SSH 通也不能说明 Actions 能通）。"
+            exit 1
+          fi
+          echo "端口 22 可达"
+
+          ssh-keyscan -T 10 -H "$STAGING_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          SSH_BASE=(
+            ssh
+            -i "$KEY_FILE"
+            -o IdentitiesOnly=yes
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=accept-new
+            -o ConnectTimeout=20
+            -o ServerAliveInterval=10
+            -o PreferredAuthentications=publickey
+          )
+          # rsync 的 -e 需要单个字符串
+          RSYNC_SSH="ssh -i ${KEY_FILE} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o PreferredAuthentications=publickey"
+
+          REMOTE="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
+          APP="${STAGING_APP_PATH}"
+
+          echo "SSH 登录测试…"
+          if ! "${SSH_BASE[@]}" "$REMOTE" "echo ssh_ok; mkdir -p '$APP/frontend/dist' '$APP/backend'"; then
+            echo "::error::SSH 登录失败（exit 255 常见原因：1) 防火墙未对全世界开放 22  2) STAGING_SSH_KEY 不是无密码私钥或与服务器 authorized_keys 不匹配  3) STAGING_SSH_USER 填错）。本机请先：ssh -o BatchMode=yes -i ~/.ssh/tc_staging_deploy 用户@公网IP"
+            exit 255
+          fi
+
+          rsync -az --delete -e "$RSYNC_SSH" \
+            release/frontend/ \
+            "$REMOTE:$APP/frontend/dist/"
+
+          rsync -az --delete -e "$RSYNC_SSH" \
+            --exclude '__pycache__' \
+            --exclude '.venv' \
+            --exclude 'venv' \
+            release/backend/ \
+            "$REMOTE:$APP/backend/"
+
+          if [ -n "${STAGING_RESTART_CMD:-}" ]; then
+            echo "执行远端重启…"
+            "${SSH_BASE[@]}" "$REMOTE" "bash -lc $(printf '%q' "$STAGING_RESTART_CMD")"
+          else
+            echo "未配置 STAGING_RESTART_CMD，已同步文件，请自行重启 API / Nginx"
+          fi
+
+          echo "部署完成 → $REMOTE:$APP"

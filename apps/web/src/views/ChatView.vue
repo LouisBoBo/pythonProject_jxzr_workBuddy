@@ -56,7 +56,7 @@
           </div>
           <div
             class="msg-body"
-            v-if="msg.content && !msg.localDevCommitGate"
+            v-if="msg.content && !msg.localDevCommitGate && !msg.localDevDeployGate"
             v-html="renderMarkdown(msg.content)"
           ></div>
           <AnalysisDashboardCard
@@ -118,10 +118,16 @@
             :card="msg.localDevCommitGate"
             @resolved="(payload) => onLocalDevCommitResolved(msg, payload)"
           />
-          <!-- 提交结果跟在确认卡下方，避免被卡挡住要上滑才看得见 -->
+          <LocalDevDeployGateCard
+            v-if="msg.localDevDeployGate"
+            :card="msg.localDevDeployGate"
+            @resolved="(payload) => onLocalDevDeployResolved(msg, payload)"
+            @poll="(payload) => onLocalDevDeployPoll(msg, payload)"
+          />
+          <!-- 提交结果跟在确认卡下方；部署就绪时正文为空（说明已在卡内），触发后才追加短状态 -->
           <div
             class="msg-body"
-            v-if="msg.content && msg.localDevCommitGate"
+            v-if="msg.content && (msg.localDevCommitGate || msg.localDevDeployGate)"
             v-html="renderMarkdown(msg.content)"
           ></div>
           <CodingPlanCard
@@ -133,7 +139,7 @@
             :card="msg.intentClarify"
             @resolved="(payload) => onScreenshotIntentResolved(msg, payload)"
           />
-          <div class="msg-actions" v-if="msg.content || msg.files?.length || (msg.confirms || []).length || msg.idePick || msg.gitPick || msg.codeReviewPick || msg.cursorDevPick || msg.cursorDevOptions || msg.cursorDevAnchor || msg.mergeGuide || msg.intentClarify || msg.localDevCommitGate">
+          <div class="msg-actions" v-if="msg.content || msg.files?.length || (msg.confirms || []).length || msg.idePick || msg.gitPick || msg.codeReviewPick || msg.cursorDevPick || msg.cursorDevOptions || msg.cursorDevAnchor || msg.mergeGuide || msg.intentClarify || msg.localDevCommitGate || msg.localDevDeployGate">
             <el-tooltip
               :content="copiedIndex === i ? '已复制' : '复制'"
               placement="bottom"
@@ -344,7 +350,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob, fetchLocalDevStatus, fetchLocalWorkspacePref, saveLocalWorkspacePref, createLocalDevJob, streamLocalDevJob, cancelLocalDevJob, checkLocalDevWorkspace, confirmLocalDevScope, prepareLocalDevCommitBatch, startLocalDevCommitBatch, getLocalDevJob } from '../api.js'
+import { streamMessage, uploadFile, saveHistory, getHistoryDetail, fetchPendingWrites, fetchWriteAudit, fetchIdeBridgeStatus, fetchCursorDevStatus, fetchCursorDevRepos, fetchCursorDevRepoInspect, createCursorDevJob, streamCursorDevJob, cancelCursorDevJob, followupCursorDevJob, getCursorDevJob, fetchLocalDevStatus, fetchLocalWorkspacePref, saveLocalWorkspacePref, createLocalDevJob, streamLocalDevJob, cancelLocalDevJob, checkLocalDevWorkspace, confirmLocalDevScope, prepareLocalDevCommitBatch, startLocalDevCommitBatch, prepareLocalDevDeploy, getLocalDevJob } from '../api.js'
 import ProcessPanel from '../components/ProcessPanel.vue'
 import WriteConfirmCard from '../components/WriteConfirmCard.vue'
 import AnalysisChartCard from '../components/AnalysisChartCard.vue'
@@ -355,6 +361,7 @@ import CodeReviewSourcePickCard from '../components/CodeReviewSourcePickCard.vue
 import CursorDevRepoPickCard from '../components/CursorDevRepoPickCard.vue'
 import CursorDevMergeGuideCard from '../components/CursorDevMergeGuideCard.vue'
 import LocalDevCommitGateCard from '../components/LocalDevCommitGateCard.vue'
+import LocalDevDeployGateCard from '../components/LocalDevDeployGateCard.vue'
 import CursorDevRepoAnchorCard from '../components/CursorDevRepoAnchorCard.vue'
 import CursorDevOptionsCard from '../components/CursorDevOptionsCard.vue'
 import CodingPlanCard from '../components/CodingPlanCard.vue'
@@ -384,6 +391,7 @@ import {
   looksLikeGitRepoReview,
   looksLikeGuidedShotEditIntent,
   looksLikeLocalCommitBatch,
+  looksLikeDeploy,
   looksLikeMesBizIntent,
   looksLikePasteCodeAnalyze,
   looksLikeRawPastedCode,
@@ -1218,6 +1226,7 @@ function persistableMessages() {
     ...(m.mergeGuide ? { mergeGuide: m.mergeGuide } : {}),
     ...(m.intentClarify ? { intentClarify: m.intentClarify } : {}),
     ...(m.localDevCommitGate ? { localDevCommitGate: m.localDevCommitGate } : {}),
+    ...(m.localDevDeployGate ? { localDevDeployGate: m.localDevDeployGate } : {}),
     ...(Array.isArray(m.codingPlan) && m.codingPlan.length ? { codingPlan: m.codingPlan } : {}),
     // 截图/附件：保留 path 供视觉与写码；预览只留短 dataURL（过大则丢，靠 path）
     ...(Array.isArray(m.files) && m.files.length
@@ -1371,6 +1380,7 @@ async function loadSession(id) {
         ...(m.mergeGuide ? { mergeGuide: { ...m.mergeGuide } } : {}),
         ...(m.intentClarify ? { intentClarify: { ...m.intentClarify } } : {}),
         ...(m.localDevCommitGate ? { localDevCommitGate: { ...m.localDevCommitGate } } : {}),
+        ...(m.localDevDeployGate ? { localDevDeployGate: { ...m.localDevDeployGate } } : {}),
         ...(Array.isArray(m.codingPlan) && m.codingPlan.length
           ? { codingPlan: m.codingPlan.map((s) => ({ ...s })) }
           : {}),
@@ -4286,6 +4296,164 @@ function onLocalDevCommitResolved(msg, payload) {
 }
 
 /**
+ * P1-3 人触发部署：门禁探测；就绪则弹确认卡（确认后才触发 CI）。
+ * 与 commit_batch / 写码 SSE / 全仓审码互斥。默认 DEPLOY_ENABLED=0 只出文字说明。
+ * 就绪时只出确认卡（不再叠一段重复 markdown）；未就绪才用正文说明怎么配。
+ */
+async function beginLocalDeploy(userText) {
+  messages.value.push({
+    role: 'assistant',
+    content: '正在检查部署配置…',
+    process: [],
+    processCollapsed: true,
+    localDevDeployGate: null,
+  })
+  const idx = messages.value.length - 1
+  void persistSession()
+  scrollToBottom()
+  try {
+    const res = await prepareLocalDevDeploy({ message: userText || '' })
+    const data = res?.data && typeof res.data === 'object' ? res.data : res
+    const summary = String(data?.summary || '已识别部署意图')
+    const hint = String(data?.next_hint || '')
+    const env = String(data?.env || 'staging')
+    const enabled = Boolean(data?.enabled)
+    const ready = Boolean(data?.ready_for_confirm)
+    const whitelist = Array.isArray(data?.env_whitelist) ? data.env_whitelist.join(', ') : 'staging'
+
+    if (ready) {
+      const provider = String(data?.ci_provider || 'github_actions')
+      messages.value[idx] = {
+        ...messages.value[idx],
+        // 门禁/环境/开关已在确认卡内展示，正文留空避免双框重复
+        content: '',
+        localDevDeployGate: {
+          status: 'pending',
+          message: userText || '',
+          summary,
+          env,
+          ref: String(data?.ref || data?.suggested_ref || ''),
+          suggested_ref: String(data?.suggested_ref || data?.ref || ''),
+          ci_provider: provider,
+          github_repo: String(data?.github_repo || ''),
+          github_workflow: String(data?.github_workflow || ''),
+          ssh_host: String(data?.ssh_host || ''),
+          local_project_path: String(data?.local_project_path || ''),
+          can_trigger_ci: Boolean(data?.can_trigger_ci),
+          checks: Array.isArray(data?.checks) ? data.checks : [],
+          env_whitelist: Array.isArray(data?.env_whitelist) ? data.env_whitelist : [],
+          poll_timeout_sec: Number(data?.poll_timeout_sec || 1800),
+          health_url: String(data?.health_url || data?.visit_url || ''),
+          visit_url: String(data?.visit_url || data?.health_url || ''),
+        },
+      }
+    } else {
+      const lines = [
+        summary,
+        '',
+        `- 目标环境：\`${env}\``,
+        `- 允许环境：\`${whitelist}\``,
+        `- 总开关：${enabled ? '已开启' : '关闭（默认，安全）'}`,
+      ]
+      if (hint) lines.push('', hint)
+      if (!enabled) {
+        lines.push(
+          '',
+          '启用方式：打开「系统配置 → 自动化部署」，打开开关并按执行方式填写配置后保存（热更新）。',
+          '- GitHub Actions：仓库 / Workflow / Token',
+          '- 本机 SSH：将「部署执行方式」设为 local_ssh，并填主机 / 私钥路径 / 远端目录 / 本机项目路径',
+        )
+      }
+      messages.value[idx] = {
+        ...messages.value[idx],
+        content: lines.join('\n'),
+        localDevDeployGate: null,
+      }
+    }
+  } catch (e) {
+    messages.value[idx] = {
+      ...messages.value[idx],
+      content: `部署准备失败：${e?.message || e}\n\n未触发任何发布。`,
+      localDevDeployGate: null,
+    }
+  }
+  await persistSession()
+  scrollToBottom()
+}
+
+function onLocalDevDeployResolved(msg, payload) {
+  if (!msg?.localDevDeployGate || !payload) return
+  const decision = String(payload.decision || '')
+  const result = payload.result && typeof payload.result === 'object' ? payload.result : {}
+  const ci = result.ci && typeof result.ci === 'object' ? result.ci : {}
+  let st = 'pending'
+  let err = ''
+  if (decision === 'cancel' || result.status === 'cancelled') {
+    st = 'cancelled'
+  } else if (result.ok && result.status === 'triggered') {
+    st = 'triggered'
+  } else {
+    st = 'failed'
+    err = String(result.error || '触发失败')
+  }
+  msg.localDevDeployGate = {
+    ...msg.localDevDeployGate,
+    status: st,
+    error: err,
+    ref: String(result.ref || msg.localDevDeployGate.ref || ''),
+    env: String(result.env || msg.localDevDeployGate.env || ''),
+    run_id: String(ci.run_id || msg.localDevDeployGate.run_id || ''),
+    run_url: String(ci.run_url || ''),
+    actions_url: String(ci.actions_url || ''),
+    poll_timeout_sec: Number(msg.localDevDeployGate.poll_timeout_sec || 1800),
+    log_tail: '',
+    ci,
+  }
+  // 过程与终态都在确认卡内展示，正文仅保留取消/失败一句
+  if (st === 'cancelled') {
+    msg.content = '已取消部署，未触发发布。'
+  } else if (st === 'failed') {
+    msg.content = `触发失败：${err}（未改本地工作区）。`
+  } else {
+    msg.content = ''
+  }
+  void persistSession()
+  void nextTick(() => scrollToBottom())
+}
+
+function onLocalDevDeployPoll(msg, payload) {
+  if (!msg?.localDevDeployGate || !payload) return
+  const st = String(payload.status || '')
+  const visit = String(payload.visit_url || payload.health_url || msg.localDevDeployGate.visit_url || '').trim()
+  const patch = {
+    ...msg.localDevDeployGate,
+    run_id: String(payload.run_id || msg.localDevDeployGate.run_id || ''),
+    run_url: String(payload.run_url || msg.localDevDeployGate.run_url || ''),
+    poll_message: String(payload.message || ''),
+    health_url: String(payload.health_url || msg.localDevDeployGate.health_url || ''),
+    health_detail: String(payload.health_detail || msg.localDevDeployGate.health_detail || ''),
+    visit_url: visit,
+    log_tail: String(payload.log_tail || msg.localDevDeployGate.log_tail || ''),
+  }
+  if (payload.health_ok === true || payload.health_ok === false) {
+    patch.health_ok = payload.health_ok
+  }
+  if (st === 'succeeded' || st === 'ci_failed' || st === 'unreachable' || st === 'queued' || st === 'in_progress') {
+    patch.status = st
+  }
+  if (st === 'succeeded') {
+    msg.content = visit
+      ? `**部署成功**\n\n项目访问地址：[${visit}](${visit})`
+      : '**部署成功**\n\n（未配置 DEPLOY_HEALTH_URL，无访问地址）'
+  } else if (st === 'ci_failed') {
+    msg.content = `**部署失败**：${payload.conclusion || payload.message || '见上方过程日志'}。`
+  }
+  msg.localDevDeployGate = patch
+  void persistSession()
+  void nextTick(() => scrollToBottom())
+}
+
+/**
  * 人触发本批提交：不经 Deep Agents / 不经写码 SSE。
  * 过程面板分步 + 每步耗时；定位目录优先用会话内已有路径（避免干等偏好接口）。
  */
@@ -4600,6 +4768,7 @@ async function beginLocalCommitBatch(userText) {
       resBody?.commit_gate && typeof resBody.commit_gate === 'object' ? resBody.commit_gate : {}
     const files = Array.isArray(resBody?.files) ? resBody.files : gate.synced_files || prepFiles
     const fileScans = Array.isArray(gate.file_scans) ? gate.file_scans : []
+    const findings = Array.isArray(gate.findings) ? gate.findings : []
     const findingLines = findings
       .slice(0, 6)
       .map((f) => `[${f.severity || 'P0'}] ${f.path}: ${f.message}`)
@@ -5131,6 +5300,12 @@ async function send(text) {
         (content || '请按截图修改界面。')
     }
     // code_dev / code_review / paste_code：落入下方既有分支
+  }
+
+  // 人触发部署（P1-3a：仅门禁探测，不触发 CI；与提交/写码/审码互斥）
+  if (!hasPastedSourceFence(content) && looksLikeDeploy(content)) {
+    await beginLocalDeploy(content)
+    return
   }
 
   // 人触发本批提交（不经 Agent / 不经写码 SSE；与审码/写码车道互斥）

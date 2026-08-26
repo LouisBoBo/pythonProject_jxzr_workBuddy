@@ -462,25 +462,20 @@ class BatchCommitTests(unittest.TestCase):
                     "updated_at": now,
                 },
             )
-            fake = {
-                "ok": True,
-                "skipped": True,
-                "commit": "abc123",
-                "branch": "dev/wb/t",
-                "files": [],
-                "message": "push only",
-                "push": {"ok": True, "remote": "origin"},
-            }
-            with mock.patch("local_dev.batch_commit.commit_synced_files", return_value=fake):
+            fake_push = {"ok": True, "remote": "origin", "remote_url": "https://example.com/r.git"}
+            with mock.patch("local_dev.batch_commit._push_work_branch", return_value=fake_push):
                 out = finalize_commit_batch(
                     data,
                     jid,
                     "commit",
                     push=True,
-                    commit_message="测试：更新文件",
+                    commit_message="测试：更新文件" + ("x" * 300) + "推送失败：fatal timeout",
                 )
             self.assertTrue(out.get("ok"))
             self.assertTrue(out["commit_result"]["push"]["ok"])
+            self.assertEqual(out["commit_result"]["commit"], "abc123")
+            self.assertLessEqual(len(out["commit_result"]["message"]), 200)
+            self.assertNotIn("推送失败", out["commit_result"]["message"])
 
 
 if __name__ == "__main__":

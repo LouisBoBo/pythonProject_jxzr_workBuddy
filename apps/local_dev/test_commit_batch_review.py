@@ -1,7 +1,9 @@
 """commit-batch-review Skill 执行器单测。"""
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from local_dev.commit_batch_review import (
@@ -9,6 +11,7 @@ from local_dev.commit_batch_review import (
     _estimate_tokens,
     _extract_json,
     _normalize_skill_result,
+    _read_batch_contents,
     _usage_from_response,
     load_skill_bundle,
 )
@@ -19,6 +22,18 @@ class CommitBatchReviewTests(unittest.TestCase):
         bundle = load_skill_bundle()
         self.assertIn("commit-batch-review", bundle)
         self.assertIn("output-schema", bundle.lower())
+
+    def test_read_batch_skips_db_and_keeps_vue(self):
+        """批审读盘不得把 .db 等非业务源码送进 LLM。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "LoginView.vue").write_text("<template></template>\n", encoding="utf-8")
+            (root / "erp.db").write_bytes(b"SQLite\x00format")
+            out = _read_batch_contents(root, ["LoginView.vue", "erp.db", "package.json"])
+            paths = [x["path"] for x in out]
+            self.assertIn("LoginView.vue", paths)
+            self.assertNotIn("erp.db", paths)
+            self.assertNotIn("package.json", paths)
 
     def test_extract_json_from_fence(self):
         raw = '```json\n{"verdict":"pass","summary":"ok","findings":[]}\n```'

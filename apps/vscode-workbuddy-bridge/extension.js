@@ -930,7 +930,7 @@ async function connect() {
 async function pairWithCode() {
   const { api } = cfg();
   const code = await vscode.window.showInputBox({
-    prompt: "输入网页侧栏「配对 VS Code」显示的 6 位配对码",
+    prompt: "输入「系统配置 → 审码车道 → vscode-bridge」中的 6 位配对码",
     ignoreFocusOut: true,
     placeHolder: "例如 A3K9MX",
   });

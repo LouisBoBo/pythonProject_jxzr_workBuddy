@@ -409,6 +409,26 @@ export function startLocalDevCommitBatch(body) {
   return api.post('/local-dev/commit-batch', body)
 }
 
+/** P1-3：部署开关只读探测（不触发 CI） */
+export function getLocalDevDeployStatus() {
+  return api.get('/local-dev/deploy/status')
+}
+
+/** P1-3：部署门禁探测（不触发 CI；默认未开启） */
+export function prepareLocalDevDeploy(body) {
+  return api.post('/local-dev/deploy/prepare', body || {})
+}
+
+/** P1-3：确认卡确认/取消；confirm 时才触发 workflow_dispatch */
+export function confirmLocalDevDeploy(body) {
+  return api.post('/local-dev/deploy/confirm', body || {})
+}
+
+/** P1-3c：轮询 Actions run 状态（GitHub 不可达时 ok=false + unreachable） */
+export function pollLocalDevDeploy(body) {
+  return api.post('/local-dev/deploy/poll', body || {})
+}
+
 export function getLocalDevJob(jobId) {
   return api.get(`/local-dev/jobs/${encodeURIComponent(jobId)}`)
 }
