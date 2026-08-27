@@ -534,6 +534,12 @@ const SETTINGS_TABS = [
     groupIds: ['deploy'],
     hint: '人确认后发版到预发。',
   },
+  {
+    id: 'automations',
+    label: '自动化推送',
+    groupIds: ['automations'],
+    hint: '定时任务（如 PCB 每日早报）成功后推送到企业微信群机器人。',
+  },
 ]
 
 const REVIEW_MODE_PRESETS = [
@@ -751,6 +757,8 @@ const BOOL_KEYS = new Set([
   'DEPLOY_ALLOW_PRODUCTION',
   'DEPLOY_REQUIRE_PUSHED_REF',
   'READONLY_SQL_ENABLED',
+  'WECOM_PUSH_ENABLED',
+  'WECOM_PUSH_DRY_RUN',
 ])
 
 const mesUi = computed(() => {

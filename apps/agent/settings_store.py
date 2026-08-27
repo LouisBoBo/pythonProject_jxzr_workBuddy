@@ -88,6 +88,10 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "READONLY_SQL_ENABLED",
         "READONLY_SQL_DSN",
         "READONLY_SQL_TABLE_WHITELIST",
+        # 自动化任务 → 企业微信群机器人推送
+        "WECOM_WEBHOOK_KEY",
+        "WECOM_PUSH_ENABLED",
+        "WECOM_PUSH_DRY_RUN",
     }
 )
 
@@ -101,6 +105,7 @@ SECRET_KEYS: frozenset[str] = frozenset(
         "CURSOR_API_KEY",
         "MES_API_PASSWORD",
         "DEPLOY_GITHUB_TOKEN",
+        "WECOM_WEBHOOK_KEY",
     }
 )
 

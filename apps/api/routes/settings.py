@@ -347,6 +347,33 @@ _FIELD_META: list[dict[str, str]] = [
         "example": "environment",
         "hint": "workflow_dispatch inputs 的键名；填 none 表示不传 environment 参数",
     },
+    {
+        "key": "WECOM_WEBHOOK_KEY",
+        "group": "automations",
+        "label": "群机器人 Webhook",
+        "secret": "1",
+        "required": "0",
+        "example": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx",
+        "hint": "可粘贴企微提供的完整 Webhook 地址，或只填 URL 中 key= 后面的值",
+    },
+    {
+        "key": "WECOM_PUSH_ENABLED",
+        "group": "automations",
+        "label": "开启自动化结果推送",
+        "secret": "0",
+        "required": "0",
+        "example": "1",
+        "hint": "开启后，任务勾选「推送到企业微信」且执行成功时会发到上述群",
+    },
+    {
+        "key": "WECOM_PUSH_DRY_RUN",
+        "group": "automations",
+        "label": "推送联调模式（仅打日志）",
+        "secret": "0",
+        "required": "0",
+        "example": "0",
+        "hint": "开启后不真正调用企微接口，只在服务端日志记录消息内容",
+    },
 ]
 
 _GROUP_LABELS = {
@@ -357,6 +384,7 @@ _GROUP_LABELS = {
     "cursor_dev": "写码车道",
     "git_review": "Git 审码拉仓",
     "deploy": "自动化部署",
+    "automations": "自动化任务推送",
 }
 
 _GROUP_ORDER = (
@@ -367,6 +395,7 @@ _GROUP_ORDER = (
     "cursor_dev",
     "git_review",
     "deploy",
+    "automations",
 )
 
 class SettingsUpdateBody(BaseModel):
@@ -715,6 +744,19 @@ async def put_settings(
                     detail="系统名称无效：可用中文或英文，勿含空格/斜杠，最长 64 字",
                 )
             values["MES_PROFILE_ID"] = pid
+
+    if "WECOM_WEBHOOK_KEY" in values:
+        values = dict(values)
+        raw_wecom = values.get("WECOM_WEBHOOK_KEY")
+        if raw_wecom is None or str(raw_wecom).strip() == "":
+            values["WECOM_WEBHOOK_KEY"] = ""
+        else:
+            from automations.wecom_bot import normalize_webhook_key
+
+            try:
+                values["WECOM_WEBHOOK_KEY"] = normalize_webhook_key(str(raw_wecom))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     update_settings(values)
     # 不在日志打印 values（可能含密钥）

@@ -91,6 +91,10 @@
             <span>写码车道：{{ cursorDevLabel }}</span>
           </div>
         </div>
+        <router-link to="/automations" class="footer-link" active-class="active">
+          <el-icon :size="16"><Timer /></el-icon>
+          <span>自动化</span>
+        </router-link>
         <router-link to="/files" class="footer-link" active-class="active">
           <el-icon :size="16"><FolderOpened /></el-icon>
           <span>文件管理</span>
@@ -130,7 +134,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpened, Setting } from '@element-plus/icons-vue'
+import { FolderOpened, Setting, Timer } from '@element-plus/icons-vue'
 import { getHistoryList, deleteHistory, fetchIdeBridgeStatus, fetchCursorDevStatus } from './api.js'
 import { clearSession, getDisplayName, getUsername } from './auth.js'
 import { isEmbedMode, pageContextLabel, getPageContext, setEmbedMode, clearPageContext } from './embed.js'

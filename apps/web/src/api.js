@@ -682,3 +682,27 @@ export function streamCursorDevJob(jobId, onEvent, onDone, onError, signal = nul
     throw err
   })
 }
+
+export function fetchAutomations() {
+  return api.get('/automations')
+}
+
+export function fetchAutomationRuns(page = 1, pageSize = 10) {
+  return api.get('/automations/runs', { params: { page, page_size: pageSize } })
+}
+
+export function createAutomation(body) {
+  return api.post('/automations', body)
+}
+
+export function updateAutomation(id, body) {
+  return api.patch(`/automations/${encodeURIComponent(id)}`, body)
+}
+
+export function deleteAutomation(id) {
+  return api.delete(`/automations/${encodeURIComponent(id)}`)
+}
+
+export function runAutomation(id) {
+  return api.post(`/automations/${encodeURIComponent(id)}/run`)
+}

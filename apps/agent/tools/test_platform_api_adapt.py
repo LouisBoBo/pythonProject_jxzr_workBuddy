@@ -106,6 +106,20 @@ class PlatformApiAdaptTests(unittest.TestCase):
         self.assertNotIn("/login", paths)
         self.assertNotIn("/api/login", paths)
 
+    def test_labels_values_timeseries(self) -> None:
+        """设备利用率等接口返回 labels+values 时须转为行记录，不能当空列表。"""
+        payload = {
+            "period": "day",
+            "labels": ["08:00", "09:00", "10:00"],
+            "values": [85.1, 86.2, 84.0],
+        }
+        records, total = _records_from_payload(payload, ["labels", "values"])
+        self.assertEqual(total, 3)
+        self.assertEqual(len(records), 3)
+        self.assertEqual(records[0]["time"], "08:00")
+        self.assertEqual(records[0]["utilization"], 85.1)
+        self.assertEqual(records[1]["utilization"], 86.2)
+
     def test_nested_data_items(self) -> None:
         records, total = _records_from_payload(
             {"data": {"items": [{"id": 1}], "total": 9}},

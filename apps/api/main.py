@@ -37,6 +37,12 @@ except Exception as _local_dev_import_err:  # noqa: BLE001
     local_dev_router = None
     print(f"[warn] local_dev router disabled: {_local_dev_import_err}")
 
+try:
+    from routes.automations import router as automations_router
+except Exception as _automations_import_err:  # noqa: BLE001
+    automations_router = None
+    print(f"[warn] automations router disabled: {_automations_import_err}")
+
 # 确保数据目录存在
 for sub in (
     "history",
@@ -51,6 +57,7 @@ for sub in (
     "local_dev",
     "local_dev/jobs",
     "local_dev/sandboxes",
+    "automations",
     "user_prefs",
     ".locks",
 ):
@@ -79,6 +86,23 @@ def _startup_daily_mes_profile_sync() -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[warn] daily MES profile sync not scheduled: {exc}")
 
+
+@app.on_event("startup")
+async def _startup_automation_scheduler() -> None:
+    """后台按 tick 执行自动化任务；与用户流式对话互斥，抢不到锁则跳过本轮。"""
+    try:
+        from pathlib import Path
+        import sys
+
+        apps = Path(__file__).resolve().parents[1]
+        if str(apps) not in sys.path:
+            sys.path.insert(0, str(apps))
+        from automations.scheduler import schedule_automation_scheduler
+
+        schedule_automation_scheduler(DATA_DIR)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] automation scheduler not started: {exc}")
+
 _cors = resolve_cors_settings()
 apply_cors_warning(_cors)
 app.add_middleware(
@@ -101,6 +125,8 @@ if cursor_dev_router is not None:
     app.include_router(cursor_dev_router)
 if local_dev_router is not None:
     app.include_router(local_dev_router)
+if automations_router is not None:
+    app.include_router(automations_router)
 
 app.mount("/exports", StaticFiles(directory=str(DATA_DIR / "exports")), name="exports")
 

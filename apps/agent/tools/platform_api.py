@@ -185,6 +185,30 @@ def _list_query_string(
     return urlencode(pairs)
 
 
+def _timeseries_records_from_payload(result: dict) -> tuple[list[dict[str, Any]], int] | None:
+    """设备利用率等接口返回 {labels:[], values:[]}，须转成行记录供展示/汇总。"""
+    labels = result.get("labels")
+    values = result.get("values")
+    if not isinstance(labels, list) or not isinstance(values, list):
+        return None
+    if not labels or not values:
+        return None
+    if isinstance(labels[0], dict):
+        return None
+    n = min(len(labels), len(values))
+    if n <= 0:
+        return None
+    records: list[dict[str, Any]] = []
+    for i in range(n):
+        records.append(
+            {
+                "time": str(labels[i]),
+                "utilization": values[i],
+            }
+        )
+    return records, n
+
+
 def _records_from_payload(
     result: dict | list,
     list_keys: list[str] | None = None,
@@ -193,6 +217,9 @@ def _records_from_payload(
         return result, len(result)
     if not isinstance(result, dict):
         return [], 0
+    ts = _timeseries_records_from_payload(result)
+    if ts:
+        return ts
     keys: list[str] = []
     for k in list(list_keys or []) + list(_GENERIC_LIST_KEYS):
         if k and k not in keys:

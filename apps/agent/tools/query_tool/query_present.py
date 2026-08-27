@@ -87,6 +87,10 @@ _FALLBACK_LABELS = {
     "production_line": "产线",
     "updated_at": "更新时间",
     "created_at": "创建时间",
+    "time": "时点",
+    "utilization": "利用率(%)",
+    "时点": "时点",
+    "利用率": "利用率(%)",
 }
 
 
@@ -329,6 +333,41 @@ def _narrow_urgent_filter_hint(applied: dict[str, Any] | None) -> str | None:
     )
 
 
+def _utilization_summary(records: list[Any]) -> str | None:
+    """labels+values 时序转利用率汇总，供 Agent 写「设备稼动率」要点。"""
+    pairs: list[tuple[str, float]] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        val = rec.get("utilization")
+        if val is None:
+            val = rec.get("利用率")
+        if val is None:
+            continue
+        try:
+            pct = float(val)
+        except (TypeError, ValueError):
+            continue
+        label = str(rec.get("time") or rec.get("时点") or "").strip()
+        pairs.append((label, pct))
+    if not pairs:
+        return None
+    vals = [v for _, v in pairs]
+    avg = sum(vals) / len(vals)
+    max_i = max(range(len(vals)), key=lambda i: vals[i])
+    min_i = min(range(len(vals)), key=lambda i: vals[i])
+    max_t, max_v = pairs[max_i]
+    min_t, min_v = pairs[min_i]
+    time_span = ""
+    if pairs[0][0] and pairs[-1][0]:
+        time_span = f"（{pairs[0][0]}–{pairs[-1][0]}）"
+    return (
+        f"利用率汇总{time_span}：平均 {avg:.1f}%，"
+        f"最高 {max_v:.1f}%（{max_t or '—'}），最低 {min_v:.1f}%（{min_t or '—'}）。"
+        "写「设备稼动率」要点时直接用以上数字，勿口算。"
+    )
+
+
 def present_query_result(
     raw: dict[str, Any],
     filters: dict | None = None,
@@ -377,6 +416,9 @@ def present_query_result(
     narrow = _narrow_urgent_filter_hint(applied)
     if narrow:
         hint += " " + narrow
+    util_summary = _utilization_summary(records)
+    if util_summary:
+        hint += " " + util_summary
     out = {
         "entity": eid,
         "label": label,
@@ -392,6 +434,8 @@ def present_query_result(
     # 已有中文表时不再附带 raw records，避免 tool JSON 重复占上下文（汇总类工具读 MES 原始响应）
     if not shown:
         out["records"] = records
+    if util_summary:
+        out["utilization_summary"] = util_summary
     if narrow:
         out["followup_hint"] = narrow
     return out

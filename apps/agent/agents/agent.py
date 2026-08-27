@@ -20,6 +20,7 @@ from middleware import build_custom_middleware
 from tools.query_tool.entity_catalog import build_system_prompt
 from tools.file_ops import import_file_to_platform, export_platform_data, transform_file, preview_file
 from tools.write_audit_query import query_write_audit
+from tools.web_search import search_web
 from tools.query_tool.platform_query import (
     list_platform_entities,
     query_platform_data,
@@ -130,6 +131,7 @@ TOOLS = [
     render_api_health_report,
     import_external_api_logs,
     analyze_api_errors_from_logs,
+    search_web,
 ]
 
 
