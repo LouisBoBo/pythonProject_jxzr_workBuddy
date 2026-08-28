@@ -51,6 +51,16 @@ class AgentLaneMessageTests(unittest.TestCase):
         self.assertNotIn("【路由·写码】", out)
         self.assertNotIn("【路由·贴码】", out)
 
+    def test_automation_run_skips_lane_routes(self) -> None:
+        out = compose_lane_user_text(
+            "提醒打下班卡",
+            {"automation_run": True, "automation_id": "auto-test"},
+        )
+        self.assertIn("【自动化任务执行】", out)
+        self.assertIn("自动化任务调度执行", out)
+        self.assertNotIn("【路由·写码】", out)
+        self.assertNotIn("【路由·Git 审核】", out)
+
 
 class StreamBusyContractTests(unittest.IsolatedAsyncioTestCase):
     """与 agent_wrapper.stream_chat 入口契约对齐（忙时 error + code）。"""

@@ -1,5 +1,29 @@
 [
   {
+    "id": "auto-67c1347924da401e",
+    "name": "每日生产数据",
+    "prompt": "【目标】只输出【今日已完工生产工单】明细列表，写入飞书多维表格留档。以工单行为主，禁止稼动率/日产等非工单指标。\n\n【数据来源】当前 MES，必须真实查询，禁止编造。\n\n【查数步骤】（后台执行，不要把工具名写进正文）\n1. 只查工单实体 work-orders：优先状态=已完成的明细；有 actual_end_time 时尽量只保留今日完工。\n2. 字段以「返回记录的 keys」为准，不要只看 filter_fields。每条记录通常含：\n   - current_process → 必须写入「工序」\n   - actual_end_time（优先）或 end_date → 必须写入「完工时间」\n3. 若有挂在单张工单上的良率/检验数一并写入；禁止单独输出工序良率汇总、稼动率、日产。\n4. 条数多时最多取前 30 条。\n\n【输出格式】只要工单列表：\n- 第一行：业务日、完工工单总条数、口径\n- 正文最多 8 条示例；完整数据只放 bitable_json\n- 每行必须尽量含：工单号、产品、料号、产线、工序、计划量、完工量、状态、完工时间、优先级\n- 记录里有 current_process / actual_end_time 却不写进 bitable_json 视为失败\n\n【禁止】Markdown 表格、## 标题、早报式「工序良率」段、编造字段\n",
+    "status": "active",
+    "schedule_type": "recurring",
+    "rrule": "FREQ=DAILY;BYHOUR=20;BYMINUTE=0",
+    "scheduled_at": null,
+    "valid_from": null,
+    "valid_until": null,
+    "cwds": [],
+    "push_to_wecom": false,
+    "bitable_sync": {
+      "enabled": true,
+      "app_token": "XRJRwmvzaiYTK6kEltkcH7xWn9b",
+      "table_id": "tblplsNBw9pKnDGW",
+      "mode": "append",
+      "field_map": {}
+    },
+    "next_run_at": 1787918400,
+    "last_run_at": 1787907454,
+    "created_at": 1787902057,
+    "updated_at": 1787907459
+  },
+  {
     "id": "auto-9d2c23d7b3ac49c7",
     "name": "每日生产运营日报",
     "prompt": "生成【昨日生产运营日报】，面向领导阅读；必须真实查询当前 MES，禁止编造任何数字。\n\n【查数步骤】（后台执行，结果写入「要点/细分」，不要把工具名写进正文）\n1. inspect_mes_profile(user_intent=\"昨日生产运营日报\")\n2. list_query_metrics()\n3. 工单：analyze_platform_brief 或 summarize_platform_data(group_by=\"状态\")；query_metric(\"在制\")；query_metric(\"未完工\")；query_metric(\"紧急未完工\")；昨日完工用 analyze_time_trend 或 query_platform_data（有日期筛参时）\n4. 设备稼动率（优先）：\n   - 先 describe_entity 确认是否存在 device-utilization（设备利用率趋势）\n   - 有则 query_platform_data(entity=\"device-utilization\", filters={\"period\": \"day\"})\n   - 返回 labels + values 时：在要点写平均利用率、最高/最低及对应时点（如 08:00–20:00 各小时 %）；禁止口算 OEE\n   - 若 device-oee 有数据，可在细分补充综合 OEE（可用率/性能率/质量率）；device-oee 为 0 条则整段不写 OEE，不要写「无数据」\n5. 设备产出：query_metric(\"日产出\") — 有数据才输出「设备产出」条\n6. 品质：query_metric(\"工序良率\") — 有数据才输出「工序良率」条\n7. 内部可用 run_ops_scene(\"plant-exception-daily\") 交叉核对，不要把核对过程写进正文\n\n【正文格式】与 PCB 早报完全一致，仅输出查到的条目（编号连续，中间无数据的条目不占号）：\n**1. 工单概况**\n要点：（一行核心数字，含昨日日期）\n细分：（可选，状态分布）\n\n**2. 设备稼动率**\n要点：（device-utilization 有数据才写；一行：平均/峰值/低谷利用率 %）\n细分：（可选，device-oee 综合 OEE 有数据才写）\n\n**3. 设备产出**\n要点：（有产量才写本条）\n\n**4. 工序良率**\n要点：（有良率才写本条）\n\n**5. 需关注**\n要点：（1～2 条业务提醒）\n\n禁止：Markdown 表格、## 标题、> 引用、工具名/entity id/caveat/数据缺口/数据说明/「无接口」「0 条」类说明、标题外引言。",
@@ -11,10 +35,27 @@
     "valid_until": null,
     "cwds": [],
     "push_to_wecom": true,
-    "next_run_at": 1787878800,
-    "last_run_at": 1787822235,
+    "next_run_at": 1787965200,
+    "last_run_at": 1787899490,
     "created_at": 1787817494,
-    "updated_at": 1787822236
+    "updated_at": 1787901655,
+    "bitable_sync": {
+      "enabled": false,
+      "app_token": "",
+      "table_id": "",
+      "mode": "append",
+      "field_map": {
+        "date": "日期",
+        "wip_count": "在制工单",
+        "open_count": "未完工",
+        "urgent_open": "紧急未完工",
+        "utilization_avg": "平均稼动率",
+        "output_total": "日产合计",
+        "yield_min": "良率下限",
+        "yield_max": "良率上限",
+        "note": "需关注摘要"
+      }
+    }
   },
   {
     "id": "auto-ca67f22219154322",
@@ -28,10 +69,10 @@
     "valid_until": null,
     "cwds": [],
     "push_to_wecom": true,
-    "next_run_at": 1787878800,
-    "last_run_at": 1787816236,
+    "next_run_at": 1787965200,
+    "last_run_at": 1787878881,
     "created_at": 1787799557,
-    "updated_at": 1787816236
+    "updated_at": 1787878881
   },
   {
     "id": "auto-7f6b8e09d1124320",
@@ -44,9 +85,9 @@
     "valid_from": null,
     "valid_until": null,
     "cwds": [],
-    "next_run_at": 1787907600,
-    "last_run_at": 1787810084,
+    "next_run_at": 1788512400,
+    "last_run_at": 1787907631,
     "created_at": 1787807758,
-    "updated_at": 1787810084
+    "updated_at": 1787907631
   }
 ]

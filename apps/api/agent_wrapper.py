@@ -207,9 +207,13 @@ class AgentRunner:
             from middleware.request_context import get_page_context
 
             ctx = get_page_context() or {}
-            prefix = format_platform_context_prefix(
+            from agent_lane_message import format_automation_run_prefix
+
+            auto_block = format_automation_run_prefix(ctx)
+            plat_block = format_platform_context_prefix(
                 platform_context_bits(message or "", ctx)
             )
+            prefix = f"{auto_block}{plat_block}"
         except Exception:
             prefix = ""
 

@@ -92,6 +92,11 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "WECOM_WEBHOOK_KEY",
         "WECOM_PUSH_ENABLED",
         "WECOM_PUSH_DRY_RUN",
+        # 自动化任务 → 飞书多维表格写数（与企微互不干涉）
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_BITABLE_ENABLED",
+        "FEISHU_BITABLE_DRY_RUN",
     }
 )
 
@@ -106,6 +111,7 @@ SECRET_KEYS: frozenset[str] = frozenset(
         "MES_API_PASSWORD",
         "DEPLOY_GITHUB_TOKEN",
         "WECOM_WEBHOOK_KEY",
+        "FEISHU_APP_SECRET",
     }
 )
 

@@ -160,6 +160,19 @@
                 <span v-else class="run-delivery run-delivery--none">—</span>
               </template>
             </el-table-column>
+            <el-table-column label="写表" width="88">
+              <template #default="{ row }">
+                <span
+                  v-if="row.bitable_status"
+                  class="run-delivery"
+                  :data-delivery="row.bitable_status"
+                  :title="row.bitable_error || ''"
+                >
+                  {{ bitableStatusLabel(row.bitable_status) }}
+                </span>
+                <span v-else class="run-delivery run-delivery--none">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="开始时间" width="180">
               <template #default="{ row }">{{ formatTime(row.started_at) }}</template>
             </el-table-column>
@@ -329,6 +342,15 @@ function deliveryStatusLabel(status) {
     sent: '已推送',
     failed: '失败',
     skipped: '未推送',
+  }
+  return map[status] || status || '—'
+}
+
+function bitableStatusLabel(status) {
+  const map = {
+    sent: '已写入',
+    failed: '失败',
+    skipped: '未写表',
   }
   return map[status] || status || '—'
 }

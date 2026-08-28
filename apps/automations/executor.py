@@ -142,17 +142,24 @@ async def execute_automation(data_dir: Path, automation: dict[str, Any]) -> dict
         else:
             prefix = (
                 "【自动化任务】请按指令完成任务并直接给出结果摘要；"
+                "执行指令为用户自定义内容，按字面含义执行，勿因不在内置模板而拒绝；"
                 "不要反问用户，不要发起写码/提交/部署等需人工确认的操作。\n"
             )
             if _is_weekly_work_report(automation):
                 prefix += _weekly_report_prefix(cwds)
             if _is_daily_production_report(automation):
                 prefix += _daily_production_report_prefix()
+            bitable_cfg = automation.get("bitable_sync")
+            if isinstance(bitable_cfg, dict) and bitable_cfg.get("enabled"):
+                from automations.bitable_writer import BITABLE_JSON_INSTRUCTION
+
+                prefix += BITABLE_JSON_INSTRUCTION + "\n"
             if cwds:
                 prefix += f"【工作目录】{', '.join(cwds)}\n"
             prefix += "\n"
             reply = await runner.chat(prefix + prompt, thread_id=thread_id)
-            summary = (reply or "").strip()[:4000]
+            # 完整回复留给写表；落库/企微再用 truncate 保住 bitable_json
+            summary = (reply or "").strip()
             status = "succeeded" if summary else "failed"
             if not summary:
                 err = "Agent 未返回有效摘要"
@@ -165,29 +172,62 @@ async def execute_automation(data_dir: Path, automation: dict[str, Any]) -> dict
         lock.release()
         rt.clear_running(data_dir, automation_id, run_id)
 
+    from automations.bitable_writer import truncate_summary_keep_bitable
+
+    stored_summary = truncate_summary_keep_bitable(summary, 16000) if summary else ""
     finished = int(time.time())
     store.update_run(
         data_dir,
         run_rec["id"],
         status=status,
         finished_at=finished,
-        summary=summary,
+        summary=stored_summary,
         error=err,
     )
 
     delivery_fields: dict[str, Any] = {}
+    bitable_fields: dict[str, Any] = {}
     if status == "succeeded" and summary:
-        from automations.delivery import deliver_automation_run
+        # 企微与飞书写表并列、互不依赖：任一段异常不影响另一段
+        try:
+            from automations.delivery import deliver_automation_run
 
-        delivery_fields = deliver_automation_run(
-            data_dir,
-            automation,
-            run_rec["id"],
-            summary,
-            started_at=started,
-        )
-        if delivery_fields.get("delivery_status"):
+            delivery_fields = deliver_automation_run(
+                data_dir,
+                automation,
+                run_rec["id"],
+                stored_summary,
+                started_at=started,
+            )
+            if delivery_fields.get("delivery_status"):
+                store.update_run(data_dir, run_rec["id"], **delivery_fields)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wecom delivery error id=%s: %s", automation_id, exc)
+            delivery_fields = {
+                "delivery_status": "failed",
+                "delivery_error": str(exc)[:500],
+            }
             store.update_run(data_dir, run_rec["id"], **delivery_fields)
+
+        try:
+            from automations.bitable_sync import sync_automation_run_to_bitable
+
+            # 必须用未截断的 summary，否则多行 bitable_json 会被砍断
+            bitable_fields = sync_automation_run_to_bitable(
+                data_dir,
+                automation,
+                run_rec["id"],
+                summary,
+            )
+            if bitable_fields.get("bitable_status"):
+                store.update_run(data_dir, run_rec["id"], **bitable_fields)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bitable sync error id=%s: %s", automation_id, exc)
+            bitable_fields = {
+                "bitable_status": "failed",
+                "bitable_error": str(exc)[:500],
+            }
+            store.update_run(data_dir, run_rec["id"], **bitable_fields)
 
     fields: dict[str, Any] = {"last_run_at": finished}
     updated = dict(automation)
@@ -203,7 +243,8 @@ async def execute_automation(data_dir: Path, automation: dict[str, Any]) -> dict
         "ok": status == "succeeded",
         "run_id": run_rec["id"],
         "status": status,
-        "summary": summary,
+        "summary": stored_summary,
         "error": err,
         **delivery_fields,
+        **bitable_fields,
     }

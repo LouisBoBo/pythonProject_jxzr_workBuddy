@@ -37,12 +37,15 @@
 
 ## 自动化任务
 
-完整版 WorkBuddy 定时调度机制学习笔记；ZR 侧尚未实现，供后续落地参考。
+定时调度、企微推送与生产数据双通道（企微消息 + 飞书多维表格验证）。
 
 | 文档 | 说明 |
 |------|------|
 | [自动化任务/README.md](./自动化任务/README.md) | 目录索引与读法 |
-| [WorkBuddy自动化任务学习笔记.md](./自动化任务/WorkBuddy自动化任务学习笔记.md) | 机制、数据模型、调度执行链路、ZR 落地建议 |
+| [WorkBuddy自动化任务学习笔记.md](./自动化任务/WorkBuddy自动化任务学习笔记.md) | 机制、数据模型、调度执行链路 |
+| [PCB早报企微推送方案.md](./自动化任务/PCB早报企微推送方案.md) | 企微群推送（已实现） |
+| [生产数据企微消息与飞书多维表格方案.md](./自动化任务/生产数据企微消息与飞书多维表格方案.md) | 企微消息 / 飞书写表两套独立能力 |
+| [操作指南-查生产数据写飞书多维表格.md](./自动化任务/操作指南-查生产数据写飞书多维表格.md) | 飞书写表配置与验收步骤 |
 
 ---
 
@@ -126,7 +129,10 @@ Skills、Middleware、会话上下文、框架选型。
 | 文档 | 说明 |
 |------|------|
 | [DeepAgents与DeepSeek-Harness技术选型分析.md](./Agent开发/DeepAgents与DeepSeek-Harness技术选型分析.md) | **主 harness 选型**：Deep Agents vs DeepSeek Harness（按业务/技术点） |
+| [DeepSeek-Harness架构实现可行性再评估.md](./Agent开发/DeepSeek-Harness架构实现可行性再评估.md) | 可行性探讨稿：结论维持选项 A；DSH 写码执行器 POC 可行性上调 |
 | [选型落地P0清单.md](./Agent开发/选型落地P0清单.md) | **P0 落地**：架构锁定 / 写码旁路 / 车道核对检查表 |
+| [AGENT-API-可行性技术报告.md](./Agent开发/AGENT-API-可行性技术报告.md) | 证据：apps/agent + apps/api 深读（文件:行号） |
+| [dsh-architecture-report.zh.md](./Agent开发/dsh-architecture-report.zh.md) | 证据：DeepSeek Harness rc.8 架构深读（10 节） |
 | [DeepAgents-Skills使用指南.md](./Agent开发/DeepAgents-Skills使用指南.md) | Skills |
 | [DeepAgents-Middleware使用指南.md](./Agent开发/DeepAgents-Middleware使用指南.md) | Middleware |
 | [会话上下文管理说明.md](./Agent开发/会话上下文管理说明.md) | 会话与 checkpoint |

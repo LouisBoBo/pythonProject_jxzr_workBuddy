@@ -120,6 +120,12 @@ def get_automation(data_dir: Path, automation_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _sanitize_bitable_field(raw: Any) -> dict[str, Any] | None:
+    from automations.bitable_sync import sanitize_bitable_sync
+
+    return sanitize_bitable_sync(raw)
+
+
 def create_automation(data_dir: Path, fields: dict[str, Any]) -> dict[str, Any]:
     now = int(time.time())
     status = str(fields.get("status") or "active").strip().lower()
@@ -142,6 +148,7 @@ def create_automation(data_dir: Path, fields: dict[str, Any]) -> dict[str, Any]:
         "valid_until": fields.get("valid_until"),
         "cwds": cwds,
         "push_to_wecom": bool(fields.get("push_to_wecom")),
+        "bitable_sync": _sanitize_bitable_field(fields.get("bitable_sync")),
         "next_run_at": fields.get("next_run_at"),
         "last_run_at": fields.get("last_run_at"),
         "created_at": now,
@@ -185,6 +192,8 @@ def update_automation(data_dir: Path, automation_id: str, fields: dict[str, Any]
             item["cwds"] = _sanitize_cwds(cwds_raw if isinstance(cwds_raw, list) else [])
         if "push_to_wecom" in fields:
             item["push_to_wecom"] = bool(fields["push_to_wecom"])
+        if "bitable_sync" in fields:
+            item["bitable_sync"] = _sanitize_bitable_field(fields.get("bitable_sync"))
         item["updated_at"] = int(time.time())
         schedule_keys = {
             "status",
@@ -249,7 +258,7 @@ def append_run(data_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
         "status": str(record.get("status") or "pending"),
         "started_at": int(record.get("started_at") or now),
         "finished_at": record.get("finished_at"),
-        "summary": str(record.get("summary") or "")[:4000],
+        "summary": str(record.get("summary") or "")[:16000],
         "error": str(record.get("error") or "")[:2000] or None,
         "thread_id": record.get("thread_id"),
         "cwd": record.get("cwd"),
@@ -280,8 +289,15 @@ def update_run(data_dir: Path, run_id: str, **fields: Any) -> dict[str, Any] | N
                 "delivery_error",
                 "delivered_at",
                 "delivery_status",
+                "bitable_status",
+                "bitable_error",
+                "bitable_record_ids",
+                "bitable_synced_at",
             }:
-                row[key] = val
+                if key == "summary" and isinstance(val, str):
+                    row[key] = val[:16000]
+                else:
+                    row[key] = val
         items[idx] = row
         items = _trim_run_records(items)
         _write_json_atomic(_runs_path(data_dir), items)

@@ -537,8 +537,8 @@ const SETTINGS_TABS = [
   {
     id: 'automations',
     label: '自动化推送',
-    groupIds: ['automations'],
-    hint: '定时任务（如 PCB 每日早报）成功后推送到企业微信群机器人。',
+    groupIds: ['automations', 'automations_bitable'],
+    hint: '企微群消息与飞书多维表格写数是两套独立能力，可只开其一。',
   },
 ]
 
@@ -759,6 +759,8 @@ const BOOL_KEYS = new Set([
   'READONLY_SQL_ENABLED',
   'WECOM_PUSH_ENABLED',
   'WECOM_PUSH_DRY_RUN',
+  'FEISHU_BITABLE_ENABLED',
+  'FEISHU_BITABLE_DRY_RUN',
 ])
 
 const mesUi = computed(() => {

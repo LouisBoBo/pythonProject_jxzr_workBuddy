@@ -29,6 +29,10 @@ class AutomationCreateBody(BaseModel):
     valid_until: str | None = Field(None, description="生效结束（可选）")
     cwds: list[str] = Field(default_factory=list, description="工作目录列表")
     push_to_wecom: bool = Field(False, description="成功后推送到企业微信群机器人")
+    bitable_sync: dict | None = Field(
+        None,
+        description="飞书多维表格同步配置（enabled/app_token/table_id/field_map）；与企微互不干涉",
+    )
 
 
 class AutomationUpdateBody(BaseModel):
@@ -42,6 +46,7 @@ class AutomationUpdateBody(BaseModel):
     valid_until: str | None = Field(None, description="生效结束")
     cwds: list[str] | None = Field(None, description="工作目录")
     push_to_wecom: bool | None = Field(None, description="成功后推送到企业微信群机器人")
+    bitable_sync: dict | None = Field(None, description="飞书多维表格同步配置")
 
 
 def _store():

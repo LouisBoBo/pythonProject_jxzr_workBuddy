@@ -15,6 +15,12 @@ from workbuddy_lanes import (
 def platform_context_bits(message: str = "", ctx: dict | None = None) -> list[str]:
     """拼入「[平台上下文]」的 key=value 片段。"""
     ctx = ctx or {}
+    if ctx.get("automation_run"):
+        bits = ["automation_run=1"]
+        aid = str(ctx.get("automation_id") or "").strip()
+        if aid:
+            bits.append(f"automation_id={aid}")
+        return bits
     bits: list[str] = []
     if ctx.get("entity"):
         bits.append(f"entity={ctx['entity']}")
@@ -55,6 +61,11 @@ def platform_context_bits(message: str = "", ctx: dict | None = None) -> list[st
 def format_platform_context_prefix(bits: list[str]) -> str:
     if not bits:
         return ""
+    if any(b.startswith("automation_run=") for b in bits):
+        return (
+            "[平台上下文] 本轮为**自动化任务调度执行**（非用户对话）。"
+            "严格按任务「执行指令」产出摘要；禁止反问、禁止写码/提交/部署。\n\n"
+        )
     return (
         "[平台上下文] 用户从 MES 页面打开助手，当前页："
         + "，".join(bits)
@@ -62,10 +73,24 @@ def format_platform_context_prefix(bits: list[str]) -> str:
     )
 
 
+def format_automation_run_prefix(ctx: dict | None) -> str:
+    """调度触发的自动化执行：强调按用户自定义指令执行，勿拒绝对未知任务类型。"""
+    ctx = ctx or {}
+    if not ctx.get("automation_run"):
+        return ""
+    return (
+        "【自动化任务执行】本消息由定时调度触发；执行指令为用户在「自动化任务」页自定义内容，"
+        "按字面含义完成并直接给出摘要。勿声称平台无定时能力；"
+        "若指令仅为到点提醒且无查数步骤，输出简短提醒即可。\n\n"
+    )
+
+
 def append_lane_force_routes(message: str = "", ctx: dict | None = None) -> str:
     """在用户正文后追加本轮强制路由提示（写码 / 审核 / 贴码互斥）。"""
     ctx = ctx or {}
     body = message or ""
+    if ctx.get("automation_run"):
+        return body
     _git = str(ctx.get("git_repo_url") or "").strip()
     _ide = str(ctx.get("ide_workspace_root") or "").strip()
     lane = resolve_workbuddy_lane(body, ctx)
@@ -102,6 +127,6 @@ def append_lane_force_routes(message: str = "", ctx: dict | None = None) -> str:
 def compose_lane_user_text(message: str = "", ctx: dict | None = None) -> str:
     """平台上下文前缀 + 强制路由后的用户正文（不含 MES profile / 附件）。"""
     bits = platform_context_bits(message, ctx)
-    prefix = format_platform_context_prefix(bits)
+    prefix = format_automation_run_prefix(ctx) + format_platform_context_prefix(bits)
     body = append_lane_force_routes(message, ctx)
     return prefix + body

@@ -374,6 +374,42 @@ _FIELD_META: list[dict[str, str]] = [
         "example": "0",
         "hint": "开启后不真正调用企微接口，只在服务端日志记录消息内容",
     },
+    {
+        "key": "FEISHU_APP_ID",
+        "group": "automations_bitable",
+        "label": "飞书应用 App ID",
+        "secret": "0",
+        "required": "0",
+        "example": "cli_xxxxxxxx",
+        "hint": "开放平台自建应用；须开通多维表格权限并发布",
+    },
+    {
+        "key": "FEISHU_APP_SECRET",
+        "group": "automations_bitable",
+        "label": "飞书应用 App Secret",
+        "secret": "1",
+        "required": "0",
+        "example": "（在开放平台凭证页复制）",
+        "hint": "加密存储；勿提交到 git",
+    },
+    {
+        "key": "FEISHU_BITABLE_ENABLED",
+        "group": "automations_bitable",
+        "label": "开启飞书多维表格同步",
+        "secret": "0",
+        "required": "0",
+        "example": "1",
+        "hint": "总开关；与企微推送互不干涉。任务还需开启「同步到飞书多维表格」并填写 app_token/table_id",
+    },
+    {
+        "key": "FEISHU_BITABLE_DRY_RUN",
+        "group": "automations_bitable",
+        "label": "写表联调模式（仅打日志）",
+        "secret": "0",
+        "required": "0",
+        "example": "0",
+        "hint": "开启后不真正调用飞书写接口，只在服务端日志记录将写入的内容",
+    },
 ]
 
 _GROUP_LABELS = {
@@ -385,6 +421,7 @@ _GROUP_LABELS = {
     "git_review": "Git 审码拉仓",
     "deploy": "自动化部署",
     "automations": "自动化任务推送",
+    "automations_bitable": "飞书多维表格同步",
 }
 
 _GROUP_ORDER = (
@@ -396,6 +433,7 @@ _GROUP_ORDER = (
     "git_review",
     "deploy",
     "automations",
+    "automations_bitable",
 )
 
 class SettingsUpdateBody(BaseModel):
