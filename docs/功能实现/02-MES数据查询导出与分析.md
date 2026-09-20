@@ -1,180 +1,258 @@
 # 02 · MES 数据查询、导出与分析
 
-> 用自然语言查工单/设备/品质等真数据，可导出文件，可出图、出看板；**没接口就诚实说缺口**，不编 KPI。
+> **一句话**：用自然语言查工单/设备/品质等 **MES 真数据**，可导出文件，可出图、出看板；接口没有就诚实说缺口。  
+> **不是**：让模型编造 KPI；也不是走 Cursor 改代码。查数在 Deep Agents 对话里调 Python Tool，真 HTTP 在 `platform_api`。
 
 ---
 
 ## 1. 实现原理
 
-### 1.1 查数、导出、分析三件事，底层是一条链
+### 1.1 我们到底实现了什么？
 
-可以记成：**先有一张「能查什么」的菜单，再按菜单去打 MES 接口，最后把结果变成表 / 文件 / 图**。
+可以记成：**先有一张「能查什么」的菜单（entities），再按菜单打 MES 接口，最后把结果变成表 / 文件 / 图。**
 
-```text
-OpenAPI（接口文档）
-    → 解析生成 entities.json（可查对象目录，每个对象有 id、字段、接口路径）
-    → 用户自然语言提问
-    → 大模型选对 entity id 和筛选条件
-    → platform_api.py 带 Token 发 HTTP 请求
-    → 返回 JSON → 模型整理成中文表 / 或交给图表工具出 payload
-```
+| 人配的 / 人问的 | 系统干的 | 达到的效果 |
+|----------------|----------|------------|
+| 自然语言（「今天有多少工单」） | 模型选 entity + filters → `query_platform_data` → HTTP | 中文表 + 口径说明 |
+| 「导出 Excel」 | `export_platform_data` 写入 `EXPORT_DIR` | 可下载文件 |
+| 「出图 / 打开运营看板」 | `render_analysis_chart` / `run_analysis_demo` 等算 ECharts JSON | 前端卡片真画图，非 ASCII 手绘 |
+| OpenAPI / 精修 entities | mes-profile API 落盘资料包 | 换厂可换目录 |
 
-**导出**：把同一份查询结果写到 `exports/` 目录，给用户路径下载。  
-**分析 / 看板**：不是让模型「手绘 ASCII 图」，而是 Python 工具算好 ECharts 需要的 JSON，前端 `AnalysisChartCard` 负责画。
+**技术落点（整包）：**
 
-### 1.2 两个账号，别混
+| 层次 | 路径 |
+|------|------|
+| 对话入口 | `POST /api/chat/stream`（默认 lane） |
+| Tools | `apps/agent/tools/query_tool/platform_query.py` 等 |
+| 结果展示 | `query_present.present_query_result` |
+| HTTP 客户端 | `apps/agent/tools/platform_api.py` → `get_client()` |
+| 出站安全 | `safe_http` / `assert_http_url_allowed` |
+| 图表 | `analysis_chart.py`、`analysis_dashboard.py`、`analysis_demo.py` |
+| 前端 | `chatAnalysisChartParse.js`、`AnalysisChartCard.vue`、`AnalysisDashboardCard.vue` |
+| Skills | `query-mes-data`、`analyze-mes-data`、`analyze-pcb-mes`、`ops-query-playbook` |
+| 资料包 | `data/mes_profiles/{MES_PROFILE_ID}/` |
+| 下载 | `GET /api/download/{filename}`（仅 `EXPORT_DIR` 内） |
 
-| 账号 | 干什么 | 配在哪 |
-|------|--------|--------|
-| WorkBuddy 登录 | 进产品、看历史 | 登录页 / ERP 对接 |
-| MES 接口账号 | 查数、导入写 MES | 系统配置 → MES 接入 |
+### 1.2 和「PCB 闲聊 / 写码」差在哪？
 
-没配 MES 接口账号时，工具会失败或提示去配置——**不能**用登录账号冒充 MES 账号。
+| | **本篇：查数/导出/分析** | PCB 闲聊（01） | 写码（08） |
+|--|--------------------------|----------------|------------|
+| 数据从哪来 | MES HTTP 真结果 | 模型知识 | 改仓库代码 |
+| 谁执行 HTTP | `platform_api.get_client` | 无 | 无（Cursor/Job） |
+| 没接口时 | **诚实降级**说缺口 | 科普即可 | — |
+| 会否改业务仓 | 否 | 否 | 是（确认后） |
 
-### 1.3 「诚实降级」是什么意思？
+**两个账号别混：**
 
-现场 MES 接口常有缺口，例如：
+| 账号 | 干什么 |
+|------|--------|
+| ZR WorkBuddy 登录 | 进产品、看历史 |
+| MES 接口账号（`MES_API_*`） | 查数、导入写 MES |
 
-- 没有按「当天」筛的参数字段  
-- 没有 Lot / 拼板追溯接口  
-- 某实体文档写了但接口 404  
+没配 MES 接口账号时工具会失败或提示配置——**不能**用登录账号冒充 MES 账号。
 
-工具和提示词要求：**查空就说查空，接口不支持就说缺口**，禁止换另一个实体 id「凑数」，禁止编良率 KPI。  
-这是产品可信度，不是技术炫技。
+**技术上怎么隔开：**
 
-### 1.4 谁在执行？
+| 点 | 实现 |
+|----|------|
+| 不经 Cursor | 查数 Tool 在 Agent 进程内 HTTP，不创建写码 Job |
+| 诚实降级 | 查空 / 缺参 / 404 → 返回空或 missing；提示词禁止换实体充数、禁止编良率 |
+| 出站 | `safe_http` 断言 URL，禁止乱打非允许域名 |
 
-- **理解人话、选实体、解释口径**：Deep Agents + Skills（`query-mes-data` 等）  
-- **真 HTTP 请求**：`platform_api.py`（Python `requests` / httpx，带 JWT）  
-- **画图数据结构**：`analysis_chart.py`、`analysis_dashboard.py` 等  
-- **不经过** Cursor，不改业务仓库代码
+### 1.3 为什么图表要「工具算 JSON、前端画」？
+
+**人话：**  
+让模型手绘 ASCII 或「描述一下柱状图」不可验收。Python 算出 ECharts option / dashboard payload，前端组件渲染，领导演示才能稳定复现。
+
+**技术点：**
+
+| 点 | 函数 / 模块 | 怎么做的 |
+|----|-------------|----------|
+| 单图 | `render_analysis_chart` | 返回 ECharts option JSON |
+| 看板 | `render_analysis_dashboard` / `run_analysis_demo` | 多 panel payload（如 `pcb-ops-board`） |
+| 前端识别 | `chatAnalysisChartParse.js` | 从流/消息里抠出图表结构 |
+| UI | `AnalysisChartCard` / `AnalysisDashboardCard` | ECharts 渲染 |
+
+### 1.4 安全上钉死了什么？
+
+| 约束 | 技术实现 |
+|------|----------|
+| 不编 KPI | Skills + 工具返回；无数据不说有 |
+| 外发 HTTP | `safe_http` / URL 校验 |
+| 下载不越界 | `GET /api/download/{filename}` 限制在 `EXPORT_DIR` |
+| 只读 SQL | `READONLY_SQL_*` **默认关**，勿当默认查数路径 |
+| 导出目录 | `EXPORT_DIR`（可与桌面约定） |
 
 ---
 
-## 2. 实现流程（技术点怎么落地）
+## 2. 实现流程（人话 + 技术点怎么落地）
 
-> 查数没有单独 REST「/query」接口，而是 **Agent 在 SSE 对话里调 Python Tool**；真 HTTP 在 `platform_api.py`。
+> 查数没有单独 REST「/query」接口，而是 **Agent 在 SSE 里调 Python Tool**；真 HTTP 在 `platform_api.py`。
 
-### 2.1 资料包落地：entities.json 从哪来
+### 2.1 资料包（能查什么）从哪来？
+
+**人话：** 系统配置里上传或拉取 OpenAPI，生成/合并 `entities.json`；也可人工精修后上传覆盖。激活资料包决定当前厂别目录。
 
 ```text
-系统配置上传 / API：
-  POST /api/mes-profile/upload-openapi
-  POST /api/mes-profile/import-openapi-url
-  POST /api/mes-profile/upload-entities（人工精修覆盖）
-       ↓
-mes_profile_persist.persist_openapi_text()
+POST /api/mes-profile/upload-openapi
+POST /api/mes-profile/import-openapi-url
+POST /api/mes-profile/upload-entities（人工精修覆盖）
+  → mes_profile_persist.persist_openapi_text()
   → data/mes_profiles/{MES_PROFILE_ID}/openapi.json
-  → openapi_to_entities.py 合并 → entities.json
+  → openapi_to_entities 合并 → entities.json
+
+PUT /api/mes-profile/active → 写入 MES_PROFILE_ID
+GET /api/mes-profile 时可能 schedule_daily_sync_openapi（日同步）
 ```
 
-| 技术点 | 实现 |
-|--------|------|
-| 激活资料包 | `PUT /api/mes-profile/active` 写 `MES_PROFILE_ID` 到 settings |
-| 缓存 | `load_catalog()` 按 `entities.json` path+mtime 内存缓存 |
-| 日同步 | `GET /api/mes-profile` 时 `schedule_daily_sync_openapi()` 后台拉最新 OpenAPI |
-| 写码后合并 | `mes_profile_refresh.refresh_mes_profile_from_runtime()` 本机改 API 后可合并目录 |
+**技术点：**
+
+| 点 | 函数 / 模块 | 怎么做的 |
+|----|-------------|----------|
+| 目录缓存 | `load_catalog` | 按 `entities.json` path + mtime 内存缓存 |
+| 写码后刷新 | `mes_profile_refresh.refresh_mes_profile_from_runtime` | 本机改 API 后可合并目录 |
+| 实体对齐 | `resolve_entity_id` / `describe_entity` | 中文说法对齐目录 id |
+
+---
 
 ### 2.2 对话查数：Tool 调用链
+
+**人话：** 你问一句，模型先搞清「查哪个对象、什么条件」，再真请求 MES，把结果整理成中文表和口径说明（例如是否真的按「当天」筛到了）。
 
 ```text
 用户：「今天有多少工单？」
   → POST /api/chat/stream（默认 lane）
-  → Skill query-mes-data
+  → Skill query-mes-data（或分析类 Skill）
 
-模型 tool call 链（典型）：
+典型 tool call：
   1. list_platform_entities() / describe_entity(entity)
-       resolve_entity_id() 把中文说法对齐 entities.json 里的 id
   2. query_platform_data(entity, filters, limit)
-       get_client() → ERPClient / MockClient
-       client.query() → HTTP + JWT（MES_API_*）
-  3. present_query_result() → markdown_table + 中文列名
-  4. 模型流式解释口径（是否限定「当天」）
+       → get_client() → ERPClient / MockClient
+       → client.query() → HTTP + JWT（MES_API_*）
+  3. present_query_result(...)（query_present.py）
+       → markdown 表 + 中文列名 + 口径 hint
+  4. 模型流式解释
+
+汇总类还可：
+  summarize_platform_data / query_metric / analyze_time_trend / analyze_platform_brief
 ```
 
-| 技术点 | 实现 |
-|--------|------|
-| 出站安全 | `assert_http_url_allowed()` + `urlopen_limited()` |
-| 调用日志 | `append_api_call(source=erp)` 写入 `DATA_DIR/api_calls` |
-| 诚实降级 | 接口无日期参 / 查空 → 工具返回空或 missing；提示词禁止换实体充数 |
-| 账号 | `get_client()` 读 `MES_API_USERNAME/PASSWORD/ENTERPRISE_CODE`，与 WB 登录 JWT 无关 |
+**技术点：**
 
-### 2.3 导出
+| 点 | 函数 / 模块 | 怎么做的 |
+|----|-------------|----------|
+| 主查询 | `query_platform_data` | 查 MES；结果经 `present_query_result` 展示 |
+| 列表/描述 | `list_platform_entities`、`describe_entity` | 对齐实体与字段 |
+| 汇总/指标 | `summarize_platform_data`、`query_metric`、`analyze_time_trend`、`analyze_platform_brief` | 聚合与简报；页内汇总须 caveat「≠ 全库 COUNT」 |
+| 出站 | `assert_http_url_allowed` + 受限 urlopen | 安全 HTTP |
+| 调用日志 | `append_api_call(source=erp)` | 写入 `DATA_DIR/api_calls` |
+| 账号 | `get_client()` | 读 `MES_API_*` / `PLATFORM_BASE_URL`，与 WB 登录 JWT 无关 |
+
+---
+
+### 2.3 导出怎么落到文件？
+
+**人话：** 说「导出 Excel/CSV」时，工具先按同样条件查出数据，再写到导出目录；回复里给路径，前端可点下载链接。
 
 ```text
 export_platform_data(entity, filters, format=csv|xlsx|json)
   → 先 query 再写 EXPORT_DIR/{timestamp}.{ext}
-  → 回复绝对路径；受 EXPORT_MAX_ROWS 限制
+  → 回复路径
+  → 用户经 GET /api/download/{filename} 下载（仅允许 EXPORT_DIR 内文件名）
 ```
 
-### 2.4 分析图表与看板（非模型手绘）
+**技术点：**
+
+| 点 | 怎么做的 |
+|----|----------|
+| 目录 | `AgentConfig.EXPORT_DIR`（环境变量 `EXPORT_DIR`） |
+| 下载安全 | `routes/chat.py` 的 download：`resolve` 后必须落在导出目录内 |
+| Skill | `import-export-data` 覆盖导出侧指引（导入见功能 03） |
+
+---
+
+### 2.4 分析图表与看板
+
+**人话：** 要趋势图或 PCB 运营看板时，工具返回结构化 payload；对话里出现图表卡/看板卡，不是让模型「画」出来。
 
 ```text
-汇总：summarize_platform_data() / analyze_time_trend() / query_metric()
-出图：render_analysis_chart() → 返回 ECharts option JSON
-看板：run_analysis_demo(playbook='pcb-ops-board')
-      → render_analysis_dashboard() → 多 panel payload
-
-agent_wrapper 解析工具结果 → SSE 可能带 dashboard/chart 结构
-ChatView → chatAnalysisChartParse.js
-  → AnalysisChartCard.vue / AnalysisDashboardCard.vue（ECharts）
+render_analysis_chart(...)     → ECharts option
+run_analysis_demo(playbook=…)  → render_analysis_dashboard → 多 panel
+  → agent_wrapper 解析工具结果 → SSE / 消息结构
+  → ChatView → chatAnalysisChartParse.js
+  → AnalysisChartCard.vue / AnalysisDashboardCard.vue
 ```
 
-| 技术点 | 实现 |
-|--------|------|
-| 页内汇总 caveat | `summarize_*` 强制说明「当前页/当前批 ≠ 全库 COUNT」 |
-| 可选 MCP 出图 | `ANALYSIS_CHART_MCP` 打开时走 `chart_mcp_client` |
-| 历史持久化 | 图表 JSON 存在会话消息里，切会话再回来仍可见 |
+**技术点：**
 
-### 2.5 运维场景（ops-query-playbook）
-
-`ops_playbook.py` 预置场景模板（急单链、值班简报）：  
-仍是多次 `query_platform_data`，只是步骤和话术固定，Skill 教模型按 playbook 名调用。
-
-### 2.6 常见排查
-
-| 现象 | 查什么 |
-|------|--------|
-| 「未配置可查对象」 | `entities.json` 是否存在；`MES_PROFILE_ID` |
-| 401/403 | `MES_API_*`；`PLATFORM_BASE_URL` |
-| 有数但口径错 | 看 `query_platform_data` 的 filters 入参 |
-| 看板空白 | 浏览器控制台；payload 是否被 `chatAnalysisChartParse` 识别 |
-| Lot 瞎编 | 应返回缺口；查 `metrics.json` / 接口是否真有追溯 |
+| 点 | 函数 / 模块 | 怎么做的 |
+|----|-------------|----------|
+| 单图 / 看板 | `render_analysis_chart`、`render_analysis_dashboard`、`run_analysis_demo` | 算 payload |
+| 运维剧本 | `ops_playbook.py` + Skill `ops-query-playbook` | 急单链、值班简报等仍多次 `query_platform_data`，步骤固定 |
+| PCB 分析 Skill | `analyze-mes-data`、`analyze-pcb-mes` | 分析口径与可选 PCB 扩展 |
+| 历史 | 图表 JSON 落在会话消息 | 切会话再回来仍可见 |
 
 ---
 
-## 3. 技术及用法
+### 2.5 出问题时先查哪？
 
-| 技术 / 模块 | 怎么用 |
-|-------------|--------|
-| `tools/query_tool/platform_query.py` | 列表、查询、摘要主入口 |
-| `tools/platform_api.py` | 真正 HTTP 调 MES |
-| `openapi_to_entities.py` | OpenAPI → 可查对象 |
-| `analysis_chart.py` / `analysis_dashboard.py` | 图表 / 看板 payload |
-| `metrics_pack.py` / `time_series.py` / `aggregate.py` | 指标与聚合 |
-| `ops_playbook.py` | 值班场景（急单链等） |
-| Skills | `query-mes-data`、`analyze-mes-data`、`analyze-pcb-mes`、`ops-query-playbook`、`import-export-data`（导出半边） |
-| 前端 | `AnalysisChartCard.vue`、`AnalysisDashboardCard.vue`、ECharts |
-| 配置 | `MES_PROFILE_ID`、`MES_API_*`、`USE_ERP`、`EXPORT_*`；可选 `READONLY_SQL_*`（默认关） |
-
-资料包日同步：`mes_profile_daily_sync.py` / 文档 `docs/MES业务/每日打开自动同步资料包.md`。
+| 现象 | 人话原因 | 技术上先看 |
+|------|----------|------------|
+| 「未配置可查对象」 | 资料包未激活或 entities 空 | `MES_PROFILE_ID`；`entities.json` |
+| 401/403 | MES 账号或 Base URL 错 | `MES_API_*`；`PLATFORM_BASE_URL`；`USE_ERP` |
+| 有数但口径错 | filters / 日期字段不对 | `query_platform_data` 入参；接口是否支持「当天」 |
+| 看板空白 | payload 未识别 | 控制台；`chatAnalysisChartParse` |
+| Lot / 追溯瞎编 | 接口缺口 | 应返回缺口；查 metrics / OpenAPI 是否真有 |
 
 ---
 
-## 4. 后续扩展与优化建议
+## 3. 技术及用法（速查）
 
-1. **可做**：按厂补 `metrics.json` / 分析配置，减少「口径口头约定」。  
-2. **可做**：缺口清单（如 Lot/拼板）产品化展示，领导演示已要求主动说。  
-3. **慎做**：默认打开只读 SQL 直连库（安全面大，现默认关）。  
-4. **不要做**：接口没有的字段用模型编造良率/在制。
+| 模块 | 关键函数 | 干什么 |
+|------|----------|--------|
+| `platform_query.py` | `list_platform_entities`、`describe_entity`、`query_platform_data`、`summarize_platform_data`、`query_metric`、`analyze_time_trend`、`analyze_platform_brief` | 查数与汇总入口 |
+| `query_present.py` | `present_query_result` | 中文表与展示结构 |
+| `platform_api.py` | `get_client`、query/HTTP | 真调 MES |
+| `file_ops.py` | `export_platform_data` | 导出到 `EXPORT_DIR` |
+| `analysis_chart.py` / `analysis_dashboard.py` / `analysis_demo.py` | `render_analysis_chart`、`render_analysis_dashboard`、`run_analysis_demo` | 图 / 看板 |
+| `ops_playbook.py` | 场景模板 | 值班/急单等 |
+| Skills | `query-mes-data`、`analyze-mes-data`、`analyze-pcb-mes`、`ops-query-playbook` | 剧本 |
+| 前端 | `chatAnalysisChartParse.js`、`AnalysisChartCard.vue`、`AnalysisDashboardCard.vue` | 渲染 |
+| mes-profile 路由 | upload/import/active 等 | 资料包 |
+
+**配置：**
+
+| 变量 | 含义 |
+|------|------|
+| `MES_PROFILE_ID` | 激活资料包 |
+| `MES_API_*` | MES 接口账号等 |
+| `PLATFORM_BASE_URL` | 平台 Base URL |
+| `USE_ERP` | 是否走真实 ERP 客户端（相对 Mock） |
+| `EXPORT_DIR` | 导出目录 |
+| `READONLY_SQL_*` | 只读 SQL（**默认关**） |
+
+资料包日同步见 `mes_profile_daily_sync.py` / [`../MES业务/每日打开自动同步资料包.md`](../MES业务/每日打开自动同步资料包.md)。查数用例见 [`../MES业务/MES查数测试用例.md`](../MES业务/MES查数测试用例.md)。
 
 ---
 
-## 自测话术
+## 4. 后续可以怎么做、不要做什么
 
-- 「今天有多少工单？」  
-- 「紧急未完工有哪些？导出 Excel」  
-- 「打开 PCB 运营看板」  
-- 「Lot 追溯怎么查？」（应缺口或 caveat，勿瞎编）  
+**可以做：**
 
-详见：`docs/MES业务/MES查数测试用例.md`、`PCB数据分析验收话术.md`。  
+1. 按厂补 `metrics.json` / 分析配置，减少口径口头约定  
+2. 缺口清单（如 Lot/拼板）产品化展示  
+
+**不要做：**
+
+1. 接口没有的字段用模型编造良率/在制  
+2. 默认打开只读 SQL 直连库当主查数路径  
+3. 为「好看」换一个无关实体 id 充数  
+
+---
+
+## 自测路径（验收）
+
+1. 「今天有多少工单？」→ 有表或诚实空结果，不编数字。  
+2. 「紧急未完工有哪些？导出 Excel」→ `EXPORT_DIR` 有文件；`/api/download/...` 可下。  
+3. 「打开 PCB 运营看板」→ 出现看板卡（非纯文字描述）。  
+4. 「Lot 追溯怎么查？」→ 缺口或 caveat，勿瞎编。  

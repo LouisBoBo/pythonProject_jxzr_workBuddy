@@ -38,6 +38,17 @@
           <el-button link type="primary" class="skeleton-btn" @click="fillPromptSkeleton">
             填入指令骨架
           </el-button>
+          <el-button
+            v-if="showAiRewrite"
+            link
+            type="primary"
+            class="skeleton-btn"
+            :loading="rewriting"
+            :disabled="rewriting"
+            @click="aiRewritePrompt"
+          >
+            AI 改写
+          </el-button>
         </div>
         <el-input
           v-model="form.prompt"
@@ -47,7 +58,10 @@
           show-word-limit
           :placeholder="promptPlaceholder"
         />
-        <p class="field-hint">写清目标、数据来源、输出格式；时间与目录在下方单独配置，勿写进指令。</p>
+        <p class="field-hint">
+          写清目标、数据来源、输出格式；时间与目录在下方单独配置，勿写进指令。
+          <template v-if="showAiRewrite">自定义任务可先写几句意图，再点「AI 改写」按骨架扩写（不改变你的目标）。</template>
+        </p>
       </el-form-item>
 
       <el-form-item label="调度类型">
@@ -199,7 +213,8 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { rewriteAutomationPrompt } from '../api.js'
 import {
   AUTOMATION_SCHEDULE_PRESETS,
   CUSTOM_SCHEDULE_VALUE,
@@ -241,7 +256,10 @@ const visible = computed({
 })
 
 const isEdit = computed(() => Boolean(props.initial?.id))
+/** 自定义新建 / 编辑已有任务显示 AI 改写；从官方模板一键填入时先隐藏（模板已结构化） */
+const showAiRewrite = computed(() => props.initial?._source !== 'template')
 const formRef = ref(null)
+const rewriting = ref(false)
 const schedulePresets = AUTOMATION_SCHEDULE_PRESETS
 const weekdayOptions = WEEKDAY_OPTIONS
 
@@ -436,9 +454,41 @@ async function fillPromptSkeleton() {
   form.prompt = PROMPT_SKELETON
 }
 
+async function aiRewritePrompt() {
+  const draft = form.prompt.trim()
+  if (!draft) {
+    ElMessage.warning('请先写几句任务意图，再使用 AI 改写')
+    return
+  }
+  if (draft === PROMPT_SKELETON.trim() || /（一句话：要产出什么）/.test(draft)) {
+    ElMessage.warning('请先把骨架里的占位改成你的真实意图，再改写')
+    return
+  }
+  rewriting.value = true
+  try {
+    const { data } = await rewriteAutomationPrompt({
+      draft,
+      task_name: form.name.trim(),
+    })
+    const next = String(data?.prompt || '').trim()
+    if (!next) {
+      ElMessage.error('AI 未返回有效指令')
+      return
+    }
+    form.prompt = next
+    ElMessage.success('已按指令骨架扩写，请确认后保存')
+  } catch (e) {
+    const detail = e?.response?.data?.detail
+    ElMessage.error(typeof detail === 'string' ? detail : e?.message || 'AI 改写失败')
+  } finally {
+    rewriting.value = false
+  }
+}
+
 function onClosed() {
   resetFromInitial(null)
   formRef.value?.clearValidate()
+  rewriting.value = false
 }
 
 async function onSave() {
@@ -519,8 +569,10 @@ async function onSave() {
 
 .prompt-head {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 4px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  margin-bottom: 6px;
 }
 
 .skeleton-btn {

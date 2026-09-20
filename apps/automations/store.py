@@ -186,7 +186,10 @@ def update_automation(data_dir: Path, automation_id: str, fields: dict[str, Any]
                 item["schedule_type"] = st
         for key in ("rrule", "scheduled_at", "valid_from", "valid_until", "next_run_at", "last_run_at"):
             if key in fields:
-                item[key] = fields[key]
+                if key == "rrule":
+                    item[key] = str(fields[key] or "").strip()[:500]
+                else:
+                    item[key] = fields[key]
         if "cwds" in fields:
             cwds_raw = fields.get("cwds") or []
             item["cwds"] = _sanitize_cwds(cwds_raw if isinstance(cwds_raw, list) else [])

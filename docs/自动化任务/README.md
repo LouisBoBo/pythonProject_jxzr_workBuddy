@@ -9,6 +9,7 @@
 
 | 文档 | 说明 |
 |------|------|
+| **[功能实现 · 11-自动化任务](../功能实现/11-自动化任务.md)** | **实现分册（原理 / 流程 / 技术 / 扩展）——与 09/10 同结构** |
 | [WorkBuddy自动化任务学习笔记.md](./WorkBuddy自动化任务学习笔记.md) | 完整版机制、数据模型、调度执行链路、ZR 落地建议 |
 | [PCB早报企微推送方案.md](./PCB早报企微推送方案.md) | PCB 每日早报 → 企业微信群机器人（P0 已实现） |
 | [生产数据企微消息与飞书多维表格方案.md](./生产数据企微消息与飞书多维表格方案.md) | 企微消息与飞书写表**两套独立能力** |
@@ -24,15 +25,15 @@
 | API | `apps/api/routes/automations.py` |
 | 企微推送 | `apps/automations/delivery.py`、`wecom_bot.py` |
 | 推送配置 | **系统配置 → 自动化推送**（`apps/api/routes/settings.py`） |
-| 飞书多维表格 | 方案见上；实现后：`feishu_bitable.py` / `bitable_sync.py`（待建） |
-| 落盘 | `data/automations/automations.json` |
+| 飞书多维表格 | `feishu_bitable.py` / `bitable_sync.py` / `bitable_writer.py` |
+| 落盘 | `data/automations/{automations,runs,runtime}.json` |
 
 ---
 
 ## 读法建议
 
-1. **要先懂完整版怎么做的** → 打开学习笔记全文（原理 + 流程 + 表结构）。
-2. **要在 ZR 里开做** → 重点看笔记第四节「ZR WorkBuddy 现状」与第五节「落地建议」。
+1. **要懂 ZR 已落地的实现** → 先看 [功能实现 11](../功能实现/11-自动化任务.md)，再按需翻方案/操作指南。
+2. **要先懂完整版怎么做的** → 打开学习笔记全文（原理 + 流程 + 表结构）。
 3. **别和下面两项混淆**：
    - **自动化部署**（功能 10）：人确认后触发 GitHub Actions / SSH，不是定时任务 → [`../功能实现/10-人触发预发部署.md`](../功能实现/10-人触发预发部署.md)
    - **资料包日同步**：API 启动时按日拉 OpenAPI，不可用户配置 → [`../MES业务/每日打开自动同步资料包.md`](../MES业务/每日打开自动同步资料包.md)

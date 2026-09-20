@@ -95,8 +95,14 @@ def compute_next_run_at(automation: dict[str, Any], *, base: datetime | None = N
 
     parts = _parse_rrule(str(automation.get("rrule") or ""))
     freq = parts.get("FREQ", "DAILY").upper()
-    hour = int(parts.get("BYHOUR", "9"))
-    minute = int(parts.get("BYMINUTE", "0"))
+    try:
+        hour = int(parts.get("BYHOUR", "9"))
+    except (TypeError, ValueError):
+        hour = 9
+    try:
+        minute = int(parts.get("BYMINUTE", "0"))
+    except (TypeError, ValueError):
+        minute = 0
     hour = max(0, min(23, hour))
     minute = max(0, min(59, minute))
 

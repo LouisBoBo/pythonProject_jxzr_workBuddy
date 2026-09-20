@@ -12,11 +12,7 @@ _MAX_COMMITS = 40
 _MAX_FILES = 80
 
 
-def _repo_root(cwd: str | None = None) -> Path | None:
-    if cwd:
-        p = Path(cwd).expanduser().resolve()
-        if p.is_dir():
-            return p
+def _resolve_workbuddy_root() -> Path:
     default = Path(__file__).resolve().parents[2]
     try:
         import sys
@@ -30,6 +26,22 @@ def _repo_root(cwd: str | None = None) -> Path | None:
         return resolve_repo_root()
     except Exception:
         return default
+
+
+def _repo_root(cwd: str | None = None) -> Path | None:
+    """仅允许仓库根内目录；拒绝任意绝对路径上的 git 探测。"""
+    root = _resolve_workbuddy_root().resolve()
+    if cwd:
+        try:
+            p = Path(cwd).expanduser().resolve()
+            p.relative_to(root)
+        except (OSError, ValueError):
+            logger.warning("repo_digest refused cwd outside repo: %s", cwd)
+            return None
+        if p.is_dir():
+            return p
+        return None
+    return root
 
 
 def _run_git(repo: Path, *args: str, timeout: int = 30) -> tuple[int, str, str]:

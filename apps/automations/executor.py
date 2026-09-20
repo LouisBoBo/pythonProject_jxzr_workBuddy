@@ -87,11 +87,11 @@ async def execute_automation(data_dir: Path, automation: dict[str, Any]) -> dict
     if not rt.mark_running(data_dir, automation_id, run_id):
         return {"ok": False, "skipped": True, "reason": "already_running"}
 
+    # 执行时再次校验 cwd，防手改 automations.json / 历史脏数据越出仓库根
+    from automations.store import _sanitize_cwds
+
     cwds_raw = automation.get("cwds") or []
-    if isinstance(cwds_raw, list):
-        cwds = [str(p).strip() for p in cwds_raw if str(p).strip()][:8]
-    else:
-        cwds = []
+    cwds = _sanitize_cwds(cwds_raw if isinstance(cwds_raw, list) else [])
 
     run_rec = store.append_run(
         data_dir,

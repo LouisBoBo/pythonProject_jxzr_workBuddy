@@ -23,7 +23,7 @@ class AutomationCreateBody(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=8000, description="执行指令（仅任务内容）")
     status: str = Field("active", description="状态：active 运行中 / paused 已暂停")
     schedule_type: str = Field("recurring", description="recurring 循环 / once 单次")
-    rrule: str = Field("", description="循环规则 RRULE，如 FREQ=DAILY;BYHOUR=9;BYMINUTE=30")
+    rrule: str = Field("", max_length=500, description="循环规则 RRULE，如 FREQ=DAILY;BYHOUR=9;BYMINUTE=30")
     scheduled_at: str | None = Field(None, description="单次执行时间 ISO 8601")
     valid_from: str | None = Field(None, description="生效开始（可选）")
     valid_until: str | None = Field(None, description="生效结束（可选）")
@@ -40,7 +40,7 @@ class AutomationUpdateBody(BaseModel):
     prompt: str | None = Field(None, max_length=8000, description="执行指令")
     status: str | None = Field(None, description="active / paused")
     schedule_type: str | None = Field(None, description="recurring / once")
-    rrule: str | None = Field(None, description="RRULE")
+    rrule: str | None = Field(None, max_length=500, description="RRULE")
     scheduled_at: str | None = Field(None, description="单次时间")
     valid_from: str | None = Field(None, description="生效开始")
     valid_until: str | None = Field(None, description="生效结束")
@@ -83,6 +83,42 @@ def list_runs_api(
     store = _store()
     items, total = store.list_runs(DATA_DIR, page=page, page_size=page_size)
     return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size}
+
+
+class AutomationRewritePromptBody(BaseModel):
+    draft: str = Field(..., min_length=1, max_length=8000, description="用户草稿意图或待改写的执行指令")
+    task_name: str = Field("", max_length=120, description="任务名称（可选，辅助理解意图）")
+
+
+@router.post(
+    "/rewrite-prompt",
+    summary="AI 改写执行指令",
+    description=(
+        "自定义自动化任务时，基于指令骨架扩写用户草稿；"
+        "不曲解意图，只让表述更清晰、更易被执行 Agent 理解。"
+    ),
+)
+def rewrite_prompt_api(body: AutomationRewritePromptBody, _auth: tuple = Depends(require_auth)):
+    from automations.prompt_rewrite import rewrite_automation_prompt
+
+    try:
+        prompt = rewrite_automation_prompt(body.draft, task_name=body.task_name or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # 不回传上游原始异常细节（可能含 URL/密钥片段）
+        msg = str(exc)
+        if "未配置" in msg or "未返回" in msg:
+            detail = msg
+        else:
+            detail = "AI 改写暂时不可用，请稍后重试或手工完善指令"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail="AI 改写暂时不可用，请稍后重试或手工完善指令",
+        ) from exc
+    return {"ok": True, "prompt": prompt}
 
 
 @router.post(

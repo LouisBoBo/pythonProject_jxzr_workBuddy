@@ -3003,6 +3003,33 @@ async function beginCursorDevStream(
   const tryRecoverFromJob = async () => {
     if (finishedOnce || recoveredByWatchdog) return false
     if (requestId !== activeRequestId || threadId.value !== currentThread) return false
+    // 硬超时：禁止 SSE 挂死时看门狗无限 GET job
+    const watchdogMaxMs = 45 * 60 * 1000
+    if (Date.now() - streamStartedAt.value > watchdogMaxMs) {
+      recoveredByWatchdog = true
+      streamGotError = true
+      const tip = '写码任务超时（已超过 45 分钟自动核对上限），已停止轮询。'
+      if (msg?.cursorDevPick) {
+        msg.cursorDevPick = {
+          ...msg.cursorDevPick,
+          phase: 'failed',
+          status: 'failed',
+          error: formatPickFailureSummary(tip),
+          jobId,
+          progressText: '',
+        }
+      }
+      await finishUi({
+        content: formatCursorDevUserError(tip),
+        stopped: false,
+      })
+      try {
+        abortCtrl.abort()
+      } catch {
+        /* ignore */
+      }
+      return true
+    }
     try {
       const resp = await getCursorDevJob(jobId)
       const st = String(resp?.data?.status || '')
@@ -4424,7 +4451,14 @@ function onLocalDevDeployResolved(msg, payload) {
 function onLocalDevDeployPoll(msg, payload) {
   if (!msg?.localDevDeployGate || !payload) return
   const st = String(payload.status || '')
-  const visit = String(payload.visit_url || payload.health_url || msg.localDevDeployGate.visit_url || '').trim()
+  const prev = String(msg.localDevDeployGate.status || '')
+  const terminal = ['succeeded', 'ci_failed', 'cancelled']
+  // 已终态后忽略一切后续状态翻转（含 succeeded↔failed、滞后 in_progress），避免卡片 watch 再拉起轮询
+  if (terminal.includes(prev)) {
+    return
+  }
+  const visitRaw = String(payload.visit_url || payload.health_url || msg.localDevDeployGate.visit_url || '').trim()
+  const visit = /^https?:\/\//i.test(visitRaw) ? visitRaw : ''
   const patch = {
     ...msg.localDevDeployGate,
     run_id: String(payload.run_id || msg.localDevDeployGate.run_id || ''),
@@ -4450,7 +4484,8 @@ function onLocalDevDeployPoll(msg, payload) {
   }
   msg.localDevDeployGate = patch
   void persistSession()
-  void nextTick(() => scrollToBottom())
+  // 轮询会频繁拉长过程日志；用户上翻阅读时勿硬拽回底部
+  void nextTick(() => scrollToBottomThrottled())
 }
 
 /**

@@ -765,6 +765,23 @@ async def put_settings(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if "DEPLOY_HEALTH_URL" in values:
+        values = dict(values)
+        raw_health = values.get("DEPLOY_HEALTH_URL")
+        if raw_health is None:
+            pass
+        elif str(raw_health).strip() == "":
+            values["DEPLOY_HEALTH_URL"] = ""
+        else:
+            from safe_http import assert_http_url_allowed
+
+            try:
+                values["DEPLOY_HEALTH_URL"] = assert_http_url_allowed(
+                    str(raw_health), what="部署探活地址"
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if "MES_PROFILE_ID" in values:
         values = dict(values)
         raw_pid = values.get("MES_PROFILE_ID")

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 _lock = threading.Lock()
+# 崩溃未 clear_running 时，超过此时长视为僵尸锁可回收（秒）
+_STALE_RUNNING_SEC = 6 * 3600
 
 
 def _runtime_path(data_dir: Path) -> Path:
@@ -38,17 +40,40 @@ def _write(data_dir: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _purge_stale_locked(running: dict[str, Any], *, now: int | None = None) -> dict[str, Any]:
+    ts = int(now or time.time())
+    out: dict[str, Any] = {}
+    for aid, meta in (running or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        started = meta.get("started_at")
+        try:
+            started_i = int(started) if started is not None else 0
+        except (TypeError, ValueError):
+            started_i = 0
+        if started_i and (ts - started_i) > _STALE_RUNNING_SEC:
+            continue
+        out[str(aid)] = meta
+    return out
+
+
 def is_running(data_dir: Path, automation_id: str) -> bool:
     with _lock:
         data = _read(data_dir)
-        return automation_id in (data.get("running") or {})
+        running = _purge_stale_locked(dict(data.get("running") or {}))
+        if running != (data.get("running") or {}):
+            data["running"] = running
+            _write(data_dir, data)
+        return automation_id in running
 
 
 def mark_running(data_dir: Path, automation_id: str, run_id: str) -> bool:
     with _lock:
         data = _read(data_dir)
-        running = dict(data.get("running") or {})
+        running = _purge_stale_locked(dict(data.get("running") or {}))
         if automation_id in running:
+            data["running"] = running
+            _write(data_dir, data)
             return False
         running[automation_id] = {"run_id": run_id, "started_at": int(time.time())}
         data["running"] = running

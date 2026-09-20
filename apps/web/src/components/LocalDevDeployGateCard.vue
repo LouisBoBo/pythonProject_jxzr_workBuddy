@@ -97,9 +97,13 @@
 
     <div class="dg-visit" v-if="isSucceeded && visitUrl">
       <div class="dg-visit-label">部署成功 · 项目访问地址</div>
-      <a class="dg-visit-link" :href="visitUrl" target="_blank" rel="noopener noreferrer">{{
-        visitUrl
-      }}</a>
+      <a
+        class="dg-visit-link"
+        :href="visitUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        >{{ visitUrl }}</a
+      >
       <p class="dg-hint-line" v-if="healthLabel">{{ healthLabel }}</p>
     </div>
     <div class="dg-visit muted" v-else-if="isSucceeded && !visitUrl">
@@ -166,9 +170,33 @@ const localVisitUrl = ref('')
 const refInput = ref(String(props.card?.ref || props.card?.suggested_ref || ''))
 let timer = null
 let startedAt = 0
+/** 连续软失败（网络/暂态）次数；超限停表，避免无限打 poll */
+let softFailStreak = 0
+/** 进行中的 poll 请求，停表/超时可 abort */
+let pollAbort = null
+const SOFT_FAIL_STOP = 5
 const POLL_MS_LOCAL = 2000
 const POLL_MS_CI = 4000
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+const POLL_HTTP_TIMEOUT_MS = 45000
+
+function isPermanentPollError(errText) {
+  const t = String(errText || '')
+  return /未找到|无效的|不存在|拒绝|未配置|非法|格式/.test(t)
+}
+
+/** 仅允许 http(s)，防止 javascript: 等注入到 :href */
+function safeHttpUrl(raw) {
+  const s = String(raw || '').trim()
+  if (!s || !/^https?:\/\//i.test(s)) return ''
+  try {
+    const u = new URL(s)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return ''
+    return s
+  } catch {
+    return ''
+  }
+}
 
 watch(
   () => [props.card?.ref, props.card?.suggested_ref],
@@ -233,11 +261,11 @@ const logLines = computed(() => {
 })
 const visitUrl = computed(() => {
   const fromPoll = String(localVisitUrl.value || '').trim()
-  if (fromPoll) return fromPoll
+  if (fromPoll) return safeHttpUrl(fromPoll)
   const fromCard = String(
     props.card?.visit_url || props.card?.health_url || props.card?.ci?.visit_url || '',
   ).trim()
-  return fromCard
+  return safeHttpUrl(fromCard)
 })
 const healthLabel = computed(() => {
   const detail = String(props.card?.health_detail || '').trim()
@@ -256,14 +284,80 @@ const confirmBtnLabel = computed(() => {
   return '确认部署'
 })
 
+function isTerminalStatus(st) {
+  return ['succeeded', 'ci_failed', 'failed', 'cancelled'].includes(String(st || ''))
+}
+
 function stopPoll() {
   if (timer) {
     clearInterval(timer)
     timer = null
   }
+  if (pollAbort) {
+    try {
+      pollAbort.abort()
+    } catch {
+      /* ignore */
+    }
+    pollAbort = null
+  }
+}
+
+function applyTerminalFromCard(st) {
+  const s = String(st || '')
+  if (!isTerminalStatus(s)) return
+  stopPoll()
+  localStatus.value = s
+  pollMsg.value = String(props.card?.poll_message || props.card?.ci?.message || pollMsg.value || '')
+  if (props.card?.run_id) localRunId.value = String(props.card.run_id)
+  if (props.card?.log_tail) localLogTail.value = String(props.card.log_tail)
+  if (props.card?.visit_url || props.card?.health_url) {
+    localVisitUrl.value = String(props.card.visit_url || props.card.health_url)
+  }
+}
+
+function markSucceeded(data) {
+  if (localStatus.value === 'succeeded') {
+    stopPoll()
+    return
+  }
+  localStatus.value = 'succeeded'
+  stopPoll()
+  emit('poll', {
+    ...data,
+    status: 'succeeded',
+    health_ok: data?.health_ok,
+    health_url: data?.health_url,
+    health_detail: data?.health_detail,
+    visit_url: data?.visit_url || data?.health_url,
+    log_tail: data?.log_tail,
+  })
+}
+
+function markFailed(data) {
+  if (localStatus.value === 'ci_failed') {
+    stopPoll()
+    return
+  }
+  localStatus.value = 'ci_failed'
+  stopPoll()
+  emit('poll', {
+    ...data,
+    status: 'ci_failed',
+    health_ok: data?.health_ok,
+    health_url: data?.health_url,
+    health_detail: data?.health_detail,
+    visit_url: data?.visit_url || data?.health_url,
+    log_tail: data?.log_tail,
+  })
 }
 
 async function pollOnce() {
+  // 终态后绝不再请求，避免成功界面仍被 interval / 误重启拖着轮询
+  if (isTerminalStatus(localStatus.value) || isTerminalStatus(props.card?.status)) {
+    stopPoll()
+    return
+  }
   if (busy.value) return
   const repo = String(props.card?.github_repo || '')
   const workflow = String(props.card?.github_workflow || '')
@@ -275,13 +369,18 @@ async function pollOnce() {
     return
   }
   busy.value = true
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null
+  pollAbort = ac
   try {
-    const res = await pollLocalDevDeploy({
-      repo,
-      run_id: runId,
-      workflow,
-      ref,
-    })
+    const res = await pollLocalDevDeploy(
+      {
+        repo,
+        run_id: runId,
+        workflow,
+        ref,
+      },
+      { timeout: POLL_HTTP_TIMEOUT_MS, signal: ac?.signal },
+    )
     const data = res?.data && typeof res.data === 'object' ? res.data : res
     if (data?.run_id) localRunId.value = String(data.run_id)
     if (data?.run_url) localRunUrl.value = String(data.run_url)
@@ -290,60 +389,105 @@ async function pollOnce() {
       localVisitUrl.value = String(data.visit_url || data.health_url || '')
     }
     pollMsg.value = String(data?.message || '')
+    // 请求回来时可能已是终态（并发/父级已写回），丢弃结果并停表
+    if (isTerminalStatus(localStatus.value) || isTerminalStatus(props.card?.status)) {
+      stopPoll()
+      return
+    }
     if (data?.unreachable || (data?.ok === false && data?.unreachable)) {
       localStatus.value = 'unreachable'
       localError.value = String(data?.message || data?.error || '暂时不可达')
       emit('poll', { ...data, status: 'unreachable' })
+      // 不可达时停自动轮询，仅保留「刷新状态」手动重试，禁止无限打接口
+      stopPoll()
       return
     }
     if (!data?.ok) {
-      localError.value = String(data?.error || '查询失败')
-      pollMsg.value = localError.value
-      emit('poll', data)
+      const errText = String(data?.error || data?.message || '查询失败')
+      localError.value = errText
+      pollMsg.value = errText
+      softFailStreak += 1
+      // 任务丢失/非法 run_id 等永久错误：立即停表
+      if (isPermanentPollError(errText) || softFailStreak >= SOFT_FAIL_STOP) {
+        localStatus.value = 'unreachable'
+        stopPoll()
+        pollMsg.value = isPermanentPollError(errText)
+          ? errText
+          : `${errText}（连续失败已停止自动刷新，可点「刷新状态」重试）`
+        emit('poll', {
+          ...data,
+          status: 'unreachable',
+          ok: false,
+          unreachable: true,
+          message: pollMsg.value,
+        })
+      } else {
+        emit('poll', data)
+      }
       return
     }
+    softFailStreak = 0
     localError.value = ''
-    if (data.success) {
-      localStatus.value = 'succeeded'
-      stopPoll()
-      emit('poll', {
-        ...data,
-        status: 'succeeded',
-        health_ok: data.health_ok,
-        health_url: data.health_url,
-        health_detail: data.health_detail,
-        visit_url: data.visit_url || data.health_url,
-        log_tail: data.log_tail,
-      })
+    const rawStatus = String(data.status || '')
+    const succeeded =
+      Boolean(data.success) ||
+      (Boolean(data.done) && !data.failed && (rawStatus === 'completed' || data.conclusion === 'success'))
+    if (succeeded) {
+      markSucceeded(data)
       return
     }
-    if (data.failed || (data.done && !data.success)) {
-      localStatus.value = 'ci_failed'
-      stopPoll()
-      emit('poll', {
-        ...data,
-        status: 'ci_failed',
-        health_ok: data.health_ok,
-        health_url: data.health_url,
-        health_detail: data.health_detail,
-        visit_url: data.visit_url || data.health_url,
-        log_tail: data.log_tail,
-      })
+    if (data.failed || (data.done && !data.success) || rawStatus === 'completed') {
+      // completed 但非 success：按失败收口，禁止再当成 in_progress 死轮询
+      markFailed(data)
       return
     }
-    const st = String(data.status || 'in_progress')
+    const st = rawStatus || 'in_progress'
     localStatus.value = st === 'queued' ? 'queued' : 'in_progress'
     emit('poll', {
       ...data,
       status: localStatus.value,
       log_tail: data.log_tail,
     })
+    // 手动「刷新状态」若仍在进行中，恢复自动轮询（此前因不可达停表）
+    if (!timer) {
+      softFailStreak = 0
+      if (!startedAt) startedAt = Date.now()
+      const ms = isLocalSsh.value ? POLL_MS_LOCAL : POLL_MS_CI
+      timer = setInterval(() => {
+        void pollOnce()
+      }, ms)
+    }
   } catch (e) {
+    if (isTerminalStatus(localStatus.value) || isTerminalStatus(props.card?.status)) {
+      stopPoll()
+      return
+    }
+    const canceled =
+      e?.name === 'CanceledError' ||
+      e?.name === 'AbortError' ||
+      e?.code === 'ERR_CANCELED' ||
+      /aborted|canceled|cancelled/i.test(String(e?.message || ''))
+    if (canceled) {
+      return
+    }
+    softFailStreak += 1
     localStatus.value = 'unreachable'
     localError.value = e?.message || String(e)
     pollMsg.value = '暂时无法查询（可点「刷新状态」重试）'
+    emit('poll', {
+      status: 'unreachable',
+      ok: false,
+      unreachable: true,
+      message: pollMsg.value,
+    })
+    stopPoll()
   } finally {
+    if (pollAbort === ac) pollAbort = null
     busy.value = false
+    if (isTerminalStatus(localStatus.value) || isTerminalStatus(props.card?.status)) {
+      stopPoll()
+      return
+    }
     const timeoutMs = Number(props.card?.poll_timeout_sec || 1800) * 1000 || DEFAULT_TIMEOUT_MS
     if (startedAt && Date.now() - startedAt > timeoutMs) {
       stopPoll()
@@ -351,12 +495,23 @@ async function pollOnce() {
         ? '查询超时，请查看本机 API 日志或稍后刷新'
         : '查询超时，请打开 Actions 链接查看或稍后刷新'
       localStatus.value = 'unreachable'
+      emit('poll', {
+        status: 'unreachable',
+        ok: false,
+        unreachable: true,
+        message: pollMsg.value,
+      })
     }
   }
 }
 
 function startPoll() {
+  if (isTerminalStatus(localStatus.value) || isTerminalStatus(props.card?.status)) {
+    stopPoll()
+    return
+  }
   stopPoll()
+  softFailStreak = 0
   startedAt = Date.now()
   void pollOnce()
   const ms = isLocalSsh.value ? POLL_MS_LOCAL : POLL_MS_CI
@@ -368,9 +523,20 @@ function startPoll() {
 watch(
   () => props.card?.status,
   (st) => {
-    if (st === 'triggered' || st === 'queued' || st === 'in_progress') {
+    const s = String(st || '')
+    // 父级已是终态：停表并同步，绝不因旧 in_progress 残留再拉起
+    if (isTerminalStatus(s)) {
+      applyTerminalFromCard(s)
+      return
+    }
+    if (s === 'triggered' || s === 'queued' || s === 'in_progress') {
+      // 本地已成功/失败时，忽略父级滞后的进行中状态，防止 stop 后又被 start
+      if (isTerminalStatus(localStatus.value)) {
+        stopPoll()
+        return
+      }
       if (!localStatus.value || localStatus.value === 'pending') {
-        localStatus.value = String(st)
+        localStatus.value = s
       }
       if (!timer) startPoll()
     }
@@ -380,15 +546,11 @@ watch(
 
 onMounted(() => {
   const st = String(props.card?.status || '')
-  if (['triggered', 'queued', 'in_progress'].includes(st)) startPoll()
-  if (st === 'succeeded' || st === 'ci_failed') {
-    pollMsg.value = String(props.card?.poll_message || props.card?.ci?.message || '')
-    if (props.card?.run_id) localRunId.value = String(props.card.run_id)
-    if (props.card?.log_tail) localLogTail.value = String(props.card.log_tail)
-    if (props.card?.visit_url || props.card?.health_url) {
-      localVisitUrl.value = String(props.card.visit_url || props.card.health_url)
-    }
+  if (isTerminalStatus(st)) {
+    applyTerminalFromCard(st)
+    return
   }
+  if (['triggered', 'queued', 'in_progress'].includes(st)) startPoll()
 })
 
 onBeforeUnmount(stopPoll)

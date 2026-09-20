@@ -48,6 +48,16 @@ class AutomationScheduleTests(unittest.TestCase):
         )
         self.assertIsNotNone(item.get("next_run_at"))
 
+    def test_bad_byhour_does_not_crash(self):
+        base = datetime(2026, 8, 27, 8, 0, 0)
+        item = {
+            "status": "active",
+            "schedule_type": "recurring",
+            "rrule": "FREQ=DAILY;BYHOUR=notint;BYMINUTE=xx",
+        }
+        nra = compute_next_run_at(item, base=base)
+        self.assertEqual(nra, int(datetime(2026, 8, 27, 9, 0, 0).timestamp()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -409,12 +409,12 @@ async function loadAll() {
 }
 
 function openCreate() {
-  editInitial.value = null
+  editInitial.value = { _source: 'custom' }
   editOpen.value = true
 }
 
 function openEdit(item) {
-  editInitial.value = { ...item }
+  editInitial.value = { ...item, _source: 'edit' }
   editOpen.value = true
 }
 
@@ -428,6 +428,7 @@ function openFromTemplate(tpl) {
     scheduleLabel: tpl.scheduleLabel,
     cwds: [],
     push_to_wecom: Boolean(tpl.push_to_wecom),
+    _source: 'template',
   }
   editOpen.value = true
 }

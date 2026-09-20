@@ -425,8 +425,12 @@ export function confirmLocalDevDeploy(body) {
 }
 
 /** P1-3c：轮询 Actions run 状态（GitHub 不可达时 ok=false + unreachable） */
-export function pollLocalDevDeploy(body) {
-  return api.post('/local-dev/deploy/poll', body || {})
+export function pollLocalDevDeploy(body, opts = {}) {
+  const timeout = Number(opts.timeout) > 0 ? Number(opts.timeout) : 45000
+  return api.post('/local-dev/deploy/poll', body || {}, {
+    timeout,
+    signal: opts.signal,
+  })
 }
 
 export function getLocalDevJob(jobId) {
@@ -705,4 +709,8 @@ export function deleteAutomation(id) {
 
 export function runAutomation(id) {
   return api.post(`/automations/${encodeURIComponent(id)}/run`)
+}
+
+export function rewriteAutomationPrompt(body) {
+  return api.post('/automations/rewrite-prompt', body)
 }

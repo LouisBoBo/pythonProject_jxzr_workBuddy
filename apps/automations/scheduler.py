@@ -41,19 +41,26 @@ async def _tick_once(data_dir: Path) -> None:
     items = store.list_automations(data_dir)
     now = int(time.time())
     for item in items:
-        cur = dict(item)
-        if cur.get("next_run_at") is None and str(cur.get("status") or "") == "active":
-            enriched = enrich_automation_schedule(cur)
-            if enriched.get("next_run_at") is not None:
-                store.update_automation(data_dir, cur["id"], {"next_run_at": enriched["next_run_at"]})
-                cur["next_run_at"] = enriched["next_run_at"]
-        if not should_run_now(cur, now_ts=now):
-            continue
-        logger.info("[automations] due task id=%s name=%s", cur.get("id"), cur.get("name"))
-        result = await execute_automation(data_dir, cur)
-        if result.get("skipped") and result.get("reason") == "stream_busy":
-            logger.info("[automations] deferred id=%s (user stream busy)", cur.get("id"))
-            continue
+        try:
+            cur = dict(item)
+            if cur.get("next_run_at") is None and str(cur.get("status") or "") == "active":
+                enriched = enrich_automation_schedule(cur)
+                if enriched.get("next_run_at") is not None:
+                    store.update_automation(data_dir, cur["id"], {"next_run_at": enriched["next_run_at"]})
+                    cur["next_run_at"] = enriched["next_run_at"]
+            if not should_run_now(cur, now_ts=now):
+                continue
+            logger.info("[automations] due task id=%s name=%s", cur.get("id"), cur.get("name"))
+            result = await execute_automation(data_dir, cur)
+            if result.get("skipped") and result.get("reason") == "stream_busy":
+                logger.info("[automations] deferred id=%s (user stream busy)", cur.get("id"))
+                continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[automations] task tick failed id=%s: %s",
+                (item or {}).get("id"),
+                exc,
+            )
 
 
 async def _loop(data_dir: Path) -> None:
